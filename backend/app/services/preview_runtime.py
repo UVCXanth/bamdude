@@ -7,6 +7,7 @@ import logging
 import secrets
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -520,10 +521,16 @@ class PreviewRuntime:
         priority: str | None = None,
         wait_seconds: float | None = None,
         order: int | None = None,
+        on_admit: Callable[[], int | None] | None = None,
+        on_hand_off: Callable[[], None] | None = None,
     ):
         """One owned preview attempt. ``priority`` defaults from the kind (sliced high, STL/OBJ normal, STEP low);
         a revoked low ends as the INTERNAL outcome ``preempted`` (no files, no publication) — its caller requeues it,
-        no task was cancelled. ``order`` lets a requeued low keep its first admission order."""
+        no task was cancelled. ``order`` lets a requeued low keep its first admission order.
+
+        ``on_admit`` runs once, synchronously, when the slot is granted; the absolute monotonic-ns deadline it
+        returns bounds this attempt (a job's budgets run from its first admission). ``on_hand_off`` runs once,
+        synchronously, at the hand-off of an ok result — the point of no return, under the arbiter's gate."""
         kind = _inputs_kind(inputs)
         result = PreviewResult(kind=kind)
         priority = priority or PRIORITY_BY_KIND[kind]
@@ -590,6 +597,10 @@ class PreviewRuntime:
 
         try:
             try:
+                if on_admit is not None:
+                    owner_deadline = on_admit()
+                    if owner_deadline is not None:
+                        deadline = min(deadline, owner_deadline)
                 if not self.ready or self.closed or self.epoch != admitted_epoch:
                     raise PreviewError("unavailable")
                 self.active_task = asyncio.current_task()
@@ -695,6 +706,8 @@ class PreviewRuntime:
                         # ready output is discarded and the attempt ends preempted without any restart.
                         if not self.slot.hand_off(ticket):
                             raise Revoked
+                        if on_hand_off is not None:
+                            on_hand_off()  # same synchronous step as the hand-off: nothing interleaves
                     else:
                         self.slot.hand_off(ticket)  # a service terminal: nothing left to interrupt or requeue
                     self.result_handed_off = True
