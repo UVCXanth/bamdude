@@ -84,12 +84,17 @@ def _tree_gone(owner, timeout: float) -> bool:
             return owner.end_tree(timeout)
         finally:
             owner.close()
+    return _posix_group_gone(owner, timeout)
+
+
+def _posix_group_gone(owner: int, timeout: float) -> bool:
+    """POSIX: kill the session's group, then prove by a scan that no live process is left in it."""
     import psutil
 
     try:
         os.killpg(owner, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        pass  # gone, or (macOS) a group whose reaped leader the OS will not signal: the scan below decides
     deadline = time.monotonic() + timeout
     while True:
         left = []

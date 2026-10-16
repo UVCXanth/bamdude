@@ -207,3 +207,16 @@ def test_every_contained_python_child_is_started_through_contained_interpreter()
                     if ast.unparse(program) == "sys.executable":
                         offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert offenders == []
+
+
+def test_a_group_the_os_will_not_signal_after_its_leader_was_reaped_is_still_scanned(monkeypatch):
+    """macOS answers EPERM to killpg on a group whose leader is a reaped zombie (a lesson of PreviewProcess.stop):
+    the proof goes on to its scan instead of failing the install with a bare PermissionError (review A-m10)."""
+
+    def refuse(pgid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(child.os, "killpg", refuse, raising=False)
+    monkeypatch.setattr(child.os, "getpgid", lambda pid: -1, raising=False)  # nothing left in the group
+    monkeypatch.setattr(child.signal, "SIGKILL", 9, raising=False)
+    assert child._posix_group_gone(424242, timeout=1) is True
