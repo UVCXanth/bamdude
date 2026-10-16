@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { Routes, Route } from 'react-router';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -113,4 +113,19 @@ describe('OrderView composition', () => {
     const view = await screen.findByTestId('order-view');
     expect(view.closest('.workshop')).not.toBeNull();
   });
+  it('opens a fresh plan review from an unvisited tab without sending anything', async () => {
+    mockOrderDetailApi(makeOrder());
+    const planRead = vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], truncated: false, totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
+    const send = vi.spyOn(api, 'enqueueOrderPlan');
+    renderPage('/projects/1?section=prints');
+    const shortcut = await screen.findByRole('button', { name: 'Whole order to auto queue…' });
+    expect(planRead).not.toHaveBeenCalled();
+    fireEvent.click(shortcut);
+    const review = await screen.findByRole('dialog');
+    await waitFor(() => expect(review).toHaveTextContent('Total: 0 print runs'));
+    expect(planRead).toHaveBeenCalled();
+    expect(within(review).getByRole('button', { name: 'Send to auto queue' })).toBeDisabled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
 });
