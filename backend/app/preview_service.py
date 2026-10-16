@@ -58,8 +58,12 @@ async def settle(awaitable):
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            if task.done():
-                raise  # the step itself was cancelled: nothing to finish
+            # Only a step that was itself cancelled ends here. A step that FINISHED in the very moment the late
+            # cancel landed is done, not cancelled: reading "done" as one skipped the rest of the finally — the
+            # staging cleanup — while the service still answered cancel_ack (measured under load on the real
+            # chain); the next loop returns its result.
+            if task.cancelled():
+                raise
             current = asyncio.current_task()
             if current is not None and current.cancelling():
                 current.uncancel()

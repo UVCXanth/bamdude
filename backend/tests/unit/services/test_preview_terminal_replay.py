@@ -335,3 +335,45 @@ async def test_a_cancel_before_the_run_ever_started_is_still_answered(tmp_path):
     service.task.cancel()  # cancelled before it ran a single step
     reply = await asyncio.wait_for(service.command(Command(**{**command.__dict__, "operation": "cancel"})), 5)
     assert reply["outcome"] == "canceled" and reply["proof"]["mode"] == "cancel_ack"
+
+
+@pytest.mark.asyncio
+async def test_a_late_cancel_landing_as_an_owned_step_finishes_never_skips_the_rest_of_the_finally():
+    """Found under load on the real chain: a cancel landing exactly as an owned cleanup step finished made settle()
+    re-raise (it read "done" as "cancelled"), the run's finally skipped the staging cleanup, and the service still
+    answered cancel_ack — the next admission met mesh.stl.part and every later preview was resource_limit."""
+    from backend.app.preview_service import settle
+
+    finished = asyncio.Event()
+    after = []
+
+    async def step():
+        await finished.wait()
+        return "closed"
+
+    async def finally_block():
+        result = await settle(step())
+        after.append(result)  # the rest of the finally — the staging cleanup — must still run
+        return result
+
+    outer = asyncio.create_task(finally_block())
+    await asyncio.sleep(0)  # outer now waits on the shielded step
+    finished.set()  # the step's wake-up is queued first...
+    outer.cancel()  # ...and the late cancel right behind it
+    assert await outer == "closed"
+    assert after == ["closed"]
+
+
+@pytest.mark.asyncio
+async def test_settle_still_propagates_a_step_that_was_itself_cancelled_or_failed():
+    from backend.app.preview_service import settle
+
+    async def boom():
+        raise OSError("disk")
+
+    with pytest.raises(OSError):
+        await settle(boom())
+    inner = asyncio.ensure_future(asyncio.sleep(10))
+    inner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await settle(inner)
