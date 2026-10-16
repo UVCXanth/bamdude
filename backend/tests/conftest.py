@@ -1150,3 +1150,7 @@ async def library_worker(tmp_path, inprocess_library_worker):
         library_file_runtime.runtime = None
         await runtime.stop()
         await broker.stop()
+
+
+# The requires_cad lane: named skip without the STEP-preview bundle, failure under BAMDUDE_REQUIRE_CAD=1 (A1).
+from backend.tests.cad_lane import pytest_configure, pytest_runtest_setup  # noqa: E402, F401

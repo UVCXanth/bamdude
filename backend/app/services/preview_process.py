@@ -15,6 +15,7 @@ import psutil
 from backend.app.services.part_render_tree import launch_arg
 from backend.app.services.preview_protocol import LOG_BYTES, PreviewError, encode
 from backend.app.services.worker_containment import WorkerContainment
+from backend.app.services.worker_env import worker_environment
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
 
@@ -40,25 +41,7 @@ class PreviewProcess:
         launch_token: str | None = None,
     ):
         # No .env, database URL, API credentials or NATS token in renderer env.
-        keys = {
-            "PATH",
-            "SYSTEMROOT",
-            "WINDIR",
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "LANG",
-            "LC_ALL",
-            "LD_LIBRARY_PATH",
-            "DYLD_LIBRARY_PATH",
-            "MPLCONFIGDIR",
-        }
-        env = {key: value for key, value in os.environ.items() if key.upper() in keys}
-        env.update(BAMDUDE_IGNORE_DOTENV="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-            env[key] = "1"
-        cache.mkdir(parents=True, exist_ok=True)
-        env.setdefault("MPLCONFIGDIR", str(cache))
+        env = worker_environment(cache)
         self.tail = bytearray()
         self.process = subprocess.Popen(
             # the launch's token on the command line: how a guardian whose record never reached the disk is
