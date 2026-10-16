@@ -200,7 +200,9 @@ def _record_hash(data: bytes) -> str:
     return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
 
 
-def fake_bundle(tmp_path: Path, *, native=b"\x7fELF lib", extra_native=None, drop_proxy=False, tamper=False):
+def fake_bundle(
+    tmp_path: Path, *, native=b"\x7fELF lib", extra_native=None, drop_proxy=False, tamper=False, drop_native=False
+):
     """A synthetic installed site dir + a matching synthetic catalog (two dists, one native library)."""
     site = tmp_path / "site"
     files = {
@@ -228,6 +230,8 @@ def fake_bundle(tmp_path: Path, *, native=b"\x7fELF lib", extra_native=None, dro
         (site / "OCP" / "__init__.py").write_bytes(b"import os\n")
     if extra_native:
         (site / "OCP" / extra_native).write_bytes(b"unknown")
+    if drop_native:
+        (site / "OCP" / "libTKernel.so").unlink()  # a DLL gone after install
     closure = [{"path": "OCP/libTKernel.so", "sha256": hashlib.sha256(b"\x7fELF lib").hexdigest(), "size": 8}]
     return site, closure
 
@@ -244,6 +248,7 @@ def test_full_verify_accepts_a_consistent_tree(tmp_path):
         ({"extra_native": "libextra.so"}, "unknown_library"),
         ({"native": b"\x7fELF other"}, "closure_mismatch"),
         ({"drop_proxy": True}, "proxy_missing"),
+        ({"drop_native": True}, "closure_missing"),
     ],
 )
 def test_full_verify_names_what_is_wrong(tmp_path, kwargs, problem):
