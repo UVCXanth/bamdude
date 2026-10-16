@@ -685,10 +685,15 @@ _left_running: set[asyncio.Future] = set()
 async def stop_library_preview_jobs_within(cause: str, seconds: float) -> bool:
     """The stop, bounded: a job inside an owned read of a hung share cannot be cancelled out of it. Past ``seconds``
     the stop goes on running and proves itself later; the caller is answered False now — a restore is refused
-    instead of hanging with the share, a shutdown goes on without the proof."""
-    stopping = asyncio.ensure_future(stop_library_preview_jobs(cause))
-    _left_running.add(stopping)
-    stopping.add_done_callback(_left_running.discard)
+    instead of hanging with the share, a shutdown goes on without the proof. A stop still running is shared: a
+    shutdown after a refused restore waits for the same one, never a second."""
+    pending = [future for future in _left_running if not future.done()]
+    if pending:
+        stopping = pending[0]
+    else:
+        stopping = asyncio.ensure_future(stop_library_preview_jobs(cause))
+        _left_running.add(stopping)
+        stopping.add_done_callback(_left_running.discard)
     done, _ = await asyncio.wait({stopping}, timeout=seconds)
     return stopping in done and not stopping.cancelled() and stopping.exception() is None and stopping.result()
 
@@ -699,12 +704,12 @@ async def quiesce_library_previews_for_restore(*, drain_seconds: float = 30.0) -
     already handed out to finish its owned attach, then stop the preview runtime. True only with the proof of
     all of it; the caller refuses the restore otherwise. Nothing reopens until the process restarts."""
     from backend.app.services import library_preview
-    from backend.app.services.preview_runtime import stop_preview_runtime
+    from backend.app.services.preview_runtime import stop_preview_runtime_within
 
     library_preview.publication.close()
     jobs_quiet = await stop_library_preview_jobs_within("restore", drain_seconds)
     drained = await library_preview.publication.drain(drain_seconds)
-    runtime_quiet = await stop_preview_runtime()
+    runtime_quiet = await stop_preview_runtime_within(drain_seconds)  # bounded too: a stuck snapshot keeps its slot
     proven = jobs_quiet and drained and runtime_quiet
     logger.info(
         "Library previews quiesced for restore: jobs=%s publications=%s runtime=%s", jobs_quiet, drained, runtime_quiet

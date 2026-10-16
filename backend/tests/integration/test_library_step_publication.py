@@ -631,3 +631,74 @@ async def test_a_job_stuck_on_a_hung_share_makes_the_quiesce_unproven_not_endles
     finally:
         hung.set()
         await asyncio.sleep(0)  # the stop left running ends with the share
+
+
+async def _entered(event, seconds: float = 5.0):
+    for _ in range(int(seconds / 0.01)):
+        if event.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("barrier never entered")
+
+
+@pytest.mark.asyncio
+async def test_a_restore_answers_in_budget_while_the_real_runtime_is_stuck_in_a_snapshot(tmp_path, monkeypatch):
+    """The real runtime (broker, service, guardian) with a STEP attempt admitted and stuck in its snapshot's owned
+    disk read of a hung share: the quiesce answers unproven within its budget, the reader keeps its slot, and the
+    stop goes on to its own proven end once the share answers (Codex A-R2)."""
+    import threading
+
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
+
+    runtime = r.PreviewRuntime(tmp_path / "runtime", app_dir=tmp_path / "app")
+    await runtime.start()
+    assert runtime.ready
+    start, release = threading.Event(), threading.Event()
+    real_snapshot = r.snapshot
+
+    def hung(*args, **kwargs):
+        start.set()
+        assert release.wait(30)
+        return real_snapshot(*args, **kwargs)
+
+    async def descriptor():
+        return {"manifest_digest": "a" * 64, "bundle_key": "win-x64-cp312"}
+
+    monkeypatch.setattr(runtime, "cad_descriptor", descriptor)
+    monkeypatch.setattr(r, "runtime", runtime)
+    monkeypatch.setattr(r, "snapshot", hung)
+
+    async def stuck():
+        async with runtime.attempt({"mesh": (b"ISO-10303-21;", "step")}):
+            pass
+
+    attempt = asyncio.create_task(stuck())
+    quiet = None
+    try:
+        await _entered(start)
+        quiet = asyncio.create_task(jobs_module.quiesce_library_previews_for_restore(drain_seconds=0.2))
+        done, _ = await asyncio.wait({quiet}, timeout=3)
+        assert quiet in done, "the restore passed its budget, held by the runtime's stop"
+        assert quiet.result() is False
+        assert runtime.slot.locked()  # the unproven reader keeps its slot
+        assert r.runtime is runtime  # no replacement while the old one lives
+        assert await r.stop_preview_runtime_within(0.1) is False  # the same stop, not a second one
+        assert len([t for t in asyncio.all_tasks() if t.get_name() == "preview-runtime-stop"]) == 1
+    finally:
+        release.set()
+        await asyncio.gather(attempt, return_exceptions=True)
+        if quiet is not None:
+            await asyncio.gather(quiet, return_exceptions=True)
+        assert await r.stop_preview_runtime() is True  # the share answered: the owner ends, proven
+        assert r.runtime is None
+
+
+@pytest.mark.asyncio
+async def test_no_replacement_runtime_starts_while_the_old_one_is_still_stopping(tmp_path, monkeypatch):
+    from backend.app.services import preview_runtime as r
+
+    pending = asyncio.get_running_loop().create_future()
+    monkeypatch.setattr(r, "_stopping", pending)
+    with pytest.raises(RuntimeError):
+        await r.start_preview_runtime(tmp_path)
+    pending.cancel()

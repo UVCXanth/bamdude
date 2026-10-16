@@ -16,7 +16,9 @@ def test_the_lifespan_starts_part_render_after_the_library_worker_and_stops_it_f
     text = (APP / "main.py").read_text(encoding="utf-8")
     assert text.index("await start_library_file_runtime(") < text.index("await start_part_render(")
     shutdown = text.index("    # Shutdown")
-    assert shutdown < text.index("await stop_part_render()") < text.index("await stop_preview_runtime()", shutdown)
+    assert (
+        shutdown < text.index("await stop_part_render()") < text.index("await stop_preview_runtime_within(", shutdown)
+    )
 
 
 def test_a_restore_asks_the_render_writer_first_and_before_the_database_is_replaced():

@@ -877,6 +877,8 @@ async def start_preview_runtime(base: Path, app_dir: Path | None = None):
     global runtime
     from backend.app.services.local_worker_broker import start_local_worker_broker
 
+    if _stopping is not None:
+        raise RuntimeError("the previous preview runtime is still stopping")  # never a replacement beside it
     runtime = PreviewRuntime(base / ".cache" / "preview-service", app_dir=app_dir)
     try:
         broker = await start_local_worker_broker(base)
@@ -891,15 +893,51 @@ async def start_preview_runtime(base: Path, app_dir: Path | None = None):
     await runtime.start()
 
 
+_stopping: asyncio.Task | None = None
+
+
+async def _stop_and_clear(stopping: PreviewRuntime) -> bool:
+    global runtime, _stopping
+    try:
+        await stopping.stop()
+        return not stopping.uncertain and not stopping.slot.locked()
+    finally:
+        if runtime is stopping:
+            runtime = None  # only once the old runtime has really stopped: never a replacement beside it
+        _stopping = None
+
+
+def _stop_task() -> asyncio.Task | None:
+    """The one stop of the current runtime: started once, shared by every caller (restore, shutdown, tests)."""
+    global _stopping
+    if runtime is None:
+        return None
+    if _stopping is None:
+        _stopping = asyncio.ensure_future(_stop_and_clear(runtime))
+        _stopping.set_name("preview-runtime-stop")
+    return _stopping
+
+
 async def stop_preview_runtime() -> bool:
     """Stop the runtime; True when its ownership ended proven (no uncertain service, no held slot)."""
-    global runtime
-    if runtime:
-        stopped = runtime
-        await stopped.stop()
-        runtime = None
-        return not stopped.uncertain and not stopped.slot.locked()
-    return True
+    task = _stop_task()
+    if task is None:
+        return True
+    return await asyncio.shield(task)  # a cancelled caller never cancels the stop it waits for
+
+
+async def stop_preview_runtime_within(seconds: float) -> bool:
+    """The same stop, its answer bounded (Codex A-R2): an attempt inside an owned read of a hung share cannot be
+    cancelled out of it, so past ``seconds`` the caller hears False while the stop goes on, owned and shared — the
+    slot and the staging stay held, the singleton stays until that stop ends, and a later call waits for the same
+    stop rather than starting another."""
+    task = _stop_task()
+    if task is None:
+        return True
+    done, _ = await asyncio.wait({task}, timeout=seconds)
+    if task not in done or task.cancelled() or task.exception() is not None:
+        return False
+    return task.result()
 
 
 @asynccontextmanager

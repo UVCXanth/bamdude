@@ -11540,7 +11540,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Cloud Link: %s", e)
 
-    from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime
+    from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime_within
 
     await start_preview_runtime(Path(app_settings.base_dir), Path(app_settings.app_dir))
     from backend.app.services.library_preview_jobs import start_library_preview_jobs, stop_library_preview_jobs_within
@@ -11576,7 +11576,8 @@ async def lifespan(app: FastAPI):
     # jobs before the runtime their attempts run on; bounded, so a job stuck on a hung share cannot hold shutdown
     if not await stop_library_preview_jobs_within("shutdown", 10):
         logging.getLogger(__name__).warning("Library preview jobs did not prove their end at shutdown")
-    await stop_preview_runtime()
+    if not await stop_preview_runtime_within(10):  # the same stop a refused restore left running, if any
+        logging.getLogger(__name__).warning("Preview runtime did not prove its end at shutdown")
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
     # let go before the services it describes start disappearing underneath it.
