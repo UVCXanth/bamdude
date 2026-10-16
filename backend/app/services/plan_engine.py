@@ -40,6 +40,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
 from backend.app.services.filament_cost import default_rate_per_kg
+from backend.app.services.forecast_operator_hours import OperatorHours
 from backend.app.services.order_filing import line_for_plate
 from backend.app.services.order_metrics import (
     LineFigures,
@@ -81,6 +82,7 @@ class FleetMachine:
     free_at: float = 0.0
     prep_seconds: float = 0.0
     gap_seconds: float = 0.0
+    requires_operator: bool = True
 
     @property
     def key(self) -> str | None:
@@ -99,11 +101,18 @@ class FleetCapacity:
 
     machines: list[FleetMachine] = field(default_factory=list)
     allow_compatible: bool = False
+    operator_hours: OperatorHours | None = None
+    auto_eject: bool = False
 
     def copy(self) -> FleetCapacity:
         return FleetCapacity(
-            [FleetMachine(m.printer_id, m.model, m.free_at, m.prep_seconds, m.gap_seconds) for m in self.machines],
+            [
+                FleetMachine(m.printer_id, m.model, m.free_at, m.prep_seconds, m.gap_seconds, m.requires_operator)
+                for m in self.machines
+            ],
             allow_compatible=self.allow_compatible,
+            operator_hours=self.operator_hours,
+            auto_eject=self.auto_eject,
         )
 
     def preview(self, recipe: PlateRecipe) -> tuple[float, FleetMachine] | None:
@@ -134,7 +143,12 @@ class FleetCapacity:
         if preview is None:
             return None
         finish, machine = preview
-        machine.free_at = finish + machine.gap_seconds
+        gap = 0.0 if self.auto_eject else machine.gap_seconds
+        machine.free_at = (
+            self.operator_hours.service_finish(finish, gap)
+            if self.operator_hours and machine.requires_operator and not self.auto_eject
+            else finish + gap
+        )
         return finish
 
 
@@ -248,6 +262,7 @@ class OrderPlan:
     # rides on the plan because a silent guard reads as a finished answer — see
     # :func:`cover`.
     truncated: bool = False
+    auto_eject: bool = False
 
 
 def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int]:
@@ -682,6 +697,8 @@ def plan_lines(
     The names ride out with the plan (see :class:`OrderPlan`) — they come from
     the context this function was handed, so no caller need re-read them.
     """
+    if capacity is not None:
+        capacity.auto_eject = bool(ctx.project.auto_eject_enabled)
     plans: list[LinePlan] = []
     truncated = False
     for line in ctx.lines:
@@ -733,6 +750,7 @@ def plan_lines(
         part_names={part.id: part.name for parts in ctx.parts_by_product.values() for part in parts},
         product_names={pid: product.name for pid, product in ctx.products_by_id.items()},
         truncated=truncated,
+        auto_eject=bool(ctx.project.auto_eject_enabled),
     )
 
 

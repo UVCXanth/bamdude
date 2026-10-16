@@ -3385,6 +3385,11 @@ export default {
     staggerWildcardHint: 'A printer with none of the chosen tags (or no chosen location above it) counts in every group and starts only when all of them have room.',
     // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
     etaForecastTitle: 'ETA Forecast',
+    operatorAbsenceTitle: 'Account for operator absence in forecasts',
+    operatorAbsenceDescription: 'Forecast only: manual plate clearing waits for the operator to return. Running prints continue; successful automatic ejection does not need manual clearing. This does not pause or restrict actual queues. Each printer uses its own clearing allowance; simultaneous manual work is not sequenced between printers.',
+    operatorAbsenceStart: 'Unavailable from',
+    operatorAbsenceEnd: 'Available again at',
+    operatorTimezone: 'Operator timezone (IANA)',
     etaForecastDescription: "Allowances the farm forecast adds on top of print times. Staggered start, preheat and each printer's plate-clear setting are read from their own settings; drying is counted only while it blocks the queue.",
     etaUploadSeconds: 'File transfer per print (seconds)',
     etaUploadSecondsDescription: 'Added before every print that has not started yet — sending the file to the printer and waiting for it to begin. Preheat is added on top when enabled.',
@@ -11487,6 +11492,7 @@ export default {
     assumptionsTitle: 'Not counted in this estimate:',
     assumptions: {
       drying: 'drying between prints',
+      operator_service_parallel: 'manual service estimated per printer; shared operator time not modeled',
       slicer_estimate: 'slicer estimate, not the archive\'s actual usage',
     },
     unavailable: 'No estimate',

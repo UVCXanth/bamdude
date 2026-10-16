@@ -106,6 +106,7 @@ async def get_settings(
                 "user_notifications_enabled",
                 "prefer_lowest_filament",
                 "queue_shortest_first",
+                "forecast_operator_absence_enabled",
                 "auto_queue_rebalance_models",
                 "auto_queue_compatible_models",
                 "auto_order_for_batches",
@@ -203,6 +204,22 @@ async def update_settings(
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
+    if any(key.startswith("forecast_operator_") for key in update_data):
+        current = (await get_settings(db, None)).model_dump()
+        operator = {**current, **update_data}
+        if (
+            any(
+                operator[key] is None
+                for key in (
+                    "forecast_operator_absence_enabled",
+                    "forecast_operator_absence_start",
+                    "forecast_operator_absence_end",
+                    "forecast_operator_timezone",
+                )
+            )
+            or operator["forecast_operator_absence_start"] == operator["forecast_operator_absence_end"]
+        ):
+            raise HTTPException(status_code=422, detail="Operator absence start and end must differ.")
 
     # #1589: safety refusals on disabling local login. Two failure modes would
     # otherwise lock everyone out of the install:
