@@ -200,8 +200,20 @@ def _idle(runtime) -> None:
     runtime._idle_tree = _descendants(runtime.service.process.pid)
 
 
-def _alive(pids: set[int]) -> set[int]:
-    return pids & {p.pid for p in psutil.process_iter()}
+def _capture(pids: set[int]) -> dict[int, psutil.Process]:
+    """The processes themselves, not their numbers: Windows hands a PID out again quickly, and under a parallel test
+    run a reused PID made a dead converter look alive (measured: 2 of 6 under -n 4)."""
+    captured = {}
+    for pid in pids:
+        try:
+            captured[pid] = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            pass
+    return captured
+
+
+def _alive(procs: dict[int, psutil.Process]) -> set[int]:
+    return {pid for pid, proc in procs.items() if proc.is_running()}  # same PID AND same creation time
 
 
 def _real_service(runtime) -> psutil.Process:
@@ -217,7 +229,7 @@ def _real_service(runtime) -> psutil.Process:
     return next(p for p in services if not any(is_service(c) for c in p.children()))
 
 
-async def _converter_meshing(runtime, timeout: float = 60) -> set[int]:
+async def _converter_meshing(runtime, timeout: float = 60) -> dict[int, psutil.Process]:
     """Barrier: the converter's own stage marker says it is meshing; returns the service's descendants then."""
     service_root = runtime.staging / "service"
     end = time.monotonic() + timeout
@@ -225,7 +237,7 @@ async def _converter_meshing(runtime, timeout: float = 60) -> set[int]:
         for marker in service_root.glob("*/stage"):
             try:
                 if marker.read_text(encoding="ascii") == "mesh":
-                    return _attempt_children(runtime)
+                    return _capture(_attempt_children(runtime))
             except OSError:
                 pass
         await asyncio.sleep(0.02)
