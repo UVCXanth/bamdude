@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Print-file analysis recovers from a brief startup communication failure.** Preparing its local storage retries within a bounded startup budget, including when a timed-out request already created that storage. Shutdown waits for an unfinished startup to release its client and worker; diagnostics preserve the original failure and identify the phase that failed.
+
 - **A proven completed auto-eject run does not add manual plate-service time to the forecast.** Independent waits such as filament drying and the service allowance for later ordinary prints remain in the estimate.
 - **The ETA forecast can account for a daily operator absence.** Under Settings → Printing → ETA Forecast, opt in, choose local start/end times and an IANA timezone. Manual plate service waits for available hours, including overnight and daylight-saving transitions. Printing itself continues; successful auto-eject runs need no manual service, while a following auto-eject job cannot erase a previous ordinary print's wait. This changes forecasts only, never real queues. Defaults remain off; servicing is estimated per printer rather than as a shared operator queue.
 - **Auto Queue confirmation refreshes the order configuration as well as its print plan.** Sending waits for both reads, so a change made in another browser cannot leave an old configuration caption beside a newly calculated plan.
