@@ -23,6 +23,19 @@ from backend.app.services.preview_protocol import (
 )
 
 
+class Revoked(PreviewError):
+    """A higher-priority attempt revoked this one at a chunk boundary (spec §4.2). Typed, so the caller ends its
+    attempt as internally preempted; on the wire it is a closed ``canceled``."""
+
+    def __init__(self):
+        super().__init__("canceled")
+
+
+def _check(revoke) -> None:
+    if revoke is not None and revoke.is_set():
+        raise Revoked
+
+
 async def owned(awaitable):
     task = asyncio.ensure_future(awaitable)
     try:
@@ -76,7 +89,7 @@ def signature(path: Path) -> tuple:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
-def snapshot(source: Path | bytes, destination: Path, deadline: int) -> None:
+def snapshot(source: Path | bytes, destination: Path, deadline: int, *, revoke=None) -> None:
     before = signature(source) if isinstance(source, Path) else None
     size = before[2] if before else len(source)
     if size > OBJECT_BYTES:
@@ -85,25 +98,35 @@ def snapshot(source: Path | bytes, destination: Path, deadline: int) -> None:
         if isinstance(source, bytes):
             for offset in range(0, len(source), CHUNK_BYTES):
                 remaining(deadline)
+                _check(revoke)
                 target.write(memoryview(source)[offset : offset + CHUNK_BYTES])
+                _check(revoke)
         else:
             with source.open("rb") as stream:
                 count = 0
-                while block := stream.read(CHUNK_BYTES):
+                while True:
+                    _check(revoke)
+                    block = stream.read(CHUNK_BYTES)
+                    if not block:
+                        break
                     remaining(deadline)
                     count += len(block)
                     if count > OBJECT_BYTES:
                         raise PreviewError("resource_limit")
-                    target.write(block)
+                    target.write(block)  # the next iteration checks again before reading on
             if signature(source) != before:
                 raise PreviewError("render_failed")
 
 
-def describe(path: Path, attempt: str, role: str, kind: str, deadline: int) -> Artifact:
+def describe(path: Path, attempt: str, role: str, kind: str, deadline: int, *, revoke=None) -> Artifact:
     checksum = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
-        while block := stream.read(CHUNK_BYTES):
+        while True:
+            _check(revoke)
+            block = stream.read(CHUNK_BYTES)
+            if not block:
+                break
             remaining(deadline)
             size += len(block)
             if size > OBJECT_BYTES:
@@ -171,18 +194,20 @@ def validate_binary_stl(path: Path, triangle_limit: int, deadline: int) -> int:
 
 
 class _Reader:
-    def __init__(self, stream, deadline: int):
-        self.stream, self.deadline = stream, deadline
+    def __init__(self, stream, deadline: int, revoke=None):
+        self.stream, self.deadline, self.revoke = stream, deadline, revoke
         self.count = 0
         self.lock = threading.Lock()
 
     def readinto(self, buffer):
         with self.lock:
             remaining(self.deadline)
+            _check(self.revoke)
             count = self.stream.readinto(buffer)
             self.count += count
             if self.count > OBJECT_BYTES:
                 raise PreviewError("resource_limit")
+            _check(self.revoke)
             return count
 
     def close(self):
@@ -191,8 +216,8 @@ class _Reader:
 
 
 class _Writer:
-    def __init__(self, stream, ref: Artifact, deadline: int):
-        self.stream, self.ref, self.deadline = stream, ref, deadline
+    def __init__(self, stream, ref: Artifact, deadline: int, revoke=None):
+        self.stream, self.ref, self.deadline, self.revoke = stream, ref, deadline, revoke
         self.count = 0
         self.checksum = hashlib.sha256()
         self.lock = threading.Lock()
@@ -200,18 +225,21 @@ class _Writer:
     def write(self, block):
         with self.lock:
             remaining(self.deadline)
+            _check(self.revoke)
             self.count += len(block)
             if self.count > self.ref.size or len(block) > CHUNK_BYTES:
                 raise PreviewError("resource_limit")
             self.checksum.update(block)
-            return self.stream.write(block)
+            written = self.stream.write(block)
+            _check(self.revoke)
+            return written
 
     def close(self):
         with self.lock:
             self.stream.close()
 
 
-async def put(store, path: Path, ref: Artifact, deadline: int) -> None:
+async def put(store, path: Path, ref: Artifact, deadline: int, *, revoke=None) -> None:
     from nats.js.api import ObjectMeta, ObjectMetaOptions
     from nats.js.errors import ObjectNotFoundError
 
@@ -221,8 +249,9 @@ async def put(store, path: Path, ref: Artifact, deadline: int) -> None:
         pass
     else:
         raise PreviewError("protocol_error")  # immutable, never overwrite
+    _check(revoke)
     stream = await disk(path.open, "rb")
-    reader = _Reader(stream, deadline)
+    reader = _Reader(stream, deadline, revoke)
     try:
         async with asyncio.timeout(remaining(deadline)):
             await store.put(ref.key, reader, meta=ObjectMeta(options=ObjectMetaOptions(max_chunk_size=CHUNK_BYTES)))
@@ -231,14 +260,15 @@ async def put(store, path: Path, ref: Artifact, deadline: int) -> None:
     remaining(deadline)
 
 
-async def get(store, ref: Artifact, destination: Path, deadline: int) -> None:
+async def get(store, ref: Artifact, destination: Path, deadline: int, *, revoke=None) -> None:
+    _check(revoke)
     info = await store.get_info(ref.key)
     # nats-py's link branch ignores writeinto; disallow it BEFORE get().
     if info.is_link() or info.size != ref.size:
         raise PreviewError("protocol_error")
     partial = destination.with_suffix(destination.suffix + ".part")
     stream = await disk(partial.open, "xb")
-    sink = _Writer(stream, ref, deadline)
+    sink = _Writer(stream, ref, deadline, revoke)
     try:
         async with asyncio.timeout(remaining(deadline)):
             await store.get(ref.key, writeinto=sink)

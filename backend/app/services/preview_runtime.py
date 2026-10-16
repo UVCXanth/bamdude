@@ -12,7 +12,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.app.schemas.system import PreviewHealth
-from backend.app.services.preview_artifacts import close_transfer, describe, disk, get, owned, put, snapshot
+from backend.app.services.preview_arbiter import Arbiter
+from backend.app.services.preview_artifacts import (
+    Revoked,
+    close_transfer,
+    describe,
+    disk,
+    get,
+    owned,
+    put,
+    snapshot,
+)
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import (
     ACTIVE_SECONDS,
@@ -41,6 +51,10 @@ from backend.app.services.worker_staging import abandoned_attempts, cleanup_owne
 
 logger = logging.getLogger(__name__)
 RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-preview-service"
+# A sliced (high) waiter may have to wait for an active STEP's revoke, cancel proof and cleanup: its own finite
+# budget is C_cancel plus the normal admission wait, counted once (never extended per poll). Spec §4.2.
+HIGH_WAIT_SECONDS = C_CANCEL_SECONDS + QUEUE_SECONDS
+PRIORITY_BY_KIND = {"sliced": "high", "mesh": "normal", "step": "low"}
 
 
 @dataclass
@@ -75,7 +89,7 @@ class PreviewRuntime:
         self.uncertain = False
         self.sequence = 0
         self.waiters = 0
-        self.slot = asyncio.Lock()
+        self.slot = Arbiter()  # one slot; high > normal > low; only high revokes an active low
         self.active_task = None
         self.result_handed_off = False
         self.monitor = None
@@ -417,10 +431,40 @@ class PreviewRuntime:
         found = await disk(step_runtime.locate, self.app_dir)
         return {"manifest_digest": found.digest, "bundle_key": found.key} if found.ok else None
 
+    async def _run_or_revoke(self, command, ticket, timeout: float) -> dict:
+        """The run RPC, raced against this ticket's revoke for a low attempt (spec §4.2). A revoke cancels only the
+        reply wait — the service's work is ended by the cancel that follows, with its proof of end."""
+        rpc = asyncio.ensure_future(self._rpc(command, timeout=timeout))
+        if ticket.priority != "low":
+            return await rpc
+        waiter = asyncio.ensure_future(ticket.revoked.wait())
+        try:
+            done, _ = await asyncio.wait({rpc, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if rpc in done:
+                return rpc.result()
+            raise Revoked
+        finally:
+            waiter.cancel()
+            if not rpc.done():
+                rpc.cancel()
+            await asyncio.gather(waiter, rpc, return_exceptions=True)
+
     @asynccontextmanager
-    async def attempt(self, inputs: dict[str, tuple[Path | bytes, str]], *, deadline: int | None = None):
+    async def attempt(
+        self,
+        inputs: dict[str, tuple[Path | bytes, str]],
+        *,
+        deadline: int | None = None,
+        priority: str | None = None,
+        wait_seconds: float | None = None,
+        order: int | None = None,
+    ):
+        """One owned preview attempt. ``priority`` defaults from the kind (sliced high, STL/OBJ normal, STEP low);
+        a revoked low ends as the INTERNAL outcome ``preempted`` (no files, no publication) — its caller requeues it,
+        no task was cancelled. ``order`` lets a requeued low keep its first admission order."""
         kind = _inputs_kind(inputs)
         result = PreviewResult(kind=kind)
+        priority = priority or PRIORITY_BY_KIND[kind]
         mesh = inputs.get("mesh")
         if mesh and mesh[1] in CAD_KINDS and set(inputs) != {"mesh"}:
             result.outcome = "protocol_error"  # STEP never rides another attempt (refused before any command)
@@ -441,16 +485,16 @@ class PreviewRuntime:
             return
         self.waiters += 1
         admitted_epoch = self.epoch
-        acquired = False
+        ticket = None
+        if wait_seconds is None:
+            wait_seconds = HIGH_WAIT_SECONDS if priority == "high" else QUEUE_SECONDS
         try:
-            async with asyncio.timeout(QUEUE_SECONDS):
-                await self.slot.acquire()
-                acquired = True
+            ticket = await self.slot.acquire(priority, wait_seconds, order=order)
         except TimeoutError:
             result.outcome = "busy"
         finally:
             self.waiters -= 1
-        if not acquired:
+        if ticket is None:
             yield result
             return
         attempt_id = uuid.uuid4().hex
@@ -494,6 +538,8 @@ class PreviewRuntime:
                     self._last_admission_issue = issue
                     raise PreviewError("resource_limit")
                 self._last_admission_issue = None
+                if ticket.revoke.is_set():
+                    raise Revoked
                 await disk(root.mkdir)
                 manifest = []
                 async with asyncio.timeout(remaining(deadline)):
@@ -512,13 +558,13 @@ class PreviewRuntime:
                         if role not in {"mesh", "sliced", "source_png"} or input_kind not in KINDS:
                             raise PreviewError("protocol_error")
                         path = root / f"{role}.{input_kind}"
-                        await disk(snapshot, source, path, deadline)
-                        ref = await disk(describe, path, attempt_id, role, input_kind, deadline)
+                        await disk(snapshot, source, path, deadline, revoke=ticket.revoke)
+                        ref = await disk(describe, path, attempt_id, role, input_kind, deadline, revoke=ticket.revoke)
                         manifest.append(ref)
                         result.input_digests[role] = ref.digest
                         if sum(x.size for x in manifest) > ATTEMPT_BYTES:
                             raise PreviewError("resource_limit")
-                        await put(transfer_store, path, ref, deadline)
+                        await put(transfer_store, path, ref, deadline, revoke=ticket.revoke)
                     command = self._command("run", manifest, attempt_id, deadline, cad)
                     logger.info("Preview attempt start attempt=%s kind=%s", attempt_id, kind)
 
@@ -536,7 +582,7 @@ class PreviewRuntime:
                             if ref.role in result.files:
                                 continue
                             path = root / f"{ref.role}.{ref.kind}"
-                            await get(transfer_store, ref, path, deadline)
+                            await get(transfer_store, ref, path, deadline, revoke=ticket.revoke)
                             if revoked:
                                 raise PreviewError("canceled")
                             result.files[ref.role] = path
@@ -561,7 +607,7 @@ class PreviewRuntime:
 
                     subscription = await self.nc.subscribe(command.subject + ".checkpoint", cb=checkpoint)
                     await self.nc.flush(timeout=CONTROL_SECONDS)
-                    reply = await self._rpc(command, timeout=remaining(deadline))
+                    reply = await self._run_or_revoke(command, ticket, remaining(deadline))
                     self._service_cleanup_reply(reply, attempt_id)
                     result.outcome = reply.get("outcome", "protocol_error")
                     if reply.get("stage") in STAGES:
@@ -572,6 +618,24 @@ class PreviewRuntime:
                         raise PreviewError(result.outcome)
                     if result.outcome == "ok":
                         await receive_files(reply.get("manifest", []))
+                        # The point of no return, under the arbiter's gate: a revoke that came first wins, the
+                        # ready output is discarded and the attempt ends preempted without any restart.
+                        if not self.slot.hand_off(ticket):
+                            raise Revoked
+                    else:
+                        self.slot.hand_off(ticket)  # a service terminal: nothing left to interrupt or requeue
+                    self.result_handed_off = True
+            except Revoked:
+                revoked = True
+                result.outcome = "preempted"  # internal: neither a public canceled nor a failure
+                result.files.clear()
+                if command:
+                    try:
+                        await owned(self._cancel(command))  # proof of end, or retire
+                    except asyncio.CancelledError:
+                        canceled = not self.dependency_lost
+                    except Exception:
+                        self.uncertain = True
             except asyncio.CancelledError:
                 revoked = True
                 canceled = not self.dependency_lost
@@ -641,6 +705,7 @@ class PreviewRuntime:
                         self.uncertain = True
             if canceled:
                 raise asyncio.CancelledError
+            # every result is handed to the caller from here: a broker loss no longer cancels the caller's task
             self.result_handed_off = True
             yield result  # main validates/publishes while permit and staging still owned
         finally:
@@ -652,7 +717,7 @@ class PreviewRuntime:
                     self.active_task = None
                     self.result_handed_off = False
                     if not self.uncertain:
-                        self.slot.release()
+                        self.slot.release(ticket)
 
             await owned(finish())
             logger.info(

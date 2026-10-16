@@ -496,7 +496,7 @@ async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, 
     entered = asyncio.Event()
     original = module.put
 
-    async def held(*args):
+    async def held(*args, **kwargs):  # put now also takes the attempt's revoke token
         entered.set()
         await asyncio.Event().wait()
 
