@@ -34,7 +34,7 @@ from backend.app.services.preview_protocol import (
     proof_envelope,
     remaining,
 )
-from backend.app.services.worker_staging import cleanup_owned
+from backend.app.services.worker_staging import cleanup_owned, quarantine_owned
 
 
 def _marker(root: Path) -> str | None:
@@ -410,11 +410,25 @@ class Service:
                     self.uncertain = True
             if not self.uncertain:
                 cleanup = await settle(asyncio.to_thread(cleanup_owned, root))
+                quarantined = False
+                if cleanup.status == "retained_error" and self.config.get("quarantine"):
+                    # this service owns the dir and its run is over (child reaped): it may move it out of staging
+                    moved = await settle(
+                        asyncio.to_thread(
+                            quarantine_owned,
+                            root,
+                            Path(self.config["quarantine"]),
+                            self.config["generation"],
+                            "service",
+                        )
+                    )
+                    quarantined = moved.status == "quarantined"
                 if cleanup.status == "retained_error":
                     reply["staging_cleanup"] = {
                         "path": str(cleanup.path),
                         "error": cleanup.error_type,
                         "code": cleanup.error_code,
+                        "quarantined": quarantined,
                     }
 
     async def stop(self):

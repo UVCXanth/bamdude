@@ -26,6 +26,7 @@ OBJECT_BYTES = 256 * 1024**2
 ATTEMPT_BYTES = 1024**3
 BUCKET_BYTES = 2 * 1024**3
 STAGING_BYTES = 2 * 1024**3
+QUARANTINE_ATTEMPTS = 16  # proven-dead attempts whose staging could not be removed yet (spec §4.2)
 PNG_BYTES = 16 * 1024**2
 PNG_PIXELS = 16_000_000
 ZIP_BYTES = 1024**3

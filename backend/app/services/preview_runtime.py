@@ -33,9 +33,11 @@ from backend.app.services.preview_protocol import (
     CONTROL_SECONDS,
     KINDS,
     OUTCOMES,
+    QUARANTINE_ATTEMPTS,
     QUEUE_LIMIT,
     QUEUE_SECONDS,
     STAGES,
+    STAGING_BYTES,
     STARTUP_SECONDS,
     TTL_SECONDS,
     VERSION,
@@ -47,7 +49,14 @@ from backend.app.services.preview_protocol import (
     proves_end,
     remaining,
 )
-from backend.app.services.worker_staging import abandoned_attempts, cleanup_owned, retained_entries
+from backend.app.services.worker_staging import (
+    abandoned_attempts,
+    cleanup_owned,
+    quarantine_owned,
+    quarantine_usage,
+    reclaim_quarantine,
+    retained_entries,
+)
 
 logger = logging.getLogger(__name__)
 RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-preview-service"
@@ -80,6 +89,8 @@ class PreviewRuntime:
         self.shared_broker = shared_broker
         # where the STEP bundle lives (<app_dir>/runtime/step-preview), the same root as the part-render Node
         self.app_dir = Path(app_dir) if app_dir else Path(__file__).resolve().parents[3]
+        # proven-dead attempts whose staging AV or a lock kept: beside the runtime, never inside active staging
+        self.quarantine = self.root.parent / "preview-quarantine"
         self.generation = uuid.uuid4().hex
         self.epoch = uuid.uuid4().hex
         self.bucket = f"bamdude_preview_{self.generation}"
@@ -249,6 +260,26 @@ class PreviewRuntime:
         else:
             self._last_staging_issue = None
 
+    async def _quarantine(self, result, path: Path, side: str):
+        """After the bounded reclaim failed: move the proven-dead owned attempt dir into quarantine (spec §4.2).
+        A refused or failed move keeps the original retained result — the residue stays and blocks admission."""
+        moved = await disk(quarantine_owned, path, self.quarantine, self.generation, side)
+        if moved.status == "quarantined":
+            logger.warning(
+                "Preview staging_quarantined: side=%s attempt=%s; counted against the staging limits until reclaimed",
+                side,
+                path.name,
+            )
+            return moved
+        logger.warning(
+            "Preview staging_quarantine_failed: side=%s attempt=%s status=%s error=%s",
+            side,
+            path.name,
+            moved.status,
+            moved.error_type,
+        )
+        return result
+
     def _service_cleanup_reply(self, reply, attempt_id):
         detail = reply.get("staging_cleanup") if isinstance(reply, dict) else None
         if isinstance(detail, dict):
@@ -291,6 +322,7 @@ class PreviewRuntime:
                     "cache": str(self.root / "matplotlib"),
                     # the root the service rebuilds a STEP bundle path under, from the command's key/digest only
                     "app_dir": str(self.app_dir),
+                    "quarantine": str(self.quarantine),
                 },
                 self.root / "matplotlib",
             )
@@ -358,6 +390,8 @@ class PreviewRuntime:
                 )
             for path in attempts:
                 result = await disk(cleanup_owned, path, deadline=deadline)
+                if result.status == "retained_error":  # the service is proven stopped: its attempt may move
+                    result = await self._quarantine(result, path, "service")
                 logger.info(
                     "Preview service_residue_after_retire: generation=%s epoch=%s path=%s result=%s",
                     self.generation,
@@ -519,7 +553,10 @@ class PreviewRuntime:
                     except Exception:
                         pass  # bucket TTL bounds interrupted/partial uploads
             if not self.uncertain:
-                self._cleanup_result(await disk(cleanup_owned, root), "main_attempt", attempt_id)
+                outcome = await disk(cleanup_owned, root)
+                if outcome.status == "retained_error":
+                    outcome = await self._quarantine(outcome, root, "main")
+                self._cleanup_result(outcome, "main_attempt", attempt_id)
 
         try:
             try:
@@ -538,6 +575,11 @@ class PreviewRuntime:
                     self._last_admission_issue = issue
                     raise PreviewError("resource_limit")
                 self._last_admission_issue = None
+                await disk(reclaim_quarantine, self.quarantine)
+                held, count = await disk(quarantine_usage, self.quarantine)
+                if held + ATTEMPT_BYTES > STAGING_BYTES or count > QUARANTINE_ATTEMPTS:
+                    logger.warning("Preview quarantine_blocks_admission: bytes=%d attempts=%d", held, count)
+                    raise PreviewError("resource_limit")
                 if ticket.revoke.is_set():
                     raise Revoked
                 await disk(root.mkdir)
