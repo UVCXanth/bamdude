@@ -268,7 +268,7 @@ def test_locate_needs_a_receipt_matching_this_catalog_and_interpreter(tmp_path, 
     found = sr.locate(tmp_path, cat)
     assert found.ok and found.site == target / "site"
     bad = copy.deepcopy(receipt)
-    bad["fingerprint"]["ext_suffix"] = ".cpython-312-x86_64-linux-gnu.so"
+    bad["fingerprint"]["ext_suffix"] = ".cpython-312-no-such-platform.so"  # never this interpreter's
     (target / "receipt.json").write_text(json.dumps(bad), encoding="utf-8")
     assert sr.locate(tmp_path, cat).reason == "receipt_mismatch"
 

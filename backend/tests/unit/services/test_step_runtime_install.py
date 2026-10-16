@@ -127,8 +127,13 @@ def test_a_rename_that_fails_leaves_no_half_bundle_and_keeps_the_last_good(tmp_p
     def ok(*args, **kwargs):
         return subprocess.CompletedProcess(args, 0, "", "")
 
+    real_replace = sr.os.replace
+    new_target = sr.bundle_dir(app, "win-x64-cp312", sr.load_catalog(new_data).digest)
+
     def refuse(src, dst):
-        raise PermissionError(13, "denied")
+        if Path(dst) == new_target:  # the bundle's own rename; the staging's records still write
+            raise PermissionError(13, "denied")
+        return real_replace(src, dst)
 
     monkeypatch.setattr(sr.os, "replace", refuse)
     with pytest.raises(sr.InstallError) as failed:
@@ -365,53 +370,41 @@ def test_a_tree_still_in_use_is_named_and_kept(tmp_path, win, monkeypatch):
     assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())
 
 
-def _identity(pid: int) -> list:
-    return [pid, psutil.Process(pid).create_time()]
+def test_an_unproven_tree_keeps_its_staging_with_the_records_that_name_its_writer(tmp_path, win):
+    """The real launcher leaves the launch's token and the bootstrap's record when it cannot prove the end: the
+    staging stays, and a later install keeps it while that writer may live."""
+    from backend.app.services import part_render_tree as tree
 
-
-def test_an_unproven_tree_records_its_survivors_beside_the_staging_it_keeps(tmp_path, win):
     data = catalog_copy(tmp_path / "data")
     app = tmp_path / "app"
-    alive = _identity(os.getpid())
 
-    def unproven(*args, **kwargs):
-        raise step_runtime_child.TreeUnproven("still there", survivors=[alive])
+    def unproven(*args, records, **kwargs):
+        tree.launch(records, "installer")
+        tree.record(records / "installer.pid", os.getpid())  # this live process stands in for the writer
+        raise step_runtime_child.TreeUnproven("still there")
 
-    with pytest.raises(sr.InstallError):
+    with pytest.raises(sr.InstallError) as failed:
         sr.install(app, data_dir=data, allow_candidate=True, runner=unproven)
+    assert failed.value.reason == "tree_unproven"
     (kept,) = (sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir()
-    marker = json.loads((kept / sr.UNPROVEN_MARKER).read_text(encoding="utf-8"))
-    assert marker["survivors"] == [alive] and marker["boot"] == psutil.boot_time()
+    assert {"owner.pid", "installer.launch", "installer.pid"} <= {p.name for p in kept.iterdir()}
+    with pytest.raises(sr.InstallError):
+        sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
+    assert kept.exists()  # its writer may live: a later install leaves it
 
 
-def test_a_staging_whose_writer_may_live_is_never_reclaimed(tmp_path, win, monkeypatch):
-    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
-    monkeypatch.setattr(sr, "smoke", lambda site: [])
+def test_an_owner_record_that_cannot_be_written_starts_nothing(tmp_path, win, monkeypatch):
+    from backend.app.services import part_render_tree as tree
+
     data = catalog_copy(tmp_path / "data")
     app = tmp_path / "app"
-    installed(app, data)
-    own = sr.bundle_root(app) / ".staging" / "win-x64-cp312"
-    living, ended, other_boot = own / "living", own / "ended", own / "other-boot"
-    for path, survivors, boot in (
-        (living, [_identity(os.getpid())], psutil.boot_time()),
-        (ended, [[2**22 + 7, 1.0]], psutil.boot_time()),  # no such process: its writer is over
-        (other_boot, [_identity(os.getpid())], psutil.boot_time() - 86400),  # a pid of another boot proves nothing
-    ):
-        path.mkdir(parents=True)
-        (path / sr.UNPROVEN_MARKER).write_text(json.dumps({"boot": boot, "survivors": survivors}), encoding="utf-8")
-    sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
-    assert living.exists()  # a writer may live: kept
-    assert not ended.exists() and not other_boot.exists()
+    calls = []
 
+    def refuse(path, pid):
+        raise PermissionError(13, "denied")
 
-def test_an_unreadable_marker_keeps_its_staging(tmp_path, win, monkeypatch):
-    monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
-    monkeypatch.setattr(sr, "smoke", lambda site: [])
-    data = catalog_copy(tmp_path / "data")
-    app = tmp_path / "app"
-    installed(app, data)
-    kept = sr.bundle_root(app) / ".staging" / "win-x64-cp312" / "garbled"
-    kept.mkdir(parents=True)
-    (kept / sr.UNPROVEN_MARKER).write_text("{not json", encoding="utf-8")
-    sr.install(app, data_dir=data, allow_candidate=True, runner=failing)
-    assert kept.exists()
+    monkeypatch.setattr(tree, "record", refuse)
+    with pytest.raises(sr.InstallError) as failed:
+        sr.install(app, data_dir=data, allow_candidate=True, runner=lambda *a, **k: calls.append(a))
+    assert failed.value.reason == "record_unwritable" and calls == []
+    assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())  # nothing ran: nothing kept

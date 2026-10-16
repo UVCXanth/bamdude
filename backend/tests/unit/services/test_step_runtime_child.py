@@ -217,6 +217,6 @@ def test_a_group_the_os_will_not_signal_after_its_leader_was_reaped_is_still_sca
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(child.os, "killpg", refuse, raising=False)
-    monkeypatch.setattr(child.os, "getpgid", lambda pid: -1, raising=False)  # nothing left in the group
+    monkeypatch.setattr(child, "group_members", lambda group: [])  # nothing left in the group
     monkeypatch.setattr(child.signal, "SIGKILL", 9, raising=False)
     assert child._posix_group_gone(424242, timeout=1) is True

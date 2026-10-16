@@ -579,52 +579,72 @@ def _platform_lock(root: Path, key: str, timeout: float):
         yield  # the OS lock goes with the handle
 
 
-UNPROVEN_MARKER = "UNPROVEN.json"
+OWNER_RECORD = "owner.pid"
+INSTALLER = "installer"
 
 
-def _writer_may_live(marker: Path) -> bool:
-    """A staging an unproven tree left: its writer may live while this is the same boot and a recorded survivor
-    (pid + start time) is still running, or when nothing could be recorded. An unreadable marker proves nothing."""
-    import psutil
+def _writer_may_live(staging: Path) -> str | None:
+    """Why a writer of this staging may still live; None only on a positive proof that none does (Codex A-R1).
 
-    try:
-        record = json.loads(marker.read_text(encoding="utf-8"))
-        boot, survivors = float(record["boot"]), [(int(p), float(c)) for p, c in record["survivors"]]
-    except (OSError, ValueError, TypeError, KeyError):
-        return True
-    if abs(boot - psutil.boot_time()) > 1.0:
-        return False  # another boot: every process of that tree has ended
-    if not survivors:
-        return True
-    for pid, created in survivors:
-        try:
-            if psutil.Process(pid).create_time() == created:
-                return True
-        except psutil.Error:
-            continue
-    return False
+    The installer writes its owner's record, then the launch's token (both before the spawn), then the
+    bootstrap's record (before its go) — so no launch means nothing was ever started here. A record that cannot
+    be read, a process that cannot be read, a boot that cannot be told and a scan that cannot be completed all
+    keep the staging; another boot, no such process, another process under a recorded pid and a zombie prove an
+    end. A launch without its bootstrap's record: that bootstrap never got its go, so once its owner is proven
+    dead every holder of the token of the owner's user is ended. POSIX: the bootstrap led its own process group,
+    and every member must be positively gone too."""
+    from backend.app.services import part_render_tree as tree
+    from backend.app.services.step_runtime_child import group_members
+
+    if not (staging / f"{INSTALLER}.launch").exists():
+        return None
+    owner = staging / OWNER_RECORD
+    why = tree.recorded_running(owner) if owner.exists() else None
+    if why:
+        return f"owner {why}"
+    record = staging / f"{INSTALLER}.pid"
+    if record.exists():
+        why = tree.recorded_running(record)
+        if why:
+            return f"bootstrap {why}"
+        if os.name != "nt":
+            boot = tree.recorded_this_boot(record)
+            if boot is None:
+                return "bootstrap's boot unknown"
+            if boot:
+                try:
+                    group = int(json.loads(record.read_text(encoding="ascii"))["pid"])
+                except (OSError, ValueError, KeyError, TypeError):
+                    return "bootstrap record unreadable"
+                members = group_members(group)
+                if members is None:
+                    return "group scan unreadable"
+                if members:
+                    return f"group member pid={members[0]}"
+    else:
+        token = tree.launch_token(staging, INSTALLER)
+        if token is None:
+            return "launch unreadable"
+        if not tree.end_launch_holders(token, 5, tree.recorded_user(owner)):
+            return "an unreleased bootstrap not proven ended"
+    for survivor in staging.glob("survivor-*.pid"):
+        why = tree.recorded_running(survivor)
+        if why:
+            return f"survivor {why}"
+    return None
 
 
 def _reclaim_staging(own: Path) -> None:
-    """Under this platform's lock a staging of it is a dead run's — unless its tree was never proven ended and a
-    writer of it may still live (UNPROVEN_MARKER). Never another platform's."""
+    """Under this platform's lock a staging of it is a dead run's — unless a writer of it may still live
+    (``_writer_may_live``), which keeps it for a later install. Never another platform's."""
     if not own.is_dir():
         return
     for path in own.iterdir():
-        marker = path / UNPROVEN_MARKER
-        if marker.exists() and _writer_may_live(marker):
+        if not path.is_dir():
+            continue
+        if _writer_may_live(path):
             continue
         shutil.rmtree(path, ignore_errors=True)
-
-
-def _mark_unproven(staging: Path, survivors: list[list]) -> None:
-    import psutil
-
-    try:
-        record = {"boot": psutil.boot_time(), "survivors": survivors}
-        (staging / UNPROVEN_MARKER).write_text(json.dumps(record), encoding="utf-8")
-    except OSError:
-        pass  # without the marker the next install still finds a staging it cannot prove dead: none is better
 
 
 def _intact(app_dir: Path, catalog: Catalog, target: Path, closure: list[dict]) -> bool:
@@ -675,14 +695,27 @@ def install(
         try:
             req = staging / "requirements.txt"
             req.write_text(requirements(sel), encoding="utf-8")
+            from backend.app.services import part_render_tree as tree
+
             try:
-                p = runner(_pip_command(staging, req, wheels), capture_output=True, text=True, timeout=INSTALL_SECONDS)
+                tree.record(staging / OWNER_RECORD, os.getpid())  # durable before anything is launched
+            except Exception:
+                raise InstallError("record_unwritable") from None  # nothing was started: the staging goes
+            try:
+                p = runner(
+                    _pip_command(staging, req, wheels),
+                    capture_output=True,
+                    text=True,
+                    timeout=INSTALL_SECONDS,
+                    records=staging,
+                )
             except subprocess.TimeoutExpired:
                 raise InstallError("pip_timeout") from None
-            except step_runtime_child.TreeUnproven as unproven:
-                keep = True
-                _mark_unproven(staging, unproven.survivors)
+            except step_runtime_child.TreeUnproven:
+                keep = True  # its records stay: the next install judges them
                 raise InstallError("tree_unproven") from None
+            except step_runtime_child.RecordUnwritable:
+                raise InstallError("record_unwritable") from None  # never released, its end proven
             if p.returncode != 0:
                 raise InstallError("pip_failed")
             problems = verify_tree(staging / "site", closure)
@@ -692,6 +725,7 @@ def install(
             if problems:
                 raise InstallError(problems[0])
             req.unlink()
+            (staging / OWNER_RECORD).unlink(missing_ok=True)  # records never travel into a bundle
             receipt = receipt_for(catalog, sel, installed_at=iso(datetime.now(UTC)), candidate=allow_candidate)
             (staging / "receipt.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
             target.parent.mkdir(parents=True, exist_ok=True)
