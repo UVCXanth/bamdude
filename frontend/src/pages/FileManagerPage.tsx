@@ -2378,11 +2378,18 @@ export function FileManagerPage() {
     mutationFn: async () => {
       const legacy = await api.batchGenerateStlThumbnails({ all_missing: true });
       const step = hasPermission('library:update_all')
-        ? await api.createThumbnailJobs({ all_missing: true, after_id: stepCursor }).catch(() => null)
+        ? await api.createThumbnailJobs({ all_missing: true, after_id: stepCursor }).then(
+            (answer) => ({ answer, refusal: null as string | null }),
+            // the STEP half refused (jobs not running, a rights change): said, never swallowed
+            (error: unknown) => ({ answer: null, refusal: error instanceof ApiError && error.code ? error.code : 'unavailable' }),
+          )
         : null;
-      return { legacy, step };
+      return { legacy, step: step?.answer ?? null, stepRefusal: step?.refusal ?? null };
     },
-    onSuccess: ({ legacy: result, step }) => {
+    onSuccess: ({ legacy: result, step, stepRefusal }) => {
+      if (stepRefusal) {
+        showToast(t('fileManager.stepThumbnail.notQueued', { reason: t(thumbnailReasonKey(stepRefusal)) }), 'error');
+      }
       const queued = step?.results.filter((item) => item.receipt_id) ?? [];
       const refused = step?.results.filter((item) => !item.receipt_id && item.error_code) ?? [];
       if (step) {

@@ -50,7 +50,7 @@ describe('useStepThumbnailJobs', () => {
     act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }]));
     expect(result.current.activeFileIds.has(7)).toBe(true);
     await waitFor(() => expect(cb.onSucceeded).toHaveBeenCalledWith(7));
-    expect(result.current.activeFileIds.has(7)).toBe(false);
+    await waitFor(() => expect(result.current.activeFileIds.has(7)).toBe(false)); // the set follows the callback
     const after = calls;
     await new Promise((r) => setTimeout(r, 80));
     expect(calls).toBe(after); // stopped: nothing active
@@ -150,5 +150,22 @@ describe('useStepThumbnailJobs', () => {
     await act(async () => { code = await result.current.cancel(7); });
     expect(code).toBeNull();
     expect(result.current.activeFileIds.has(7)).toBe(false);
+  });
+it('a receipt tracked just as the last one ended is still polled to its end', async () => {
+    server.use(
+      http.get(JOBS, ({ request }) => {
+        const ids = new URL(request.url).searchParams.getAll('ids');
+        return answer(ids.map((id) => ({ receipt_id: id, file_id: id === 'r1' ? 7 : 8, state: 'succeeded', error_code: null })));
+      }),
+    );
+    const cb = callbacks();
+    const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 10 }));
+    cb.onSucceeded.mockImplementation((fileId: number) => {
+      // lands after the tick emptied the set and before React re-renders: the two updates batch into one
+      if (fileId === 7) queueMicrotask(() => result.current.track(EPOCH, [{ receipt_id: 'r2', file_id: 8 }]));
+    });
+    act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }]));
+    await waitFor(() => expect(cb.onSucceeded).toHaveBeenCalledWith(8), { timeout: 2000 });
+    await waitFor(() => expect(result.current.activeFileIds.size).toBe(0));
   });
 });

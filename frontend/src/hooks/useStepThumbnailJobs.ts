@@ -41,6 +41,9 @@ export function useStepThumbnailJobs(
   const maxMs = options.maxMs ?? TRACK_MAX_MS;
   const tracked = useRef(new Map<string, Tracked>());
   const callbacksRef = useRef(callbacks);
+  // Re-arms a poller whose last tick found nothing to wait for: a receipt tracked in the same batch as the update
+  // that emptied the set never makes `hasActive` false, so the effect does not run again on its own.
+  const wake = useRef<(() => void) | null>(null);
   const [activeFileIds, setActiveFileIds] = useState<ReadonlySet<number>>(() => new Set());
 
   useEffect(() => {
@@ -60,6 +63,7 @@ export function useStepThumbnailJobs(
         }
       }
       sync();
+      wake.current?.();
     },
     [sync],
   );
@@ -73,6 +77,7 @@ export function useStepThumbnailJobs(
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const tick = async () => {
+      timer = undefined;
       const now = Date.now();
       for (const [id, item] of tracked.current) {
         if (now - item.since > maxMs) {
@@ -121,13 +126,40 @@ export function useStepThumbnailJobs(
       sync();
       if (tracked.current.size > 0) {
         delay = Math.min(Math.round(delay * 1.5), pollMs * 5);
-        timer = setTimeout(tick, delay);
+        arm(delay);
       }
     };
 
-    timer = setTimeout(tick, delay);
+    let ticking = false;
+    let woken = false;
+    const arm = (ms: number) => {
+      if (!stopped && timer === undefined && tracked.current.size > 0) timer = setTimeout(run, ms);
+    };
+    const run = async () => {
+      ticking = true;
+      try {
+        await tick();
+      } finally {
+        ticking = false;
+        if (woken) {
+          woken = false; // tracked while this tick ran, possibly after it last looked: poll it
+          delay = pollMs;
+          arm(delay);
+        }
+      }
+    };
+    wake.current = () => {
+      if (ticking) {
+        woken = true;
+        return;
+      }
+      delay = pollMs;
+      arm(delay);
+    };
+    timer = setTimeout(run, delay);
     return () => {
       stopped = true;
+      wake.current = null;
       if (timer) clearTimeout(timer);
     };
   }, [hasActive, pollMs, maxMs, sync]);

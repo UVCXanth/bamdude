@@ -277,4 +277,17 @@ describe('File Manager — STEP thumbnails', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
     expect(await screen.findByText(/File not found on disk/)).toBeInTheDocument();
   });
+it('a refused STEP half of the batch says so, beside the STL result', async () => {
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () =>
+        HttpResponse.json({ processed: 1, succeeded: 1, failed: 0, results: [{ file_id: 6, filename: 'cube.stl', success: true }] }),
+      ),
+      http.post(JOBS, () =>
+        HttpResponse.json({ detail: { error: 'unavailable', message: 'STEP thumbnail jobs are not running.' } }, { status: 503 }),
+      ),
+    );
+    render(<FileManagerPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
+    expect(await screen.findByText(/STEP thumbnail not queued: the preview service is not available right now/i)).toBeInTheDocument();
+  });
 });
