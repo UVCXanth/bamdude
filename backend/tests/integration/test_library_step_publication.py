@@ -475,3 +475,53 @@ async def test_the_real_step_attempt_asks_the_authority_inside_its_attach(public
     async with publication_db() as db:
         row = await db.get(LibraryFile, source.id)
     assert row.thumbnail_path == source.thumbnail_path and not _pngs()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not __import__("os").environ.get("PREVIEW_TEST_PG_DSN"), reason="disposable PostgreSQL only")
+async def test_the_typed_cas_on_a_disposable_postgres(tmp_path, monkeypatch):
+    """The CAS SQL changed (the file type joined it): the same answers on PostgreSQL, in a fresh schema owned by
+    this run alone and dropped after it."""
+    import os
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend.app.core.database import Base, import_all_models
+
+    schema = "step_cas_" + uuid.uuid4().hex
+    engine = create_async_engine(
+        os.environ["PREVIEW_TEST_PG_DSN"], execution_options={"schema_translate_map": {None: schema}}
+    )
+    import_all_models()
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await conn.run_sync(Base.metadata.create_all)
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        monkeypatch.setattr(settings, "library_dir", tmp_path / "library")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        clean = await seed(factory)
+        async with factory() as db:
+            assert await attach_result(db, clean, png(tmp_path)) == "attached"
+        typed = await seed(factory, file_path="library/typed.step", file_hash="d" * 64)
+        async with factory() as db:
+            await db.execute(update(LibraryFile).where(LibraryFile.id == typed.id).values(file_type="stl"))
+            await db.commit()
+        async with factory() as db:
+            assert await attach_result(db, typed, png(tmp_path)) == "superseded"
+        refused = await seed(factory, file_path="library/refused.step", file_hash="e" * 64)
+
+        async def refuse(session):
+            return False
+
+        async with factory() as db:
+            assert await attach_result(db, refused, png(tmp_path), authorize=refuse) == "authority_missing"
+        async with factory() as db:
+            row = await db.get(LibraryFile, refused.id)
+        assert row.thumbnail_path == refused.thumbnail_path
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await engine.dispose()
