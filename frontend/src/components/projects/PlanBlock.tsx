@@ -55,6 +55,8 @@ export function PlanBlock({
   onDraftChanged,
   queueRequest,
   onQueueRequestClose,
+  queueOrderReady = true,
+  onQueueRequestRetry,
 }: {
   order: Order;
   canEdit: boolean;
@@ -66,8 +68,11 @@ export function PlanBlock({
    * draft. The dialog relies on this block's own notice. */
   onDraftChanged?: (changed: boolean) => void;
   /** A shortcut requests a fresh review of this editor's current plan, optionally one line. */
-  queueRequest?: { lineId?: number; requestedAt: number } | null;
+  queueRequest?: { lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean } | null;
   onQueueRequestClose?: () => void;
+  /** The view owns order captions and must finish its fresh detail read too. */
+  queueOrderReady?: boolean;
+  onQueueRequestRetry?: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -391,9 +396,13 @@ export function PlanBlock({
     split[line.line_id]?.[row.plate_id],
     Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count)),
   )));
-  const waitingForPlan = isLoading || isFetching || !plan || dataUpdatedAt < (queueRequest?.requestedAt ?? 0);
+  const waitingForPlan = queueRequest?.refreshing || !queueOrderReady
+    || isLoading || isFetching || !plan || dataUpdatedAt < (queueRequest?.requestedAt ?? 0);
+  const reviewMismatch = selectedLines.some((line) => !order.lines.some(
+    (detail) => detail.id === line.line_id && detail.product_id === line.product_id,
+  ));
   const invalidDraft = selectedItems.some((item) => item.count > MAX_PER_PLATE) || selectedSplitOff;
-  const queueBlocked = !active || !canQueue || waitingForPlan || isError || optionsBlocked || invalidDraft
+  const queueBlocked = !active || !canQueue || waitingForPlan || queueRequest?.refreshFailed || reviewMismatch || isError || optionsBlocked || invalidDraft
     || selectedItems.length === 0 || enqueue.isPending || uncertainRequest === queueRequest;
   const queueConfirmation = queueRequest && onQueueRequestClose ? (
     <ActionConfirm
@@ -418,9 +427,12 @@ export function PlanBlock({
       }}
       body={<div className="space-y-3" data-testid="plan-queue-review">
         <p>{t(queueRequest.lineId == null ? 'orders.plan.queueConfirm.orderScope' : 'orders.plan.queueConfirm.lineScope')}</p>
-        {isError ? <div role="alert">
+        {queueRequest.refreshFailed || (!waitingForPlan && reviewMismatch) ? <div role="alert">
+          <p>{t('orders.plan.queueConfirm.refreshFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={onQueueRequestRetry}>{t('orders.plan.retry')}</Button>
+        </div> : isError ? <div role="alert">
           <p>{t('orders.plan.loadFailed')}</p>
-          <Button size="sm" variant="secondary" onClick={() => void refetch()}>{t('orders.plan.retry')}</Button>
+          <Button size="sm" variant="secondary" onClick={() => onQueueRequestRetry ? onQueueRequestRetry() : void refetch()}>{t('orders.plan.retry')}</Button>
         </div> : waitingForPlan ? <p role="status">{t('common.loading')}</p> : <>
           <ul className="space-y-1">
             {[...order.lines].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)

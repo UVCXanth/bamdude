@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { formatDateTime } from '../../utils/date';
+import { formatDateTime, formatDuration } from '../../utils/date';
 import { hoursMinutes } from '../../utils/forecast';
 import { Button } from '../Button';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
@@ -66,6 +66,11 @@ export function OrderForecastPanel({
         )}
         {f.now_eta ? (
           <div>
+            {f.now_seconds != null && (
+              <p className="mb-2 text-base font-semibold text-white" data-testid="order-forecast-duration">
+                {t('orders.forecast.elapsedDuration')}: {formatDuration(f.now_seconds)}
+              </p>
+            )}
             <div
               data-testid="order-forecast-eta"
               data-tone={f.late ? 'late' : undefined}

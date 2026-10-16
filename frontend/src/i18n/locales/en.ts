@@ -6163,6 +6163,7 @@ export default {
       late: 'later than the deadline',
       noEstimate: 'No estimate',
       machineHours: 'Machine hours',
+      elapsedDuration: 'Elapsed time on the fleet if queued now',
       noModel: 'Without a model',
       printers_one: '{{count}} printer',
       printers_other: '{{count}} printers',
@@ -6449,6 +6450,7 @@ export default {
       queueOrder: 'Whole order to auto queue…',
       queueLine: 'This line’s plan to auto queue…',
       queueConfirm: {
+        refreshFailed: 'Could not refresh the order and its plan. Read both again before sending.',
         position: 'Line {{position}}',
         uncertain: 'Some tasks may already have been created. Close this review and open it again to read the remaining plan before sending anything else.',
         title: 'Send the plan to auto queue?',

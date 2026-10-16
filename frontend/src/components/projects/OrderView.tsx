@@ -73,7 +73,7 @@ export function OrderView({
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
   const [queueRequest, setQueueRequest] = useState<{
-    orderId: number; lineId?: number; requestedAt: number;
+    orderId: number; lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean;
   } | null>(null);
   // When the plan was last sent: until the forecast is read again after it, the
   // cached answer is the previous plan's and is not shown as current (R03).
@@ -92,13 +92,30 @@ export function OrderView({
   const [visited, setVisited] = useState<ReadonlySet<OrderSection>>(() => new Set([section]));
   if (!visited.has(section)) setVisited(new Set([...visited, section]));
   const reviewQueuePlan = (lineId?: number) => {
-    setQueueRequest({ orderId: id, lineId, requestedAt: Date.now() });
+    const request = { orderId: id, lineId, requestedAt: Date.now(), refreshing: true };
+    setQueueRequest(request);
     selectSection('plan');
-    // A shortcut may open an unvisited tab, or a cached plan changed elsewhere.
-    // Never review a late answer to a read started before this request.
-    const queryKey = ['project-plan', id];
-    void queryClient.cancelQueries({ queryKey })
-      .then(() => queryClient.invalidateQueries({ queryKey }));
+    // Captions belong to the order, not the plan. Read that first, then cancel
+    // any earlier plan read and ask again. Neither an old response nor one
+    // successful half of the review may enable Send. Keep the existing editor.
+    const orderKey = ['project', id];
+    const planKey = ['project-plan', id];
+    void (async () => {
+      let refreshFailed = false;
+      try {
+        await Promise.all([
+          queryClient.cancelQueries({ queryKey: orderKey, exact: true }),
+          queryClient.cancelQueries({ queryKey: planKey, exact: true }),
+        ]);
+        await queryClient.refetchQueries({ queryKey: orderKey, exact: true, type: 'active' }, { throwOnError: true });
+        await queryClient.cancelQueries({ queryKey: planKey, exact: true });
+        await queryClient.invalidateQueries({ queryKey: planKey, exact: true }, { throwOnError: true });
+      } catch {
+        refreshFailed = true;
+      }
+      // A cancelled review, another shortcut or navigation owns its own reads.
+      setQueueRequest((current) => current === request ? { ...request, refreshing: false, refreshFailed } : current);
+    })();
   };
   const tabsId = useId();
   // The plan tab's count READS the plan block's query and never fetches for itself
@@ -115,6 +132,8 @@ export function OrderView({
     isLoading,
     isError,
     error,
+    isFetching: orderFetching,
+    dataUpdatedAt: orderUpdatedAt,
   } = useOrderDetail(id);
 
   // Only an active order can still be simulated forward — a completed or
@@ -225,15 +244,27 @@ export function OrderView({
     switch (value) {
       case 'plan':
         return (
+          <div className="space-y-4">
+          {order.status === 'active' && (
+            <OrderForecastPanel
+              view={forecastNow}
+              remaining={order.figures.remaining}
+              onRetry={() => forecast.refetch()}
+              headingLevel={embedded ? 3 : 2}
+            />
+          )}
           <PlanBlock
             order={order}
             // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
             canEdit={canFileFuturePrint(hasPermission)}
             onDraftChanged={setPlanDraftChanged}
             queueRequest={queueRequest?.orderId === id ? queueRequest : null}
+            queueOrderReady={!orderFetching && !isError && orderUpdatedAt >= (queueRequest?.requestedAt ?? 0)}
+            onQueueRequestRetry={() => reviewQueuePlan(queueRequest?.lineId)}
             onQueueRequestClose={() => setQueueRequest(null)}
             onEnqueued={onPlanSent}
           />
+          </div>
         );
       case 'prints':
         return <OrderPrints order={order} canEdit={canEdit} />;
@@ -331,16 +362,8 @@ export function OrderView({
           </div>
         </WorkshopPanel>
 
-        {/* Forecast (active orders only), filament, queue, activity (WS-13 E3 G01). */}
+        {/* The forecast stays above the plan, before the table on narrow screens. */}
         <div data-testid="order-side" className="order-view-side">
-          {order.status === 'active' && (
-            <OrderForecastPanel
-              view={forecastNow}
-              remaining={order.figures.remaining}
-              onRetry={() => forecast.refetch()}
-              headingLevel={embedded ? 3 : 2}
-            />
-          )}
           <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2} />
           <OrderQueue orderId={order.id} headingLevel={embedded ? 3 : 2} />
           <OrderTimeline orderId={order.id} headingLevel={embedded ? 3 : 2} />

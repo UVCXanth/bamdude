@@ -120,6 +120,7 @@ describe('invalidateOrderViews', () => {
       'project',
       'project-archives',
       'project-plan',
+      'order-print-options',
       // spec workshop-order-stage: every order mutation writes the journal the feed shows.
       'project-timeline',
       // spec workshop-order-queue: the order's queue section moves with the plan and the lines.

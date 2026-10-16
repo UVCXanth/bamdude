@@ -114,6 +114,49 @@ def test_compatible_capacity_reserves_the_same_physical_lane():
     assert capacity.preview(p1s)[0] == 200
 
 
+def test_redundant_run_is_removed_without_losing_a_composite_parts_demand():
+    # Product A needs one of both parts. The early fast run becomes redundant
+    # when the slower mixed plate is needed for Part B anyway.
+    candidates = [_cand(1, 10, {1: 1}, secs=10, model="A1 Mini"), _cand(2, 10, {1: 1, 2: 1}, secs=20, model="P1S")]
+    capacity = FleetCapacity([FleetMachine(1, "A1 Mini"), FleetMachine(2, "P1S")])
+    rows, surplus, truncated = plan_engine.cover({1: 1, 2: 1}, candidates, {1, 2}, None, capacity)
+    assert [(r.plate_id, r.count, r.useful) for r in rows] == [(2, 1, {1: 1, 2: 1})]
+    assert surplus == {} and not truncated
+    # Product B (a later line) can still use the lane the discarded run held.
+    assert capacity.preview(candidates[0][2])[0] == 10
+
+
+def test_surplus_of_one_part_cannot_remove_a_run_needed_for_another():
+    candidates = [_cand(1, 10, {1: 20, 2: 1}, secs=10, model="P1S")]
+    rows, surplus, _ = plan_engine.cover({1: 1, 2: 3}, candidates, {1, 2}, None)
+    assert [(r.plate_id, r.count) for r in rows] == [(1, 3)]
+    assert surplus == {1: 59}
+
+
+def test_fleet_plan_has_no_individually_removable_run():
+    candidates = [
+        _cand(1, 10, {1: 9}, secs=8764, model="A1 Mini"),
+        _cand(2, 10, {1: 22}, secs=17404, model="P1S"),
+        _cand(3, 10, {1: 21}, secs=17471, model="P2S"),
+        _cand(4, 10, {1: 36}, secs=30342, model="H2D"),
+    ]
+    capacity = FleetCapacity(
+        [
+            *(FleetMachine(i, "A1 Mini", prep_seconds=120, gap_seconds=600) for i in range(6)),
+            *(FleetMachine(i, "P1S", prep_seconds=120, gap_seconds=600) for i in range(6, 11)),
+            FleetMachine(11, "P2S", prep_seconds=120, gap_seconds=600),
+            FleetMachine(12, "H2D", free_at=3600, prep_seconds=120, gap_seconds=600),
+        ]
+    )
+    rows, surplus, truncated = plan_engine.cover({1: 2514}, candidates, {1}, None, capacity)
+    yields = {p.id: r.yield_by_part[1] for p, _f, r in candidates}
+    total = sum(r.count * yields[r.plate_id] for r in rows)
+    assert total >= 2514 and not truncated
+    assert all(total - yields[r.plate_id] < 2514 for r in rows)
+    assert sum(r.useful.get(1, 0) for r in rows) == 2514
+    assert surplus == ({1: total - 2514} if total > 2514 else {})
+
+
 def test_worked_case_from_the_spec():
     c = _part(1, 10, "c", 1)
     line = _line(100, 10, 120)
