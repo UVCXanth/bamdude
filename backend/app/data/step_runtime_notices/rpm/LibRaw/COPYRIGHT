@@ -1,7 +1,7 @@
  ** LibRaw: Raw images processing library **
 
 Copyright (C) 2008-2018 LibRaw LLC (http://www.libraw.org, info@libraw.org)
-
+ 
 LibRaw is free software; you can redistribute it and/or modify
 it under the terms of the one of two licenses as you choose:
 
@@ -23,3 +23,4 @@ All rights reserved.
 
 LibRaw uses pieces of code from Adobe DNG SDK 1.4, Copyright (c) 2005 Adobe Systems Incorporated
 licensed under MIT license
+

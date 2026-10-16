@@ -1,5 +1,5 @@
-This file has been converted from the original Microsoft Rich Text
-Format document, LICENSE.RTF. It has been provided for your convenience
+This file has been converted from the original Microsoft Rich Text 
+Format document, LICENSE.RTF. It has been provided for your convenience 
 and should not be considered authoritative.
 
 ===
