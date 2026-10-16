@@ -424,20 +424,25 @@ class PreviewRuntime:
                 if result.status == "retained_error":  # the service is proven stopped: its attempt may move
                     await self._quarantine(result, path, "service")
 
-    async def _cancel(self, command):
+    async def _cancel(self, command) -> str | None:
         # Revoke in the caller first. Only a proof of END is accepted (spec §6.1): a cancel_ack after the service
         # reaped its child and joined owned I/O, or a terminal_replay of exactly this command after its run's
         # finally. A timeout the service already reached is such an end — no retirement for it. Anything else
         # (bare outcome, busy, unavailable, an uncertain service, a forged field, no reply in C_cancel) retires.
+        # Returns the stage the service's answer names: a run that never replied still says where it stopped.
+        stage = None
         if command and self.nc.is_connected:
             try:
                 reply = await self._rpc(command, "cancel", timeout=C_CANCEL_SECONDS)
                 self._service_cleanup_reply(reply, command.attempt_id)
+                if isinstance(reply, dict) and reply.get("stage") in STAGES:
+                    stage = reply["stage"]
                 if proves_end(command, reply):
-                    return
+                    return stage
             except Exception:
                 pass
         await self._retire()
+        return stage
 
     async def _monitor(self):
         while not self.closed:
@@ -699,7 +704,8 @@ class PreviewRuntime:
                 result.files.clear()
                 if command:
                     try:
-                        await owned(self._cancel(command))  # proof of end, or retire
+                        stopped_at = await owned(self._cancel(command))  # proof of end, or retire
+                        result.stage = result.stage or stopped_at
                     except asyncio.CancelledError:
                         canceled = not self.dependency_lost
                     except Exception:
@@ -711,7 +717,8 @@ class PreviewRuntime:
                     result.files.clear()
                 result.outcome = "canceled" if canceled else "unavailable"
                 try:
-                    await owned(self._cancel(command))
+                    stopped_at = await owned(self._cancel(command))
+                    result.stage = result.stage or stopped_at
                 except asyncio.CancelledError:
                     # Broker-loss callbacks may cancel this task again while
                     # the shielded retirement is being joined. The checkpoint
@@ -730,7 +737,8 @@ class PreviewRuntime:
                 )
                 if command and result.outcome in {"unavailable", "timeout", "protocol_error"}:
                     try:
-                        await owned(self._cancel(command))
+                        stopped_at = await owned(self._cancel(command))
+                        result.stage = result.stage or stopped_at
                     except asyncio.CancelledError:
                         if self.dependency_lost:
                             result.outcome = "unavailable"

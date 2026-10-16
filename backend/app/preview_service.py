@@ -168,6 +168,8 @@ class Service:
                 reply = {"outcome": "unavailable" if self.uncertain else "canceled"}
                 if isinstance(terminal, dict) and "staging_cleanup" in terminal:
                     reply["staging_cleanup"] = terminal["staging_cleanup"]
+                if isinstance(terminal, dict) and terminal.get("stage") in STAGES:
+                    reply["stage"] = terminal["stage"]  # a stopped STEP still names where it was stopped
                 if not self.uncertain:
                     reply["proof"] = proof_envelope(command, "cancel_ack")  # reaped and joined
                 return reply
@@ -308,8 +310,8 @@ class Service:
                 job_memory=JOB_COMMIT_BYTES,
                 fail_on_error=False,
             )
-        except PreviewError:
-            progress["stage"] = await disk(_marker, root) or progress["stage"]
+        except BaseException:  # a stop, a timeout and a cancel or preempt alike name where the converter was
+            progress["stage"] = await settle(disk(_marker, root)) or progress["stage"]
             raise
         finally:
             await disk(lambda: (root / "stage").unlink(missing_ok=True))
