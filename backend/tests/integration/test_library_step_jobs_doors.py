@@ -272,3 +272,20 @@ async def test_a_zip_asks_for_a_bounded_number_of_step_pictures(async_client, db
     by_name = {item["filename"]: item["thumbnail_job"] for item in response.json()["files"]}
     assert by_name["one.step"]["receipt_id"] and by_name["two.step"]["error_code"] == "queue_full"
     assert len(jobs._receipts) == 1  # the rest is refused, never queued unbounded
+
+
+@pytest.mark.asyncio
+async def test_a_restored_file_asks_for_nothing(async_client, db_session, jobs):
+    from backend.app.api.routes.library import to_absolute_path
+    from backend.app.models.library import LibraryFile
+
+    first = await async_client.post(
+        "/api/v1/library/files", files={"file": ("a.step", BOX, "application/octet-stream")}
+    )
+    row = await db_session.get(LibraryFile, first.json()["id"])
+    to_absolute_path(row.file_path).unlink()  # the row lost its bytes
+    again = await async_client.post(
+        "/api/v1/library/files", files={"file": ("b.step", BOX, "application/octet-stream")}
+    )
+    assert again.json()["outcome"] == "restored" and again.json()["thumbnail_job"] is None
+    assert len(jobs._receipts) == 1  # only the first upload's
