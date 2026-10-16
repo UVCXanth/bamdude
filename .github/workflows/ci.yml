@@ -231,6 +231,11 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     uses: ./.github/workflows/part-render-smoke.yml
 
+  step-preview-smoke:
+    needs: backend-lint
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    uses: ./.github/workflows/step-preview-smoke.yml
+
   postgres-scenarios:
     name: PostgreSQL Scenarios
     runs-on: ubuntu-latest
@@ -449,12 +454,16 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     # The production build and full integration suite exceeded the old 20-minute cap.
     timeout-minutes: 60
+    env:
+      # The test image carries the committed STEP-preview pin whatever its status; a release
+      # build (docker-publish-tag.yml) passes nothing, so a candidate pin fails it by itself.
+      STEP_PREVIEW_CANDIDATE: "1"
     steps:
       - uses: actions/checkout@v7
 
       # Test 1: Docker Build
       - name: Build production image
-        run: docker build -t bamdude:test .
+        run: docker build --build-arg STEP_PREVIEW_CANDIDATE -t bamdude:test .
 
       - name: Verify backend imports
         run: docker run --rm bamdude:test python -c "import backend.app.main; print('Backend imports OK')"
@@ -464,6 +473,13 @@ jobs:
 
       - name: Render the fixtures inside the image
         run: docker run --rm bamdude:test python -m backend.app.part_render_probe render
+
+      # The entrypoint drops to PUID 1000: both run as the app's user, read-only over the bundle, offline.
+      - name: Verify the STEP-preview bundle inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_runtime verify
+
+      - name: Render an STL and a STEP inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_render_probe
 
       # Test 2: Integration Tests
       - name: Build integration container

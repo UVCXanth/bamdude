@@ -1,0 +1,113 @@
+name: STEP Preview Smoke
+
+# One definition of the STEP-preview smoke (spec §9, plan A7): ci.yml calls it on every push and PR. Every bundle
+# key of the committed catalog has its own row — the runner it promises, the Python it names — and the row installs
+# the pinned bundle, verifies it read-only, runs the whole requires_cad lane STRICTLY (a missing bundle fails, never
+# skips) and renders a STEP fixture to a PNG through the real preview chain.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to test; empty = the caller's own commit
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: STEP Preview Smoke (${{ matrix.key }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      BAMDUDE_REQUIRE_CAD: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        # runner -> the bundle key it promises; test_step_preview_smoke_covers_every_key.py checks every key of
+        # backend/app/data/step_runtime_manifest.json has exactly one row. macos-latest is arm64, macos-15-intel x64.
+        include:
+          - { os: ubuntu-latest, python: "3.12", key: linux-x64-cp312 }
+          - { os: ubuntu-latest, python: "3.13", key: linux-x64-cp313 }
+          - { os: ubuntu-latest, python: "3.14", key: linux-x64-cp314 }
+          - { os: ubuntu-24.04-arm, python: "3.12", key: linux-arm64-cp312 }
+          - { os: ubuntu-24.04-arm, python: "3.13", key: linux-arm64-cp313 }
+          - { os: ubuntu-24.04-arm, python: "3.14", key: linux-arm64-cp314 }
+          - { os: windows-latest, python: "3.12", key: win-x64-cp312 }
+          - { os: windows-latest, python: "3.13", key: win-x64-cp313 }
+          - { os: windows-latest, python: "3.14", key: win-x64-cp314 }
+          - { os: macos-latest, python: "3.12", key: darwin-arm64-cp312 }
+          - { os: macos-latest, python: "3.13", key: darwin-arm64-cp313 }
+          - { os: macos-latest, python: "3.14", key: darwin-arm64-cp314 }
+          - { os: macos-15-intel, python: "3.12", key: darwin-x64-cp312 }
+          - { os: macos-15-intel, python: "3.13", key: darwin-x64-cp313 }
+          - { os: macos-15-intel, python: "3.14", key: darwin-x64-cp314 }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: The commit under test is the one asked for
+        shell: bash
+        env:
+          WANT: ${{ inputs.ref }}
+        run: |
+          got=$(git rev-parse HEAD); echo "testing $got"
+          if printf '%s' "$WANT" | grep -Eq '^[0-9a-f]{40}$' && [ "$got" != "$WANT" ]; then echo "::error::checked out $got, asked for $WANT"; exit 1; fi
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: System libraries of the CAD closure (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libgl1 libx11-6 libexpat1
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: The runner is the bundle key it promises
+        # a changed image behind a *-latest label fails here, loudly, instead of leaving a key untested
+        shell: bash
+        run: |
+          got=$(python -m backend.app.step_runtime select); echo "$got"
+          test "$got" = "${{ matrix.key }}"
+      - name: Install the pinned bundle
+        # the smoke tests the pin whatever its status; a release image refuses a candidate pin by itself
+        run: python -m backend.app.step_runtime install --allow-candidate
+      - name: Verify it read-only
+        run: python -m backend.app.step_runtime verify
+      - name: The requires_cad lane, strictly
+        run: python -m pytest backend/tests -m requires_cad -v --tb=short --timeout=300 --timeout-method=thread -n 1
+      - name: Runtime unit tests
+        run: >
+          python -m pytest backend/tests/unit/services/test_step_runtime_catalog.py
+          backend/tests/unit/services/test_step_runtime_install.py backend/tests/unit/services/test_step_runtime_child.py
+          backend/tests/unit/test_step_render_probe.py backend/tests/unit/test_step_preview_smoke_covers_every_key.py
+          -v --tb=short --timeout=300 --timeout-method=thread -n 1
+      - name: Render through the real preview chain
+        shell: bash
+        run: python -m backend.app.step_render_probe | tee step-probe.json
+      - name: Keep the probe report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: step-preview-${{ matrix.key }}
+          path: step-probe.json
+
+  armv7:
+    # No CAD build exists for 32-bit armhf (spec Q2): the helper must say so as exit 3 BEFORE any download — the
+    # container has no network — while the rest of BamDude is untouched (the STL path without CAD is unit-tested).
+    name: STEP Preview Smoke (linux/arm/v7, QEMU, no CAD build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm
+      - name: Unsupported, decided without a download
+        run: >
+          docker run --rm --network none --platform linux/arm/v7 -v "$PWD:/src:ro" -w /src python:3.12-slim-trixie
+          sh scripts/step_preview_armv7_smoke.sh

@@ -1,6 +1,7 @@
 """Maintainer repin tool for the STEP-preview CAD component (spec §8, §9). Never run on a user's machine.
 
 python scripts/pin_step_runtime.py --wheels <dir> --index <pypi-index.json> [--now ISO] [--check]
+python scripts/pin_step_runtime.py --upstream [--pypi-json <file>] [--now ISO]
 
 Reads the exact wheels (a local directory of downloaded files) and the PyPI JSON of both packages (saved from
 https://pypi.org/pypi/<name>/<version>/json, or the {name: {"info", "files"}} index the stage-0 research wrote),
@@ -9,6 +10,10 @@ backend/app/data/step_runtime_manifest.json + step_runtime_closure.json. The sta
 artifact was published at least MIN_AGE_DAYS before the pin (owner, Q9); otherwise ``candidate`` — installable only
 with an explicit ``--allow-candidate`` that no official build passes. ``--check`` writes nothing and exits 1 when
 the committed files differ from what the wheels and index say.
+
+``--upstream`` is the scheduled check (step-preview-pin-check.yml): it only REPORTS, one JSON line — actions (a
+newer upstream release; a candidate pin now old enough to be pinned as release) exit 2, notices only (a new Python
+ABI of the pinned release; no build yet for the next Python) exit 3, nothing exit 0. It writes nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ from backend.app.step_runtime import (  # noqa: E402
 
 NATIVE = re.compile(r"\.(so(\.\d+)*|dylib|dll|pyd)$", re.IGNORECASE)
 PYTHONS = ("cp312", "cp313", "cp314")
+NEXT_PYTHON = "cp315"
+PYPI_JSON = "https://pypi.org/pypi/cadquery-ocp-novtk/json"
 
 
 def iso(dt: datetime) -> str:
@@ -119,13 +126,73 @@ def build(wheels: Path, index: dict, now: datetime) -> tuple[dict, dict]:
     return manifest, closure_doc
 
 
+def _python_of(filename: str) -> set[str]:
+    return {t.split("-")[0] for t in wheel_tags(filename)}
+
+
+def _abi_number(python: str) -> int:
+    return int(python[2:]) if re.fullmatch(r"cp\d+", python) else -1
+
+
+def upstream_report(pypi: dict, manifest: dict, now: datetime) -> dict:
+    """What a maintainer should hear about, from the PyPI JSON of the CAD wheel and the committed manifest."""
+    from pip._vendor.packaging.version import InvalidVersion, Version
+
+    pinned = Version(dict(PACKAGES)["cadquery-ocp-novtk"])
+    releases = {}
+    for text, files in pypi.get("releases", {}).items():
+        wheels = [f for f in files if f["filename"].endswith(".whl") and not f.get("yanked")]
+        try:
+            if wheels:
+                releases[Version(text)] = wheels
+        except InvalidVersion:
+            continue
+    actions, notices = [], []
+    newer = sorted(v for v in releases if v > pinned)
+    if newer:
+        actions.append(f"new_release:{newer[-1]}")
+    if manifest["status"] == "candidate":
+        newest = max(parse_time(a["upload_time"]) for a in manifest["artifacts"])
+        if now - newest >= timedelta(days=MIN_AGE_DAYS):
+            actions.append("release_repin_due")
+    ceiling = max(_abi_number(p) for p in PYTHONS + (NEXT_PYTHON,))
+    pinned_pythons = set().union(*(_python_of(f["filename"]) for f in releases.get(pinned, [])))
+    notices += [f"new_abi:{p}" for p in sorted(pinned_pythons, key=_abi_number) if _abi_number(p) > ceiling]
+    latest = newer[-1] if newer else pinned
+    if NEXT_PYTHON not in set().union(*(_python_of(f["filename"]) for f in releases.get(latest, []))):
+        notices.append(f"no_build_for:{NEXT_PYTHON}")
+    return {"actions": actions, "notices": notices}
+
+
+def upstream_exit(report: dict) -> int:
+    return 2 if report["actions"] else 3 if report["notices"] else 0
+
+
+def _fetch_pypi() -> dict:
+    import urllib.request
+
+    request = urllib.request.Request(PYPI_JSON, headers={"User-Agent": "bamdude-step-preview-pin-check"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wheels", required=True, type=Path)
-    ap.add_argument("--index", required=True, type=Path)
+    ap.add_argument("--wheels", type=Path)
+    ap.add_argument("--index", type=Path)
     ap.add_argument("--now", help="pin time (ISO, UTC); default the current time")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--upstream", action="store_true", help="report upstream news only; writes nothing")
+    ap.add_argument("--pypi-json", type=Path, help="with --upstream: a saved PyPI JSON instead of fetching it")
     a = ap.parse_args(argv)
+    if a.upstream:
+        pypi = json.loads(a.pypi_json.read_text(encoding="utf-8")) if a.pypi_json else _fetch_pypi()
+        committed = json.loads((DATA / MANIFEST_NAME).read_text(encoding="utf-8"))
+        report = upstream_report(pypi, committed, parse_time(a.now) if a.now else datetime.now(UTC))
+        print(json.dumps(report))
+        return upstream_exit(report)
+    if a.wheels is None or a.index is None:
+        ap.error("--wheels and --index are required to pin or --check")
     if a.now:
         now = parse_time(a.now)
     elif a.check:  # the committed pin's own time, or every check would be stale
