@@ -96,8 +96,8 @@ jobs:
           path: step-probe.json
 
   armv7:
-    # No CAD build exists for 32-bit armhf (spec Q2): the helper must say so as exit 3 BEFORE any download — the
-    # container has no network — while the rest of BamDude is untouched (the STL path without CAD is unit-tested).
+    # No CAD build exists for 32-bit armhf (spec Q2): the helper must say so as exit 3 BEFORE any download — that
+    # container has no network — and the app's STL pictures must still render on a real armhf userland.
     name: STEP Preview Smoke (linux/arm/v7, QEMU, no CAD build)
     runs-on: ubuntu-latest
     steps:
@@ -111,3 +111,7 @@ jobs:
         run: >
           docker run --rm --network none --platform linux/arm/v7 -v "$PWD:/src:ro" -w /src python:3.12-slim-trixie
           sh scripts/step_preview_armv7_smoke.sh
+      - name: STL pictures still work on armhf
+        run: >
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/src:ro" -w /src debian:trixie-slim
+          sh scripts/step_preview_armv7_stl_smoke.sh

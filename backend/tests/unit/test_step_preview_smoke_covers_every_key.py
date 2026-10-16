@@ -39,10 +39,15 @@ def test_every_row_checks_the_key_it_promises_and_runs_the_lane_strictly():
     assert "step_runtime verify" in runs and "step_render_probe" in runs
 
 
-def test_the_armv7_job_decides_without_a_network():
+def test_the_armv7_job_decides_without_a_network_and_renders_an_stl():
     job = _jobs()["armv7"]
-    assert "--network none" in _runs(job) and "linux/arm/v7" in _runs(job)
-    assert (ROOT / "scripts" / "step_preview_armv7_smoke.sh").is_file()
+    runs = _runs(job)
+    assert "--network none" in runs and "linux/arm/v7" in runs
+    assert (
+        "step_preview_armv7_smoke.sh" in runs and "step_preview_armv7_stl_smoke.sh" in runs
+    )  # app/STL, not only exit 3
+    for script in ("step_preview_armv7_smoke.sh", "step_preview_armv7_stl_smoke.sh"):
+        assert (ROOT / "scripts" / script).is_file()
 
 
 def test_the_scheduled_pin_check_can_write_nothing():
