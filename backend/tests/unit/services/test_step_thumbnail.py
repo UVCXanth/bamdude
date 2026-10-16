@@ -242,3 +242,48 @@ def test_result_json_is_bounded_and_closed(tmp_path):
     rc, result, _ = run_converter(tmp_path, None, tmp_path)
     assert result["outcome"] == "render_failed" and math.isfinite(result["elapsed_s"])
     assert set(result) <= {"pid", "outcome", "why", "stage", "elapsed_s"}
+
+
+# --- a reader holding a file open (the parent's poll, an antivirus scan) ----------------------------------------
+# On Windows os.replace onto a file another handle holds open fails with a sharing violation. Measured on the real
+# chain: a dense STEP ended render_failed (why=PermissionError) once in 30 runs while its stage marker was read.
+
+
+def _hold(path: Path, seconds: float):
+    import threading
+
+    handle = open(path, "rb")  # noqa: SIM115 — held on purpose, closed by the timer
+    timer = threading.Timer(seconds, handle.close)
+    timer.start()
+    return timer, handle
+
+
+def test_a_held_stage_marker_never_fails_the_conversion(tmp_path, monkeypatch):
+    import backend.app.services.step_thumbnail as child
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / child.STAGE).write_text("transfer", encoding="ascii")
+    timer, handle = _hold(tmp_path / child.STAGE, 60)  # held for the whole call
+    result = {}
+    try:
+        child._stage(result, "mesh")  # never raises: the marker is diagnostics only
+    finally:
+        handle.close()
+        timer.cancel()
+    assert result["stage"] == "mesh"  # the stage still travels in result.json
+
+
+def test_a_briefly_held_marker_or_result_is_still_written(tmp_path, monkeypatch):
+    import backend.app.services.step_thumbnail as child
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / child.STAGE).write_text("transfer", encoding="ascii")
+    timer, _ = _hold(tmp_path / child.STAGE, 0.03)
+    child._stage({}, "mesh")
+    timer.join()
+    assert (tmp_path / child.STAGE).read_text(encoding="ascii") == "mesh"
+    (tmp_path / child.RESULT).write_text("{}", encoding="utf-8")
+    timer, _ = _hold(tmp_path / child.RESULT, 0.03)
+    child._write_result({"outcome": "ok", "stage": "mesh_write"})
+    timer.join()
+    assert json.loads((tmp_path / child.RESULT).read_text(encoding="utf-8"))["outcome"] == "ok"

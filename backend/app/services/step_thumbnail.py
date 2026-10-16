@@ -131,13 +131,32 @@ def _native_crash() -> None:
 STAGE = "stage"
 
 
+_REPLACE_DELAYS = (0.005, 0.02, 0.05, 0.1)  # ~0.2 s in all
+
+
+def _replace(source: str, target: str) -> None:
+    """os.replace with a short bounded retry: on Windows a reader that holds the target open (an antivirus scan, a
+    poll of the marker) makes the rename fail with a sharing violation for as long as it holds it."""
+    for delay in _REPLACE_DELAYS:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(source, target)
+
+
 def _stage(result: dict, name: str) -> None:
     """The stage in result.json AND in a one-word marker, renamed into place: a child stopped by the parent's
-    watchdog or deadline writes no result, but the parent can still log where it was (bounded enum)."""
+    watchdog or deadline writes no result, but the parent can still log where it was (bounded enum). The marker is
+    diagnostics only — one that cannot be written after the retry is skipped and never fails the conversion."""
     result["stage"] = name
-    with open(STAGE + ".part", "w", encoding="ascii") as f:
-        f.write(name)
-    os.replace(STAGE + ".part", STAGE)
+    try:
+        with open(STAGE + ".part", "w", encoding="ascii") as f:
+            f.write(name)
+        _replace(STAGE + ".part", STAGE)
+    except OSError:
+        pass
 
 
 def _write_result(result: dict) -> None:
@@ -148,7 +167,7 @@ def _write_result(result: dict) -> None:
         ).encode()
     with open(RESULT + ".part", "wb") as f:
         f.write(data)
-    os.replace(RESULT + ".part", RESULT)
+    _replace(RESULT + ".part", RESULT)
 
 
 def _remove_own_outputs() -> None:
@@ -404,7 +423,7 @@ def convert(cfg: dict, result: dict) -> None:
                     raise OSError("interrupted write (test seam)")
     if written != count or os.path.getsize(OUTPUT + ".part") != 84 + 50 * count:
         raise Refusal("render_failed", "stl_size")
-    os.replace(OUTPUT + ".part", OUTPUT)
+    _replace(OUTPUT + ".part", OUTPUT)
     result.update(
         outcome="ok",
         why=None,
