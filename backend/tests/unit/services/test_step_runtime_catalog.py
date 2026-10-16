@@ -189,7 +189,7 @@ def test_pip_command_is_isolated_hash_pinned_binary_only(tmp_path, monkeypatch):
     for flag in ("--isolated", "--target", "--no-deps", "--only-binary=:all:", "--require-hashes", "--no-cache-dir"):
         assert flag in cmd
     assert "--no-index" in cmd and "--find-links" in cmd
-    staging = tmp_path / "app" / "runtime" / "step-preview" / ".staging"
+    staging = tmp_path / "app" / "runtime" / "step-preview" / ".staging" / "win-x64-cp312"  # staging is per platform
     assert not staging.exists() or not any(staging.iterdir())  # a failed install leaves no staging of its own
 
 

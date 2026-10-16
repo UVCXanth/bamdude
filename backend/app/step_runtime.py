@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import csv
 import hashlib
 import json
@@ -26,6 +27,7 @@ import struct
 import subprocess
 import sys
 import sysconfig
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -91,9 +93,10 @@ class Unsupported(Exception):
 class InstallError(Exception):
     """Install/import/DLL/smoke failure (exit 1)."""
 
-    def __init__(self, reason: str):
-        super().__init__(reason)
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
+        self.detail = detail
 
 
 def canonical(obj) -> bytes:
@@ -462,47 +465,129 @@ def _pip_command(staging: Path, req: Path, wheels: Path | None) -> list[str]:
     return cmd
 
 
+# The Windows loader opens a native library by a path of at most MAX_PATH - 1 UTF-16 units, LongPathsEnabled or not
+# (measured 2026-10-16: an install whose deepest library lay at 271 failed its smoke as `import`, at 203 it passed).
+PATH_LIMIT = 259 if sys.platform == "win32" else None
+
+
+def _deepest_library(staging_site: Path, closure: list[dict]) -> int:
+    longest = max((len(lib["path"]) for lib in closure), default=0)
+    return len(str(staging_site.absolute()).encode("utf-16-le")) // 2 + 1 + longest
+
+
+_LOCK_POLL = 0.25
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _try_lock(handle) -> bool:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except PermissionError:  # another process holds the byte
+            return False
+        return True
+
+else:
+    import fcntl
+
+    def _try_lock(handle) -> bool:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+
+@contextlib.contextmanager
+def _platform_lock(root: Path, key: str, timeout: float):
+    """One install of a platform+ABI at a time: a lock file the OS releases when its holder ends, however it ends.
+    Both locks are per open handle, so two threads of one process exclude each other too. The file stays: removing
+    it would race an install opening it."""
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / f".{key}.lock").open("a+b") as handle:
+        deadline = time.monotonic() + timeout
+        while not _try_lock(handle):
+            if time.monotonic() >= deadline:
+                raise InstallError("lock_timeout")
+            time.sleep(_LOCK_POLL)
+        yield  # the OS lock goes with the handle
+
+
+def _reclaim_staging(own: Path) -> None:
+    """Under this platform's lock every staging of it is a dead run's: remove them all — never another platform's."""
+    if not own.is_dir():
+        return
+    for path in own.iterdir():
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def install(
     app_dir: Path,
     *,
     wheels: Path | None = None,
     allow_candidate: bool = False,
     data_dir: Path = DATA,
-    runner=subprocess.run,
+    runner=None,
 ) -> Path:
+    """Install this interpreter's bundle under its platform+ABI lock: an owned staging of its own key, pip through
+    the whole-tree launcher, verify, smoke, one rename. A failed or interrupted install removes only its own
+    staging — never the last good bundle, another digest or another platform; a tree whose end is not proven keeps
+    its staging (a writer may live)."""
+    from backend.app.services import step_runtime_child
+
+    runner = runner or step_runtime_child.run_tree
     catalog = load_catalog(data_dir)
     sel = select(catalog)  # Unsupported -> exit 3, before any network or file
     if catalog.manifest["status"] != "release" and not allow_candidate:
         raise InstallError("candidate_pin")
+    closure = catalog.closure["artifacts"][sel.wheel["filename"]]
     target = bundle_dir(app_dir, sel.key, catalog.digest)
-    if locate(app_dir, catalog).ok:
-        return target
-    staging = bundle_root(app_dir) / ".staging" / uuid.uuid4().hex
-    staging.mkdir(parents=True)
-    try:
-        req = staging / "requirements.txt"
-        req.write_text(requirements(sel), encoding="utf-8")
-        p = runner(_pip_command(staging, req, wheels), capture_output=True, text=True, timeout=INSTALL_SECONDS)
-        if p.returncode != 0:
-            raise InstallError("pip_failed")
-        problems = verify_tree(staging / "site", catalog.closure["artifacts"][sel.wheel["filename"]])
-        if problems:
-            raise InstallError(f"verify_failed:{problems[0]}")
-        problems = smoke(staging / "site")
-        if problems:
-            raise InstallError(problems[0])
-        req.unlink()
-        receipt = receipt_for(catalog, sel, installed_at=iso(datetime.now(UTC)), candidate=allow_candidate)
-        (staging / "receipt.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staging, target)
-        return target
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+    root = bundle_root(app_dir)
+    if PATH_LIMIT is not None:  # staging is longer than the final bundle, so it bounds both
+        deepest = _deepest_library(root / ".staging" / sel.key / ("0" * 32) / "site", closure)
+        if deepest > PATH_LIMIT:
+            raise InstallError("path_too_long", f"deepest library {deepest} > {PATH_LIMIT}; choose a shorter app dir")
+    with _platform_lock(root, sel.key, INSTALL_SECONDS):
+        _reclaim_staging(root / ".staging" / sel.key)
+        if locate(app_dir, catalog).ok:
+            return target
+        staging = root / ".staging" / sel.key / uuid.uuid4().hex
+        staging.mkdir(parents=True)
+        keep = False
+        try:
+            req = staging / "requirements.txt"
+            req.write_text(requirements(sel), encoding="utf-8")
+            try:
+                p = runner(_pip_command(staging, req, wheels), capture_output=True, text=True, timeout=INSTALL_SECONDS)
+            except subprocess.TimeoutExpired:
+                raise InstallError("pip_timeout") from None
+            except step_runtime_child.TreeUnproven:
+                keep = True
+                raise InstallError("tree_unproven") from None
+            if p.returncode != 0:
+                raise InstallError("pip_failed")
+            problems = verify_tree(staging / "site", closure)
+            if problems:
+                raise InstallError(f"verify_failed:{problems[0]}")
+            problems = smoke(staging / "site")
+            if problems:
+                raise InstallError(problems[0])
+            req.unlink()
+            receipt = receipt_for(catalog, sel, installed_at=iso(datetime.now(UTC)), candidate=allow_candidate)
+            (staging / "receipt.json").write_text(json.dumps(receipt, indent=1), encoding="utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(staging, target)
+            except OSError:
+                raise InstallError("rename_failed") from None
+            return target
+        finally:
+            if not keep and staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
 
 
-def main(argv: list[str] | None = None, *, runner=subprocess.run, data_dir: Path = DATA) -> int:
+def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -> int:
     ap = argparse.ArgumentParser(prog="python -m backend.app.step_runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("install", "verify", "select", "requirements"):
@@ -538,7 +623,10 @@ def main(argv: list[str] | None = None, *, runner=subprocess.run, data_dir: Path
         print(json.dumps({"ok": False, "reason": "unsupported", "detail": str(exc)}))
         return EXIT_UNSUPPORTED
     except (CatalogError, InstallError) as exc:
-        print(json.dumps({"ok": False, "reason": getattr(exc, "reason", "failed")}))
+        answer = {"ok": False, "reason": getattr(exc, "reason", "failed")}
+        if getattr(exc, "detail", ""):
+            answer["detail"] = exc.detail
+        print(json.dumps(answer))
         return EXIT_FAILED
     except Exception as exc:  # a closed answer; the traceback is not shown to the operator
         print(json.dumps({"ok": False, "reason": type(exc).__name__}))

@@ -47,6 +47,32 @@ class WorkerContainment:
             _close_windows_handle(self._job_handle)
             self._job_handle = None
 
+    def end_tree(self, timeout: float) -> bool:
+        """Windows: terminate every process of the job, then wait until the job reports none active — the proof a
+        bare close does not give. True when proven within ``timeout``. (POSIX callers own a process group.)"""
+        if self._job_handle is None:
+            return True
+        import time
+
+        kernel32 = _windows_kernel32()
+        kernel32.TerminateJobObject(ctypes.c_void_p(self._job_handle), 1)
+        deadline = time.monotonic() + timeout
+        info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+        while True:
+            if not kernel32.QueryInformationJobObject(
+                ctypes.c_void_p(self._job_handle),
+                _JOB_OBJECT_BASIC_ACCOUNTING,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+                None,
+            ):
+                return False
+            if info.ActiveProcesses == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
 
 def _assign_windows_kill_on_close_job(pid: int, job_memory_limit: int | None = None) -> int:
     """Attach ``pid`` before it receives any worker bootstrap input."""
@@ -121,9 +147,20 @@ def _windows_kernel32() -> ctypes.WinDLL:
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+    )
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
     return kernel32
 
 
+_JOB_OBJECT_BASIC_ACCOUNTING = 1
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
@@ -155,6 +192,19 @@ class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
         ("Affinity", _ULONG_PTR),
         ("PriorityClass", ctypes.c_ulong),
         ("SchedulingClass", ctypes.c_ulong),
+    ]
+
+
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_longlong),
+        ("TotalKernelTime", ctypes.c_longlong),
+        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+        ("TotalPageFaultCount", ctypes.c_ulong),
+        ("TotalProcesses", ctypes.c_ulong),
+        ("ActiveProcesses", ctypes.c_ulong),
+        ("TotalTerminatedProcesses", ctypes.c_ulong),
     ]
 
 
