@@ -427,17 +427,49 @@ def locate(app_dir: Path, catalog: Catalog | None = None) -> Located:
     return Located(True, None, sel.key, target / "site", target, catalog.digest)
 
 
+_SYSCONFIG_PLATFORMS = {"win-amd64": "win-x64", "linux-x86_64": "linux-x64", "linux-aarch64": "linux-arm64"}
+_MACOS_PLATFORM = re.compile(r"macosx-[\d.]+-(x86_64|arm64|universal2)\Z")
+
+
+def _python_tag() -> str:
+    return f"cp{sys.version_info[0]}{sys.version_info[1]}" if sys.implementation.name == "cpython" else "other"
+
+
+def _surely_unsupported(catalog: Catalog) -> bool:
+    """Without pip: True only when no catalog key can serve this interpreter — its platform is none of the five the
+    catalog knows, or its ABI none of the catalog's for that platform. Anything it cannot tell (a universal2 macOS
+    interpreter, a musl Linux reporting linux-x86_64) is NOT unsupported: a missing bundle there stays a failure.
+    A reason only, never a selection — install selects with pip's own decoder."""
+    keys = {a["key"] for a in catalog.manifest["artifacts"] if a["key"]}
+    plat = sysconfig.get_platform()
+    mac = _MACOS_PLATFORM.match(plat)
+    if mac:
+        if mac.group(1) == "universal2":
+            return False
+        family = "darwin-x64" if mac.group(1) == "x86_64" else "darwin-arm64"
+    elif plat in _SYSCONFIG_PLATFORMS:
+        family = _SYSCONFIG_PLATFORMS[plat]
+    else:
+        return True
+    return f"{family}-{_python_tag()}" not in keys
+
+
 def refine_missing(found: Located) -> Located:
-    """'not_installed' on an interpreter no artifact serves is 'unsupported' — asked of pip's decoder only when pip
-    is there to ask (a reason, never a selection)."""
+    """'not_installed' on an interpreter no artifact serves is 'unsupported': pip's decoder answers when pip is
+    there to ask; without it (the final Docker image) only a platform or ABI the catalog surely lacks counts."""
     if found.reason != "not_installed":
         return found
     try:
-        select(load_catalog())
+        catalog = load_catalog(decode_tags=False)
+    except CatalogError:
+        return found
+    try:
+        select(catalog, interpreter_tags())
     except Unsupported:
         return Located(False, "unsupported")
-    except (ImportError, CatalogError):
-        pass
+    except ImportError:
+        if _surely_unsupported(catalog):
+            return Located(False, "unsupported")
     return found
 
 

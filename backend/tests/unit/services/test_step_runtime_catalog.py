@@ -407,3 +407,27 @@ def test_both_doors_that_name_the_bundle_work_without_pip(tmp_path):
     )
     assert rc == 0, line
     assert json.loads(line) == {"cad": {"manifest_digest": digest, "bundle_key": sel.key}, "site": True}
+
+
+@pytest.mark.parametrize(
+    ("platform", "python", "expected"),
+    [
+        ("linux-armv7l", None, [3, ["unsupported"]]),  # a 32-bit Pi image: no pip, no CAD build
+        ("win32", None, [3, ["unsupported"]]),
+        ("linux-x86_64", "cp311", [3, ["unsupported"]]),  # below the catalog's ABIs
+        ("linux-x86_64", None, [1, ["not_installed"]]),  # supported here: a missing bundle stays a failure
+        ("macosx-11.0-universal2", None, [1, ["not_installed"]]),  # cannot tell without pip: never "unsupported"
+    ],
+)
+def test_without_pip_only_a_platform_the_catalog_surely_lacks_is_unsupported(tmp_path, platform, python, expected):
+    """The final Docker image has no pip: verify must still tell an armv7 image (exit 3) from a supported platform
+    whose bundle is missing (exit 1) — or the image build fails on an architecture it is meant to skip."""
+    code = (
+        "import json, sysconfig\nfrom pathlib import Path\nfrom backend.app import step_runtime as sr\n"
+        "sysconfig.get_platform = lambda: sys.argv[2]\n"
+        "if sys.argv[3]:\n    sr._python_tag = lambda: sys.argv[3]\n"
+        "print(json.dumps(list(sr.verify(Path(sys.argv[1])))))\n"
+    )
+    rc, line = _without_pip(code, str(tmp_path), platform, python or "")
+    assert rc == 0, line
+    assert json.loads(line) == expected
