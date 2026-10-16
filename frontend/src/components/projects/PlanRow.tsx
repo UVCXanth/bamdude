@@ -220,7 +220,7 @@ export function PlanRow({
               value={count}
               aria-label={t('orders.plan.row.count')}
               onChange={(e) => onCount(parseCount(e.currentTarget.value, count))}
-              className="w-12 px-1.5 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
+              className="w-24 shrink-0 px-1.5 py-1 text-right tabular-nums bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:border-bambu-green focus:outline-none"
             />
             <button
               type="button"
