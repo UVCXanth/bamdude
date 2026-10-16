@@ -11543,7 +11543,7 @@ async def lifespan(app: FastAPI):
     from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime
 
     await start_preview_runtime(Path(app_settings.base_dir), Path(app_settings.app_dir))
-    from backend.app.services.library_preview_jobs import start_library_preview_jobs, stop_library_preview_jobs
+    from backend.app.services.library_preview_jobs import start_library_preview_jobs, stop_library_preview_jobs_within
 
     start_library_preview_jobs()  # volatile: nothing from an earlier process is replayed
     from backend.app.services.analysis_runtime import start_analysis_runtime, stop_analysis_runtime
@@ -11573,7 +11573,8 @@ async def lifespan(app: FastAPI):
     from backend.app.services import part_images
 
     await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
-    if not await stop_library_preview_jobs("shutdown"):  # jobs before the runtime their attempts run on
+    # jobs before the runtime their attempts run on; bounded, so a job stuck on a hung share cannot hold shutdown
+    if not await stop_library_preview_jobs_within("shutdown", 10):
         logging.getLogger(__name__).warning("Library preview jobs did not prove their end at shutdown")
     await stop_preview_runtime()
     await ws_manager.shutdown()

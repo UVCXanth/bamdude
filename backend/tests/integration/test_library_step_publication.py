@@ -607,3 +607,27 @@ async def test_on_sqlite_the_authority_is_read_holding_the_write_lock(publicatio
     async with publication_db() as db:
         assert await attach_result(db, source, png(tmp_path), authorize=authorize) == "attached"
     assert seen["another_writer"] == "database is locked"
+
+
+@pytest.mark.asyncio
+async def test_a_job_stuck_on_a_hung_share_makes_the_quiesce_unproven_not_endless(monkeypatch):
+    """A STEP job reading a hung NAS cannot be cancelled out of its owned disk call: the restore must answer 409
+    within its budget instead of hanging with it (review A-m9)."""
+    import time as _time
+
+    from backend.app.services import library_preview_jobs as jobs_module
+
+    hung = asyncio.Event()
+
+    async def stuck(cause="shutdown"):
+        await hung.wait()
+        return True
+
+    monkeypatch.setattr(jobs_module, "stop_library_preview_jobs", stuck)
+    started = _time.monotonic()
+    try:
+        assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=0.3) is False
+        assert _time.monotonic() - started < 5
+    finally:
+        hung.set()
+        await asyncio.sleep(0)  # the stop left running ends with the share

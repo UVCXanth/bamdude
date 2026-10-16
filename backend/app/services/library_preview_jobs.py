@@ -679,6 +679,20 @@ def get_library_preview_jobs() -> LibraryPreviewJobs | None:
     return jobs
 
 
+_left_running: set[asyncio.Future] = set()
+
+
+async def stop_library_preview_jobs_within(cause: str, seconds: float) -> bool:
+    """The stop, bounded: a job inside an owned read of a hung share cannot be cancelled out of it. Past ``seconds``
+    the stop goes on running and proves itself later; the caller is answered False now — a restore is refused
+    instead of hanging with the share, a shutdown goes on without the proof."""
+    stopping = asyncio.ensure_future(stop_library_preview_jobs(cause))
+    _left_running.add(stopping)
+    stopping.add_done_callback(_left_running.discard)
+    done, _ = await asyncio.wait({stopping}, timeout=seconds)
+    return stopping in done and not stopping.cancelled() and stopping.exception() is None and stopping.result()
+
+
 async def quiesce_library_previews_for_restore(*, drain_seconds: float = 30.0) -> bool:
     """Before a restore touches files or the database (spec §4.3): close library preview publication for good
     (legacy STL/OBJ and sliced-source attaches included), stop the jobs with a new epoch, wait for every lease
@@ -688,7 +702,7 @@ async def quiesce_library_previews_for_restore(*, drain_seconds: float = 30.0) -
     from backend.app.services.preview_runtime import stop_preview_runtime
 
     library_preview.publication.close()
-    jobs_quiet = await stop_library_preview_jobs("restore")
+    jobs_quiet = await stop_library_preview_jobs_within("restore", drain_seconds)
     drained = await library_preview.publication.drain(drain_seconds)
     runtime_quiet = await stop_preview_runtime()
     proven = jobs_quiet and drained and runtime_quiet
