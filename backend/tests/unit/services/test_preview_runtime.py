@@ -793,8 +793,31 @@ print('EMBEDDED_PREVIEW_OK')
     assert "EMBEDDED_PREVIEW_OK" in result.stdout
 
 
+async def _loop_heartbeat(gaps, stopped):
+    previous = time.perf_counter()
+    while not stopped.is_set():
+        await asyncio.sleep(0.02)
+        now = time.perf_counter()
+        gaps.append(now - previous)
+        previous = now
+
+
 @pytest.mark.asyncio
-async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime, tmp_path):
+async def test_loop_heartbeat_still_detects_a_blocked_loop():
+    gaps, stopped = [], asyncio.Event()
+    heartbeat = asyncio.create_task(_loop_heartbeat(gaps, stopped))
+    try:
+        await asyncio.sleep(0)  # heartbeat is waiting before the deliberate loop block
+        time.sleep(0.08)
+    finally:
+        stopped.set()
+        await heartbeat
+    assert max(gaps) >= 0.08
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic_delay", [0, 1.1], ids=["normal-sample", "slow-sample"])
+async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime, tmp_path, diagnostic_delay):
     import json
     import statistics
     from types import SimpleNamespace
@@ -858,6 +881,23 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                 continue
         return total
 
+    def sample_resources():
+        # These are diagnostic system calls, not application work. Never block the
+        # loop being measured, or count an awaited disk sample as a loop stall.
+        time.sleep(diagnostic_delay)
+        process = psutil.Process()
+        try:
+            tree = [process, *process.children(recursive=True)]
+            memory.append(sum(p.memory_info().rss for p in tree))
+            for p in tree:
+                times = p.cpu_times()
+                current = times.user + times.system
+                first, _ = cpu.get(p.pid, (current if p.pid == process.pid else 0, current))
+                cpu[p.pid] = (first, current)
+            disks.append(disk_bytes())
+        except psutil.NoSuchProcess:
+            pass
+
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for _ in range(10):
             before = time.perf_counter()
@@ -869,15 +909,23 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
             async with local_runtime.attempt({"mesh": (mesh, "stl")}) as result:
                 assert result.outcome == "ok"
 
+        stopped = asyncio.Event()
+        heartbeat = asyncio.create_task(_loop_heartbeat(gaps, stopped))
+
+        async def resources():
+            while not stopped.is_set():
+                await disk(sample_resources)
+                await asyncio.sleep(0.02)
+
+        sampling = asyncio.create_task(resources())
+        await asyncio.sleep(0)
         tasks = [
             asyncio.create_task(render()),
             *[asyncio.create_task(get_print_file_analysis(manager, 77, 123, archive_path, None)) for _ in range(100)],
         ]
         try:
-            previous = time.perf_counter()
             while not all(task.done() for task in tasks):
                 before = time.perf_counter()
-                gaps.append(before - previous)
                 assert (await client.get("/health")).status_code == 200
                 latencies.append(time.perf_counter() - before)
                 delivered.clear()
@@ -885,21 +933,11 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                 await sockets.broadcast({"type": "probe"})
                 await asyncio.wait_for(delivered.wait(), 0.2)
                 ws_latencies.append(time.perf_counter() - sent)
-                process = psutil.Process()
-                try:
-                    tree = [process, *process.children(recursive=True)]
-                    memory.append(sum(p.memory_info().rss for p in tree))
-                    for p in tree:
-                        times = p.cpu_times()
-                        current = times.user + times.system
-                        first, _ = cpu.get(p.pid, (current if p.pid == process.pid else 0, current))
-                        cpu[p.pid] = (first, current)
-                    disks.append(await disk(disk_bytes))
-                except psutil.NoSuchProcess:
-                    pass
-                previous = before
                 await asyncio.sleep(0.02)
             _, *analyses = await asyncio.gather(*tasks)
+            stopped.set()
+            await sampling  # join the diagnostic thread before reading its last sample
+            await heartbeat
             assert analyses[0] is not None
             assert all(analysis is analyses[0] for analysis in analyses)
             assert manager._print_file_analysis_contexts[77].state == "ready"
@@ -910,6 +948,8 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
             assert p95 < 0.2
             assert max(gaps) < 1
         finally:
+            stopped.set()
+            await asyncio.gather(sampling, heartbeat, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

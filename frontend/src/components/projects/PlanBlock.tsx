@@ -450,7 +450,7 @@ export function PlanBlock({
           })}</p>
           {selectedItems.length === 0 && <p>{t('orders.plan.nothingOutstanding')}</p>}
           {(plan?.truncated || selectedLines.some((line) => line.unsatisfiable.length > 0 || line.not_sliced.length > 0))
-            && <p className="text-amber-500">{t('orders.plan.queueConfirm.incomplete')}</p>}
+            && <p className="text-amber-700 dark:text-amber-300">{t('orders.plan.queueConfirm.incomplete')}</p>}
         </>}
         {optionsBlocked && <p role="alert">{t('orderPrintOptions.unsaved')}</p>}
         {uncertainRequest === queueRequest && <p role="status">{t('orders.plan.queueConfirm.uncertain')}</p>}

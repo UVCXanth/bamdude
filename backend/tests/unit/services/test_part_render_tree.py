@@ -207,18 +207,31 @@ def test_an_unrecorded_launch_whose_parent_is_not_proven_dead_is_not_over(tmp_pa
     assert not generation_gone(generation)
 
 
-def test_a_live_recorded_process_of_an_earlier_generation_is_killed_not_waved_through(tmp_path):
+@pytest.mark.parametrize("scan_why", [None, "a possible holder unreadable"], ids=["clear-scan", "unproven-scan"])
+def test_a_live_recorded_process_of_an_earlier_generation_is_killed_not_waved_through(tmp_path, monkeypatch, scan_why):
     """Consilium E3-I-R1: valid positive evidence of a live process is acted on, whatever any scan says."""
-    from backend.app.services.part_render_tree import generation_gone
+    from backend.app.services import part_render_tree as tree
 
     generation, attempt = _generation(tmp_path)
     _dead(generation / "owner.pid")
     alive = _spawn()
+    scans = []
+
+    def holders(marker, owner):
+        # The record must kill its real process BEFORE the token scan, even when
+        # that scan cannot exclude another holder. The host's unrelated processes
+        # are not the subject of this test; real scans have their own orphan tests.
+        assert alive.poll() is not None
+        scans.append((marker, owner))
+        return [], scan_why
+
+    monkeypatch.setattr(tree, "_holders_why", holders)
     try:
-        launch(attempt, "node")
+        token = launch(attempt, "node")
         record(attempt / "node.pid", alive.pid)
-        assert generation_gone(generation)
+        assert tree.generation_gone(generation) is (scan_why is None)
         assert alive.wait(timeout=5) is not None  # killed by the proof
+        assert scans == [(tree.launch_arg(token), tree._run_owner(generation))]
     finally:
         if alive.poll() is None:
             alive.kill()
