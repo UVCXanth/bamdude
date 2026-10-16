@@ -132,6 +132,16 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext, tg_chat: Telegra
     await callback.message.edit_text(escape_md(t(lang, NS, "library.upload.cancelled")))
 
 
+def _chat_authority(tg_chat, authority_type):
+    """The chat as the actor of a new file's picture — its row id with its (provider, chat) pair. Never "all
+    allowed" for a missing chat, and never a reason the file itself is not saved: an incomplete identity is no
+    descriptor (authority_missing for a STEP picture), not an error."""
+    identity = tuple(getattr(tg_chat, name, None) for name in ("id", "provider_id", "chat_id"))
+    if tg_chat is None or not all(isinstance(value, int) for value in identity):
+        return None
+    return authority_type.telegram_chat(*identity)
+
+
 @router.callback_query(F.data.startswith("libup:folder:"), LibraryUploadState.choosing_folder)
 async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
     """Folder picked — now fetch the bytes and store them."""
@@ -141,6 +151,7 @@ async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: 
     from backend.app.api.routes.library import store_library_upload
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFolder
+    from backend.app.services.library_preview_jobs import Authority
 
     lang = await get_language()
     data = await state.get_data()
@@ -172,6 +183,7 @@ async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: 
                 filename=file_name,
                 content=buf.getvalue(),
                 target_folder=folder,
+                authority=_chat_authority(tg_chat, Authority),
             )
             # ⚠️ ``result.file`` may be a row this upload did not create — the
             # bytes were already in the library, so that row is what gets used.

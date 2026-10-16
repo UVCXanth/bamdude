@@ -851,11 +851,11 @@ def get_preview_health() -> PreviewHealth:
     return runtime.health() if runtime else PreviewHealth(state="unavailable", reason="not_started")
 
 
-async def start_preview_runtime(base: Path):
+async def start_preview_runtime(base: Path, app_dir: Path | None = None):
     global runtime
     from backend.app.services.local_worker_broker import start_local_worker_broker
 
-    runtime = PreviewRuntime(base / ".cache" / "preview-service")
+    runtime = PreviewRuntime(base / ".cache" / "preview-service", app_dir=app_dir)
     try:
         broker = await start_local_worker_broker(base)
     except Exception as exc:

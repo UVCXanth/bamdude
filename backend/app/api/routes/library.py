@@ -68,6 +68,7 @@ from backend.app.schemas.library import (
     PlateSummary,
     ProductRef,
     TagSummary,
+    ThumbnailJobTicket,
     ZipExtractError,
     ZipExtractResponse,
     ZipExtractResult,
@@ -110,6 +111,11 @@ from backend.app.services.library_preview import (
 )
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.line_composition import counted, default_options, standard_composition
+from backend.app.services.mesh_preview_types import (
+    CAD_TYPES as CAD_PREVIEW_TYPES,
+    LEGACY_TYPES as LEGACY_PREVIEW_TYPES,
+    is_cad as is_cad_preview,
+)
 from backend.app.services.order_filing import order_candidates, resolve_link
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
 from backend.app.services.preview_artifacts import disk as preview_disk
@@ -3516,6 +3522,32 @@ async def slice_library_file(
     }
 
 
+def _queue_step_thumbnail(library_file: LibraryFile, authority) -> dict:
+    """After the commit and never waiting for CAD: a receipt for a NEW STEP file's picture, or the closed reason
+    none was queued — a warning, never a rollback of the file (spec §4.1). ``authority`` is the door's explicit
+    descriptor; None is authority_missing, never the system."""
+    from backend.app.services.library_preview_jobs import Refusal, StepSource, get_library_preview_jobs
+
+    service = get_library_preview_jobs()
+    try:
+        if service is None:
+            raise Refusal("unavailable")
+        receipt = service.enqueue(StepSource.capture(library_file), authority, "auto")
+    except Refusal as refused:
+        logger.warning("STEP thumbnail not queued for library file %s: %s", library_file.id, refused.code)
+        return {
+            "jobs_epoch": service.epoch if service is not None else None,
+            "receipt_id": None,
+            "state": None,
+            "error_code": refused.code,
+        }
+    return {"jobs_epoch": service.epoch, **service.describe(receipt)}
+
+
+def _ticket(job: dict | None):
+    return None if job is None else ThumbnailJobTicket(**{k: job.get(k) for k in ThumbnailJobTicket.model_fields})
+
+
 async def store_library_upload(
     db: AsyncSession,
     *,
@@ -3524,6 +3556,7 @@ async def store_library_upload(
     target_folder: LibraryFolder | None,
     generate_stl_thumbnails: bool = True,
     created_by_id: int | None = None,
+    authority=None,
 ) -> IngestResult:
     """Put an uploaded file in the library. Returns an :class:`IngestResult`.
 
@@ -3550,6 +3583,9 @@ async def store_library_upload(
     ⚠️ Raises ``HTTPException`` — the messages are written for a human to read,
     and the bot shows ``e.detail`` verbatim rather than inventing a second
     vocabulary for the same rejections.
+
+    A NEW STEP/STP file asks for its picture in the background after the commit, with ``authority`` — the door's
+    explicit actor descriptor (spec §5); a deduplicated or restored file asks for nothing.
     """
     ext = os.path.splitext(filename)[1].lower()
     file_type = detect_file_type(filename)
@@ -3645,6 +3681,9 @@ async def store_library_upload(
             raise
         except Exception:
             logger.warning("Preview skipped for saved library file %s", source.id, exc_info=True)
+    thumbnail_job = None
+    if is_cad_preview(file_type) and generate_stl_thumbnails:
+        thumbnail_job = _queue_step_thumbnail(library_file, authority)
     await db.refresh(library_file)
 
     # Tell open browsers the library changed. ``library_file_added`` was
@@ -3664,12 +3703,13 @@ async def store_library_upload(
     except Exception:
         logger.debug("library_file_added broadcast failed", exc_info=True)
 
-    return IngestResult(file=library_file, outcome="created")
+    return IngestResult(file=library_file, outcome="created", thumbnail_job=thumbnail_job)
 
 
 @router.post("/files", response_model=FileUploadResponse)
 @router.post("/files/", response_model=FileUploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: int | None = None,
     generate_stl_thumbnails: bool = Query(default=True),
@@ -3677,6 +3717,8 @@ async def upload_file(
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload a file to the library."""
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is required")
@@ -3715,6 +3757,7 @@ async def upload_file(
             target_folder=target_folder,
             generate_stl_thumbnails=generate_stl_thumbnails,
             created_by_id=current_user.id if current_user else None,
+            authority=await request_authority(request, current_user),
         )
         library_file = result.file
 
@@ -3732,6 +3775,7 @@ async def upload_file(
             outcome=result.outcome,
             superseded_name=result.superseded_name,
             metadata=library_file.file_metadata,
+            thumbnail_job=_ticket(result.thumbnail_job),
         )
     except HTTPException:
         raise
@@ -3742,6 +3786,7 @@ async def upload_file(
 
 @router.post("/files/extract-zip", response_model=ZipExtractResponse)
 async def extract_zip_file(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: int | None = Query(default=None),
     preserve_structure: bool = Query(default=True),
@@ -3761,6 +3806,11 @@ async def extract_zip_file(
     """
     import tempfile
 
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+    from backend.app.services.library_preview_jobs import REQUEST_LIMIT
+
+    authority = await request_authority(request, current_user)
+    step_results: list[tuple[ZipExtractResult, LibraryFile]] = []
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
@@ -3984,6 +4034,8 @@ async def extract_zip_file(
                             folder_id=target_folder_id,
                         )
                     )
+                    if is_cad_preview(file_type) and generate_stl_thumbnails:
+                        step_results.append((extracted_files[-1], library_file))  # asked after every STL/OBJ
 
                     # Commit after each file to release database lock
                     # This prevents long-running transactions from blocking other requests
@@ -3995,6 +4047,12 @@ async def extract_zip_file(
                     # Rollback the failed file but continue with others
                     await db.rollback()
 
+        # The ZIP's own STL/OBJ pictures are done: only now its STEP files ask, a bounded number of them.
+        for index, (item, row) in enumerate(step_results):
+            if index < REQUEST_LIMIT:
+                item.thumbnail_job = _ticket(_queue_step_thumbnail(row, authority))
+            else:
+                item.thumbnail_job = ThumbnailJobTicket(error_code="queue_full")
         return ZipExtractResponse(
             extracted=len(extracted_files),
             skipped_duplicates=skipped_duplicates,
@@ -4036,9 +4094,12 @@ async def batch_generate_stl_thumbnails(
     - All STL files missing thumbnails (all_missing=True)
     """
     results: list[BatchThumbnailResult] = []
-    query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "obj")))
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES))
     if request.file_ids:
-        query = query.where(LibraryFile.id.in_(request.file_ids))
+        # An explicit STEP id is answered, never lost as processed=0: it renders only through the background jobs.
+        query = LibraryFile.active().where(
+            LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES + CAD_PREVIEW_TYPES), LibraryFile.id.in_(request.file_ids)
+        )
     elif request.folder_id is not None:
         query = query.where(LibraryFile.folder_id == request.folder_id)
         if request.all_missing:
@@ -4049,26 +4110,42 @@ async def batch_generate_stl_thumbnails(
         return BatchThumbnailResponse(processed=0, succeeded=0, failed=0, results=[])
 
     rows = (await db.execute(query)).scalars().all()
-    sources = [PreviewSource.capture(row) for row in rows]
+    cad_files = [(row.id, row.filename) for row in rows if is_cad_preview(row.file_type)]
+    sources = [PreviewSource.capture(row) for row in rows if not is_cad_preview(row.file_type)]
     # This route owns only an auth/selection read transaction.
     await db.commit()
+    for file_id, filename in cad_files:
+        results.append(
+            BatchThumbnailResult(
+                file_id=file_id,
+                filename=filename,
+                success=False,
+                error="STEP thumbnails are generated in the background",
+                error_code="use_thumbnail_jobs",
+            )
+        )
     for source in sources:
         success = False
         error = "Thumbnail generation failed"
+        error_code = None
         try:
             path = to_absolute_path(source.file_path)
             size = await preview_disk(lambda path=path: path.stat().st_size if path else 0)
             if size < MIN_USABLE_STL_BYTES:
-                error = "File too small to contain a usable mesh"
+                error, error_code = "File too small to contain a usable mesh", "too_small"
             else:
                 success = await generate_library_preview(db, source)
         except FileNotFoundError:
-            error = "File not found on disk"
+            error, error_code = "File not found on disk", "file_missing"
         except Exception:
             logger.warning("Preview skipped for library file %s", source.id, exc_info=True)
         results.append(
             BatchThumbnailResult(
-                file_id=source.id, filename=source.filename, success=success, error=None if success else error
+                file_id=source.id,
+                filename=source.filename,
+                success=success,
+                error=None if success else error,
+                error_code=None if success else error_code,
             )
         )
     succeeded = sum(item.success for item in results)

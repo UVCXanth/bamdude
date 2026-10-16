@@ -51,6 +51,7 @@ from backend.app.api.routes import (
     library,
     library_notes,
     library_tags,
+    library_thumbnail_jobs,
     library_trash,
     local_backup,
     local_presets,
@@ -11541,7 +11542,10 @@ async def lifespan(app: FastAPI):
 
     from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime
 
-    await start_preview_runtime(Path(app_settings.base_dir))
+    await start_preview_runtime(Path(app_settings.base_dir), Path(app_settings.app_dir))
+    from backend.app.services.library_preview_jobs import start_library_preview_jobs, stop_library_preview_jobs
+
+    start_library_preview_jobs()  # volatile: nothing from an earlier process is replayed
     from backend.app.services.analysis_runtime import start_analysis_runtime, stop_analysis_runtime
     from backend.app.services.local_worker_broker import stop_local_worker_broker
 
@@ -11569,6 +11573,8 @@ async def lifespan(app: FastAPI):
     from backend.app.services import part_images
 
     await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
+    if not await stop_library_preview_jobs("shutdown"):  # jobs before the runtime their attempts run on
+        logging.getLogger(__name__).warning("Library preview jobs did not prove their end at shutdown")
     await stop_preview_runtime()
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
@@ -12442,6 +12448,7 @@ app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(stock_issues.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
+app.include_router(library_thumbnail_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 # archive_purge router is registered above before archives.router (route order).

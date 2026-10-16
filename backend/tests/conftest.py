@@ -451,6 +451,21 @@ async def _cancel_leaked_asyncio_tasks():
         await asyncio.gather(*pending, return_exceptions=True)
 
 
+@pytest.fixture(autouse=True)
+async def _library_preview_jobs_isolation():
+    """The STEP thumbnail jobs singleton is function-scoped like the preview runtime ones (plan A1/A4): every test
+    starts without one, and one a test started is stopped, with its proof, before the leaked-task sweep runs."""
+    from backend.app.services import library_preview_jobs as jobs_module
+
+    previous = jobs_module.jobs
+    jobs_module.jobs = None
+    yield
+    started = jobs_module.jobs
+    if started is not None and started is not previous:
+        await started.stop("shutdown")
+    jobs_module.jobs = previous
+
+
 @asynccontextmanager
 async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncClient, None]:
     """Shared body of ``async_client`` and ``committing_client``.
