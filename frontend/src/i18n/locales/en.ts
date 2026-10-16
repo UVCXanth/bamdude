@@ -6168,6 +6168,7 @@ export default {
       late: 'later than the deadline',
       noEstimate: 'No estimate',
       machineHours: 'Machine hours',
+      elapsedDuration: 'Elapsed time on the fleet if queued now',
       noModel: 'Without a model',
       printers_one: '{{count}} printer',
       printers_other: '{{count}} printers',

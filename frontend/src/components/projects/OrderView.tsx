@@ -210,6 +210,15 @@ export function OrderView({
     switch (value) {
       case 'plan':
         return (
+          <div className="space-y-4">
+          {order.status === 'active' && (
+            <OrderForecastPanel
+              view={forecastNow}
+              remaining={order.figures.remaining}
+              onRetry={() => forecast.refetch()}
+              headingLevel={embedded ? 3 : 2}
+            />
+          )}
           <PlanBlock
             order={order}
             // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
@@ -217,6 +226,7 @@ export function OrderView({
             onDraftChanged={setPlanDraftChanged}
             onEnqueued={onPlanSent}
           />
+          </div>
         );
       case 'prints':
         return <OrderPrints order={order} canEdit={canEdit} />;
@@ -312,16 +322,8 @@ export function OrderView({
           </div>
         </WorkshopPanel>
 
-        {/* Forecast (active orders only), filament, queue, activity (WS-13 E3 G01). */}
+        {/* The forecast stays above the plan, before the table on narrow screens. */}
         <div data-testid="order-side" className="order-view-side">
-          {order.status === 'active' && (
-            <OrderForecastPanel
-              view={forecastNow}
-              remaining={order.figures.remaining}
-              onRetry={() => forecast.refetch()}
-              headingLevel={embedded ? 3 : 2}
-            />
-          )}
           <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2} />
           <OrderQueue orderId={order.id} headingLevel={embedded ? 3 : 2} />
           <OrderTimeline orderId={order.id} headingLevel={embedded ? 3 : 2} />

@@ -853,8 +853,8 @@ async def _load_operator_hours(db: AsyncSession, now: datetime) -> OperatorHours
 async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     """What the farm already owes, from its database rows.
 
-    When operator hours are enabled, a held completion uses the existing
-    automatic-predecessor proof only to estimate whether manual work remains.
+    A held completion uses the existing automatic-predecessor proof only to
+    estimate whether manual work remains, independently of operator hours.
     This read never clears a gate or commands a printer.
 
     Machines = every printer that is not archived. Availability decides who may
@@ -906,14 +906,13 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             .where(Printer.archived.is_(False))
         )
     ).all()
+    held_ids = {row[-1] for row in printers if row[4] and row[3] and not row[5] and row[-1] is not None}
     held_by_id = {}
-    if operator_hours:
-        held_ids = {row[-1] for row in printers if row[-1] is not None}
-        if held_ids:
-            held_by_id = {
-                archive.id: archive
-                for archive in (await db.scalars(select(PrintArchive).where(PrintArchive.id.in_(held_ids)))).all()
-            }
+    if held_ids:
+        held_by_id = {
+            archive.id: archive
+            for archive in (await db.scalars(select(PrintArchive).where(PrintArchive.id.in_(held_ids)))).all()
+        }
     machines: dict[int, MachineState] = {}
     for (
         printer_id,
@@ -930,9 +929,24 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     ) in printers:
         # Swap mode clears the plate by macro; the gate is never armed for it (spec §5.3).
         gap = gates.plate_clear if (require_plate_clear and not swap_mode_enabled) else 0
-        waiting = gap if awaiting_plate_clear else 0
-        if gates.drying_blocks:
-            waiting = max(waiting, scheduler.drying_remaining_seconds(printer_id))
+        awaiting_operator = bool(awaiting_plate_clear and require_plate_clear and not swap_mode_enabled)
+        manual_wait = gap if awaiting_plate_clear else 0
+        if awaiting_operator and held_archive_id in held_by_id:
+            # The dispatch owner's fresh proof removes only THIS manual wait.
+            # Future ordinary prints still pay gap; drying is independent.
+            automatic = await automatic_predecessor(
+                db,
+                SimpleNamespace(
+                    id=printer_id,
+                    awaiting_plate_clear=True,
+                    awaiting_plate_clear_archive_id=held_archive_id,
+                ),
+            )
+            if automatic is not None:
+                awaiting_operator = False
+                manual_wait = 0
+        drying_wait = scheduler.drying_remaining_seconds(printer_id) if gates.drying_blocks else 0
+        waiting = max(manual_wait, drying_wait)
         machines[printer_id] = MachineState(
             printer_id=printer_id,
             model=printer_manager.effective_model_for(printer_id, model),
@@ -949,22 +963,8 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             waiting_seconds=float(waiting),
             stagger_interval_seconds=(int(interval_minutes) * 60) if interval_minutes else None,
             requires_operator=bool(require_plate_clear and not swap_mode_enabled),
-            awaiting_operator=bool(awaiting_plate_clear and require_plate_clear and not swap_mode_enabled),
+            awaiting_operator=awaiting_operator,
         )
-        if operator_hours and machines[printer_id].awaiting_operator and held_archive_id in held_by_id:
-            # Reuse the dispatch owner's proof, including fresh local telemetry.
-            # Merely enabling auto-eject on the NEXT order never clears this wait.
-            machines[printer_id].awaiting_operator = (
-                await automatic_predecessor(
-                    db,
-                    SimpleNamespace(
-                        id=printer_id,
-                        awaiting_plate_clear=True,
-                        awaiting_plate_clear_archive_id=held_archive_id,
-                    ),
-                )
-                is None
-            )
     staged = await _staged(db)
     caveats: tuple[str, ...] = (("drying",) if gates.drying_blocks else ()) + (
         ("operator_service_parallel",) if operator_hours else ()

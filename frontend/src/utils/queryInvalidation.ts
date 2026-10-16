@@ -51,6 +51,7 @@ export const ORDER_VIEW_KEYS = [
   'project', // an order page's own figures — the prefix, see above
   'project-archives', // the Prints grid
   'project-plan', // pass 3: what is still to print
+  'order-print-options', // models/settings change when an order gains lines or sliced files
   // spec workshop-order-stage: every order mutation writes the order journal,
   // so the activity feed is an order view like the rest.
   'project-timeline',

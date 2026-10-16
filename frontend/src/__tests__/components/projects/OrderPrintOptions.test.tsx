@@ -3,6 +3,8 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { api } from '../../../api/client';
 import type { OrderPrintOptionsResponse } from '../../../api/client';
 import { DEFAULT_PRINT_OPTIONS } from '../../../components/PrintModal/types';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { OrderPrintOptions } from '../../../components/projects/OrderPrintOptions';
 import { render } from '../../utils';
 
@@ -38,11 +40,35 @@ function custom() {
   fireEvent.click(screen.getByRole('checkbox', { name: 'Use custom parameters for this order and model' }));
 }
 
+function OrderChanged() {
+  const client = useQueryClient();
+  return <button onClick={() => invalidateOrderViews(client, { orderId: 1 })}>Synthetic order changed</button>;
+}
+
 describe('OrderPrintOptions', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getOrderPrintOptions').mockResolvedValue(fixture());
     vi.spyOn(api, 'setOrderPrintOptions').mockImplementation(async (_id, overrides) => ({ ...fixture(), overrides }));
+  });
+
+  it('discovers newly added sliced models without reloading and keeps an unsaved draft on refresh', async () => {
+    vi.mocked(api.getOrderPrintOptions).mockResolvedValueOnce({ overrides: {}, models: [] });
+    render(<><OrderPrintOptions orderId={1} canEdit busy={false} onBlocked={vi.fn()} /><OrderChanged /></>);
+    fireEvent.click(screen.getByRole('button', { name: 'Print parameters for this order' }));
+    await screen.findByText('No sliced printer model is known yet. Add a sliced file with printer model metadata.');
+    await waitFor(() => expect(api.getOrderPrintOptions).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Synthetic order changed' }));
+    await screen.findByRole('tab', { name: 'A1 Mini' });
+    expect(screen.getByRole('tab', { name: 'P1S' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'H2D' })).toBeInTheDocument();
+    custom();
+    fireEvent.click(screen.getByRole('button', { name: 'Synthetic order changed' }));
+    await waitFor(() => expect(api.getOrderPrintOptions).toHaveBeenCalledTimes(3));
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save parameters' })).toBeEnabled();
+    expect(api.setOrderPrintOptions).not.toHaveBeenCalled();
   });
 
   it('keeps independent model choices, hides unsupported functions and limits auto mode', async () => {

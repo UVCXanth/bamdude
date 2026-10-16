@@ -483,6 +483,8 @@ def cover(
     )
     rows: dict[int, PlanRow] = {}
     order: list[int] = []
+    initial_capacity = capacity.copy() if capacity is not None else None
+    reservations: list[int] = []
     # One budget for both passes below: the guard means "more prints than one plan
     # shows", whichever pass would have printed them.
     budget = MAX_ITERATIONS
@@ -521,6 +523,7 @@ def cover(
                 # same earliest machine immediately so later prints — including a
                 # later line of this order — see the load this choice created.
                 capacity.reserve(recipe)
+                reservations.append(plate.id)
             row = rows.get(plate.id)
             if row is None:
                 row = rows[plate.id] = _row_for(plate, file, recipe, price_per_gram)
@@ -542,6 +545,48 @@ def cover(
         # rows planned here are what the forecast counts as unroutable / unknown.
         truncated = greedy(False)
     planned = [rows[plate_id] for plate_id in order]
+    if not truncated and not any(remaining.values()):
+        # Keep the existing greedy choice; a solver dependency would change the
+        # planning objective. Only remove whole runs proven redundant for EVERY
+        # counted part, including a rare part on an otherwise surplus plate.
+        made = {pid: sum(row.count * yields[row.plate_id].get(pid, 0) for row in planned) for pid in outstanding}
+        removed: dict[int, int] = {}
+        for row in sorted(planned, key=lambda r: (-(seconds[r.plate_id] or 0), r.plate_id)):
+            output = yields[row.plate_id]
+            removable = min(
+                ((made.get(pid, 0) - outstanding.get(pid, 0)) // n for pid, n in output.items() if n > 0),
+                default=0,
+            )
+            removable = max(0, min(row.count, removable))
+            if not removable:
+                continue
+            row.count -= removable
+            removed[row.plate_id] = removable
+            for pid, n in output.items():
+                made[pid] = made.get(pid, 0) - removable * n
+        if removed:
+            planned = [row for row in planned if row.count]
+            left = dict(outstanding)
+            for row in planned:
+                row.useful = {}
+                for pid, n in yields[row.plate_id].items():
+                    gain = min(left.get(pid, 0), row.count * n)
+                    if gain > 0:
+                        row.useful[pid] = gain
+                        left[pid] -= gain
+            if capacity is not None and initial_capacity is not None:
+                # Later order lines must not inherit reservations for removed
+                # runs. Replay only retained picks through the SAME lane ledger.
+                capacity.machines = initial_capacity.copy().machines
+                retained = []
+                for plate_id in reversed(reservations):
+                    if removed.get(plate_id, 0):
+                        removed[plate_id] -= 1
+                    else:
+                        retained.append(plate_id)
+                recipes = {plate.id: recipe for plate, _file, recipe in candidates}
+                for plate_id in reversed(retained):
+                    capacity.reserve(recipes[plate_id])
     if fleet_can_choose:
         # Scheduling can deliberately reserve equal-yield variants on different
         # model lanes.  The plan surface already represents that as one row
