@@ -156,13 +156,13 @@ describe('File Manager — STEP thumbnails', () => {
     render(<FileManagerPage />);
     await openMenuOf('Bracket');
     await userEvent.click(await screen.findByRole('button', { name: /^Generate Thumbnail$/i }));
-    expect(await screen.findByText(/install or repair it/i)).toBeInTheDocument();
+    expect(await screen.findByText(/not available on this server/i)).toBeInTheDocument();
     const card = (await screen.findByText('Bracket')).closest('.group') as HTMLElement;
     const srcs = within(card).getAllByRole('img', { hidden: true }).map((img) => img.getAttribute('src'));
     expect(srcs.some((src) => src?.includes('/library/files/5/thumbnail'))).toBe(true);
   });
 
-  it('a code this build does not know gets the generic sentence, never an install instruction', async () => {
+  it('a code this build does not know gets the generic sentence, never the CAD-component sentence', async () => {
     server.use(
       http.post(JOBS, () => HttpResponse.json({ jobs_epoch: EPOCH, results: [{ file_id: 5, receipt_id: null, state: null, error_code: 'some_future_code' }], next_after_id: null }, { status: 202 })),
     );
@@ -170,7 +170,7 @@ describe('File Manager — STEP thumbnails', () => {
     await openMenuOf('Bracket');
     await userEvent.click(await screen.findByRole('button', { name: /^Generate Thumbnail$/i }));
     expect(await screen.findByText(/something went wrong/i)).toBeInTheDocument();
-    expect(screen.queryByText(/install or repair/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not available on this server/i)).not.toBeInTheDocument();
   });
 
   it('an earlier session’s job makes the page read the file again and offer a retry', async () => {

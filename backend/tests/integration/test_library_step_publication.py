@@ -525,3 +525,59 @@ async def test_the_typed_cas_on_a_disposable_postgres(tmp_path, monkeypatch):
         async with engine.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await engine.dispose()
+
+
+def test_a_source_changed_while_it_was_read_is_source_changed_not_a_render_failure(tmp_path, monkeypatch):
+    """The bytes moved under the snapshot: the truthful answer is that the source changed (a STEP job ends
+    'superseded'), never 'could not be converted' (review A-m2)."""
+    import time as _time
+
+    from backend.app.services import preview_artifacts
+    from backend.app.services.preview_protocol import PreviewError
+
+    source = tmp_path / "part.step"
+    source.write_bytes(b"x" * 10)
+    real = preview_artifacts._source_signature
+    calls = []
+
+    def moving(path):
+        calls.append(path)
+        if len(calls) > 1:
+            path.write_bytes(b"y" * 20)  # a writer replaced it while the copy ran
+        return real(path)
+
+    monkeypatch.setattr(preview_artifacts, "_source_signature", moving)
+    with pytest.raises(PreviewError) as changed:
+        preview_artifacts.snapshot(source, tmp_path / "copy", _time.monotonic_ns() + 10**10)
+    assert changed.value.outcome == "source_changed"
+
+
+@pytest.mark.asyncio
+async def test_a_step_job_whose_source_changed_mid_read_ends_superseded(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as preview_runtime_module
+    from backend.app.services.preview_runtime import PreviewResult
+
+    @asynccontextmanager
+    async def changed(*args, **kwargs):
+        yield PreviewResult(outcome="source_changed", kind="step")
+
+    monkeypatch.setattr(preview_runtime_module, "preview_attempt", changed)
+    monkeypatch.setattr(jobs_module, "source_state", lambda path: None)
+    step = tmp_path / "part.step"
+    step.write_bytes(b"x")
+    monkeypatch.setattr(settings, "base_dir", tmp_path)
+    source = jobs_module.StepSource(
+        id=1,
+        filename="part.step",
+        file_type="step",
+        file_path="part.step",
+        file_hash="a" * 64,
+        thumbnail_path=None,
+        fs_modified_at=None,
+    )
+    outcome = await jobs_module.perform_step(
+        source, order=0, wait_seconds=1, on_admit=None, on_hand_off=None, before_attach=None
+    )
+    assert outcome == "superseded"

@@ -127,7 +127,7 @@ def snapshot(source: Path | bytes, destination: Path, deadline: int, *, revoke=N
                         raise PreviewError("resource_limit")
                     target.write(block)  # the next iteration checks again before reading on
             if _source_signature(source) != before:
-                raise PreviewError("render_failed")
+                raise PreviewError("source_changed")  # a writer moved it under the copy: not a render failure
 
 
 def describe(path: Path, attempt: str, role: str, kind: str, deadline: int, *, revoke=None) -> Artifact:

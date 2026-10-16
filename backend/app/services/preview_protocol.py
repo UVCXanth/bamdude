@@ -63,9 +63,10 @@ OUTCOMES = frozenset(
         "cad_unavailable",
     }
 )
-#: main-side outcomes beside the wire's: a positive ENOENT reading the SOURCE itself (spec §6). The service never
-#: answers it — a reply naming it is still a protocol error, because replies are checked against OUTCOMES alone.
-MAIN_OUTCOMES = OUTCOMES | {"file_missing"}
+#: main-side outcomes beside the wire's: a positive ENOENT reading the SOURCE itself (spec §6), and a source whose
+#: bytes moved while main read it. The service never answers either — a reply naming one is still a protocol error,
+#: because replies are checked against OUTCOMES alone.
+MAIN_OUTCOMES = OUTCOMES | {"file_missing", "source_changed"}
 STAGES = ("snapshot", "cad_import", "transfer", "mesh", "mesh_write", "png", "publish")
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")

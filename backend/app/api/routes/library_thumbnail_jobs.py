@@ -145,7 +145,7 @@ async def create_thumbnail_jobs(
     results = []
     for file_id in order:
         if file_id in not_step:
-            results.append(ThumbnailJobItem(file_id=file_id, error_code="protocol_error"))
+            results.append(ThumbnailJobItem(file_id=file_id, error_code="not_step"))  # a request for a non-STEP
             continue
         try:
             receipt = service.enqueue(sources[file_id], authority, "manual")

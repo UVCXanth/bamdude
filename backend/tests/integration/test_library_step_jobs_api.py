@@ -116,7 +116,7 @@ async def test_post_by_ids_queues_steps_refuses_other_types_and_omits_missing_or
     assert body["jobs_epoch"] == jobs.epoch and body["next_after_id"] is None
     by_file = {item["file_id"]: item for item in body["results"]}
     assert set(by_file) == {step.id, stl.id, stp.id}  # missing and trashed: nothing about them
-    assert by_file[stl.id] == {"file_id": stl.id, "receipt_id": None, "state": None, "error_code": "protocol_error"}
+    assert by_file[stl.id] == {"file_id": stl.id, "receipt_id": None, "state": None, "error_code": "not_step"}
     assert by_file[step.id]["receipt_id"] and by_file[step.id]["state"] in {"queued", "running", "succeeded"}
     assert set(by_file[step.id]) == {"file_id", "receipt_id", "state", "error_code"}  # no actor, no name
 

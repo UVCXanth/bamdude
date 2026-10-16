@@ -287,3 +287,24 @@ def test_a_briefly_held_marker_or_result_is_still_written(tmp_path, monkeypatch)
     child._write_result({"outcome": "ok", "stage": "mesh_write"})
     timer.join()
     assert json.loads((tmp_path / child.RESULT).read_text(encoding="utf-8"))["outcome"] == "ok"
+
+
+def test_open_cascades_out_of_memory_is_a_resource_limit_like_memoryerror():
+    """OCP raises Standard_OutOfMemory as an ordinary exception (a Job commit limit on Windows typically surfaces
+    this way): spec §6 names it beside MemoryError as resource_limit, never render_failed."""
+    from backend.app.services import step_thumbnail as converter
+
+    class Standard_Failure(Exception):  # noqa: N801 — OCP's class names
+        pass
+
+    class Standard_OutOfMemory(Standard_Failure):  # noqa: N801
+        pass
+
+    class Standard_OutOfMemoryChild(Standard_OutOfMemory):  # noqa: N801
+        pass
+
+    assert converter._classify(Standard_OutOfMemory()) == ("resource_limit", "memory_error")
+    assert converter._classify(Standard_OutOfMemoryChild()) == ("resource_limit", "memory_error")
+    assert converter._classify(MemoryError()) == ("resource_limit", "memory_error")
+    assert converter._classify(converter.Refusal("timeout", "deadline")) == ("timeout", "deadline")
+    assert converter._classify(Standard_Failure()) == ("render_failed", "Standard_Failure")

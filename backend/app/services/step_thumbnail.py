@@ -437,6 +437,16 @@ def convert(cfg: dict, result: dict) -> None:
     )
 
 
+def _classify(exc: BaseException) -> tuple[str, str]:
+    """A refusal says its own outcome; running out of memory — Python's MemoryError or OCCT's Standard_OutOfMemory,
+    an ordinary exception class in OCP — is resource_limit (spec §6); anything else is render_failed by type."""
+    if isinstance(exc, Refusal):
+        return exc.outcome, exc.why
+    if isinstance(exc, MemoryError) or any(c.__name__ == "Standard_OutOfMemory" for c in type(exc).__mro__):
+        return "resource_limit", "memory_error"
+    return "render_failed", type(exc).__name__[:64]
+
+
 def main() -> int:
     started = time.monotonic()
     request = json.loads(sys.stdin.buffer.readline(JSON_BYTES + 1))
@@ -448,15 +458,10 @@ def main() -> int:
         if time.monotonic_ns() >= int(request["deadline"]):
             raise Refusal("timeout", "deadline")
         convert(request, result)
-    except Refusal as exc:
+    except Exception as exc:  # MemoryError included; bounded and closed: no message text (it can carry paths)
         _remove_own_outputs()
-        result.update(outcome=exc.outcome, why=exc.why)
-    except MemoryError:
-        _remove_own_outputs()
-        result.update(outcome="resource_limit", why="memory_error")
-    except Exception as exc:  # bounded and closed: no message text (it can carry paths)
-        _remove_own_outputs()
-        result.update(outcome="render_failed", why=type(exc).__name__[:64])
+        outcome, why = _classify(exc)
+        result.update(outcome=outcome, why=why)
     result["elapsed_s"] = round(time.monotonic() - started, 3)
     _write_result(result)
     return 0 if result["outcome"] == "ok" else 1

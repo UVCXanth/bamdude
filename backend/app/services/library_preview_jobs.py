@@ -626,6 +626,8 @@ async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_
         on_hand_off=on_hand_off,
         publication=library_preview.publication,
     ) as result:
+        if result.outcome == "source_changed":
+            return "superseded"  # its bytes moved while they were read: the row will name new ones
         if result.outcome != "ok":
             return result.outcome
         png = result.files.get("preview")

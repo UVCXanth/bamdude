@@ -64,7 +64,7 @@ describe('FileUploadModal — STEP thumbnails', () => {
     const p = props();
     render(<FileUploadModal {...p} initialFiles={[new File(['ISO-10303-21;'], 'bracket.step')]} />);
     await userEvent.click(await screen.findByRole('button', { name: /Upload \(1\)/ }));
-    expect(await screen.findByText(/STEP thumbnail not queued: .*install or repair it/i)).toBeInTheDocument();
+    expect(await screen.findByText(/STEP thumbnail not queued: .*not available on this server/i)).toBeInTheDocument();
     expect(p.onThumbnailJobs).not.toHaveBeenCalled();
   });
 

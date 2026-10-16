@@ -24,6 +24,7 @@ export const THUMBNAIL_REASONS = [
   'canceled',
   'cancel_too_late',
   'protocol_error',
+  'not_step',
 ] as const;
 
 export type ThumbnailReason = (typeof THUMBNAIL_REASONS)[number];
