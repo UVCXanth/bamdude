@@ -90,7 +90,7 @@ class Checks:
         self.revoked: set = set()
         self.gone: set[int] = set()
 
-    async def authority_holds(self, authority, purpose) -> bool:
+    async def authority_holds(self, authority, purpose, session=None) -> bool:
         return authority not in self.revoked
 
     async def source_holds(self, source) -> bool:

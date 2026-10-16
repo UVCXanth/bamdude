@@ -63,6 +63,9 @@ OUTCOMES = frozenset(
         "cad_unavailable",
     }
 )
+#: main-side outcomes beside the wire's: a positive ENOENT reading the SOURCE itself (spec §6). The service never
+#: answers it — a reply naming it is still a protocol error, because replies are checked against OUTCOMES alone.
+MAIN_OUTCOMES = OUTCOMES | {"file_missing"}
 STAGES = ("snapshot", "cad_import", "transfer", "mesh", "mesh_write", "png", "publish")
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -71,7 +74,7 @@ _BUNDLE_KEY = re.compile(r"(linux|win|darwin)-(x64|arm64)-cp3\d{1,2}\Z")
 
 class PreviewError(Exception):
     def __init__(self, outcome: str):
-        if outcome not in OUTCOMES:
+        if outcome not in MAIN_OUTCOMES:
             raise ValueError("invalid preview outcome")
         self.outcome = outcome
         super().__init__(outcome)

@@ -523,6 +523,7 @@ class PreviewRuntime:
         order: int | None = None,
         on_admit: Callable[[], int | None] | None = None,
         on_hand_off: Callable[[], None] | None = None,
+        publication=None,
     ):
         """One owned preview attempt. ``priority`` defaults from the kind (sliced high, STL/OBJ normal, STEP low);
         a revoked low ends as the INTERNAL outcome ``preempted`` (no files, no publication) — its caller requeues it,
@@ -530,7 +531,11 @@ class PreviewRuntime:
 
         ``on_admit`` runs once, synchronously, when the slot is granted; the absolute monotonic-ns deadline it
         returns bounds this attempt (a job's budgets run from its first admission). ``on_hand_off`` runs once,
-        synchronously, at the hand-off of an ok result — the point of no return, under the arbiter's gate."""
+        synchronously, at the hand-off of an ok result — the point of no return, under the arbiter's gate.
+
+        ``publication`` (spec §5): a gate whose ``acquire()`` is asked in that same synchronous step, before the
+        hand-off — a closed gate (restore) revokes the result, so nothing reaches its attach; the lease is held
+        through the caller's publication and released when this context exits."""
         kind = _inputs_kind(inputs)
         result = PreviewResult(kind=kind)
         priority = priority or PRIORITY_BY_KIND[kind]
@@ -574,6 +579,7 @@ class PreviewRuntime:
         )
         command = None
         subscription = None
+        lease = None
         revoked = False
         canceled = False
         checkpoint_tasks = set()
@@ -704,7 +710,14 @@ class PreviewRuntime:
                         await receive_files(reply.get("manifest", []))
                         # The point of no return, under the arbiter's gate: a revoke that came first wins, the
                         # ready output is discarded and the attempt ends preempted without any restart.
+                        if publication is not None:
+                            lease = publication.acquire()  # None: publication closed (a restore) — nothing attaches
+                            if lease is None:
+                                raise Revoked
                         if not self.slot.hand_off(ticket):
+                            if lease is not None:
+                                lease.release()
+                                lease = None
                             raise Revoked
                         if on_hand_off is not None:
                             on_hand_off()  # same synchronous step as the hand-off: nothing interleaves
@@ -807,6 +820,10 @@ class PreviewRuntime:
                     self.result_handed_off = False
                     if not self.uncertain:
                         self.slot.release(ticket)
+                    if lease is not None:
+                        # Last: the publication AND this attempt's tail are over. Released earlier, a restore's
+                        # drain proved quiet while the cleanup still ran and its runtime stop cancelled the tail.
+                        lease.release()
 
             await owned(finish())
             logger.info(
@@ -869,11 +886,15 @@ async def start_preview_runtime(base: Path, app_dir: Path | None = None):
     await runtime.start()
 
 
-async def stop_preview_runtime():
+async def stop_preview_runtime() -> bool:
+    """Stop the runtime; True when its ownership ended proven (no uncertain service, no held slot)."""
     global runtime
     if runtime:
-        await runtime.stop()
+        stopped = runtime
+        await stopped.stop()
         runtime = None
+        return not stopped.uncertain and not stopped.slot.locked()
+    return True
 
 
 @asynccontextmanager

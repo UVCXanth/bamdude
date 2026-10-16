@@ -455,15 +455,18 @@ async def _cancel_leaked_asyncio_tasks():
 async def _library_preview_jobs_isolation():
     """The STEP thumbnail jobs singleton is function-scoped like the preview runtime ones (plan A1/A4): every test
     starts without one, and one a test started is stopped, with its proof, before the leaked-task sweep runs."""
-    from backend.app.services import library_preview_jobs as jobs_module
+    from backend.app.services import library_preview, library_preview_jobs as jobs_module
 
     previous = jobs_module.jobs
+    previous_gate = library_preview.publication
     jobs_module.jobs = None
+    library_preview.publication = library_preview.PublicationGate()  # a restore test closes it for good
     yield
     started = jobs_module.jobs
     if started is not None and started is not previous:
         await started.stop("shutdown")
     jobs_module.jobs = previous
+    library_preview.publication = previous_gate
 
 
 @asynccontextmanager

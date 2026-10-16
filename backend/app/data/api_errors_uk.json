@@ -466,6 +466,7 @@
   "Library files not found: {}": "Файли бібліотеки не знайдено: {}",
   "Library folder with ID {} not found": "Теку бібліотеки з ID {} не знайдено",
   "Library folders not found: {}": "Теки бібліотеки не знайдено: {}",
+  "Library previews could not prove they stopped. Restart BamDude, then restore.": "Мініатюри бібліотеки не змогли довести, що зупинилися. Перезапустіть BamDude, потім відновіть.",
   "Local login is disabled — use SSO instead.": "Локальний вхід вимкнено — скористайтеся SSO.",
   "Local preset not found": "Локальний пресет не знайдено",
   "Location has sensors assigned; detach them first": "До місця прив'язано датчики — спершу відв'яжіть їх",

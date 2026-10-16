@@ -206,6 +206,8 @@ class LibraryPreviewJobs:
         """Close admission for good, cancel everything before its hand-off, await an owned publication, then the
         runner. True only when every attempt and the runner are over."""
         self.open = False
+        if cause == "restore":
+            self.epoch = uuid.uuid4().hex  # every receipt of the old epoch answers 410 from here
         for execution in list(self._pending.values()):
             execution.cause = execution.cause or cause
             if execution.state == "queued":
@@ -344,11 +346,12 @@ class LibraryPreviewJobs:
             return False
         return execution.state == "queued"
 
-    async def _before_attach(self, execution: Execution) -> bool:
-        """At least one receipt whose actor still holds its right; the others get nothing (spec §5)."""
+    async def _before_attach(self, execution: Execution, session=None) -> bool:
+        """At least one receipt whose actor still holds its right; the others get nothing (spec §5). With the
+        attach's own session the rights are read inside that transaction, before its write."""
         try:
             for receipt in execution.live_receipts():
-                if not await self._checks.authority_holds(receipt.authority, receipt.purpose):
+                if not await self._checks.authority_holds(receipt.authority, receipt.purpose, session=session):
                     self._end_receipt(receipt, "failed", "authority_missing")
         except Exception:
             logger.warning("Preview job=%s authority recheck failed", execution.id, exc_info=True)
@@ -388,7 +391,7 @@ class LibraryPreviewJobs:
                 wait_seconds=max(0.0, wait),
                 on_admit=on_admit,
                 on_hand_off=on_hand_off,
-                before_attach=lambda: self._before_attach(execution),
+                before_attach=lambda session=None: self._before_attach(execution, session),
             ),
             name=f"library-preview-job-{execution.id}",
         )
@@ -480,7 +483,9 @@ class DatabaseChecks:
     """Read-only checks in short sessions of their own; nothing is written (never resolve_api_key_authority,
     whose last_used write takes SQLite's writer)."""
 
-    async def authority_holds(self, authority: Authority, purpose: str) -> bool:
+    async def authority_holds(self, authority: Authority, purpose: str, session=None) -> bool:
+        if session is not None:  # inside the attach's own transaction
+            return await authority_holds(session, authority, purpose)
         from backend.app.core import database
 
         async with database.async_session() as db:
@@ -579,22 +584,39 @@ async def authority_holds(db, authority: Authority, purpose: str) -> bool:
     return False
 
 
+def source_state(path) -> str | None:
+    """None when the source can be read; file_missing ONLY for a positive ENOENT on it; anything else (a
+    permission, a hung share's error) is unavailable — never a missing file (spec §6)."""
+    import os
+
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return "file_missing"
+    except OSError:
+        return "unavailable"
+    return None
+
+
+_ATTACHED = {"attached": "succeeded", "superseded": "superseded", "authority_missing": "authority_missing"}
+
+
 async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_hand_off, before_attach) -> str:
-    """One real attempt: snapshot through the low slot, digest equality with the row's hash, then — with the
-    authority asked again — the main-only attach in a fresh short session. No session is open while CAD runs."""
+    """One real attempt: snapshot through the low slot (its hand-off takes a publication lease), digest equality
+    with the row's hash, then the main-only attach in a fresh short session whose transaction reads the actors'
+    rights again before its CAS write. No session is open while CAD runs."""
     from backend.app.api.routes.library import to_absolute_path
     from backend.app.core import database
-    from backend.app.services.library_preview import Source, attach
+    from backend.app.services import library_preview
     from backend.app.services.preview_artifacts import disk
     from backend.app.services.preview_runtime import preview_attempt
 
     path = to_absolute_path(source.file_path)
     if path is None:
         return "file_missing"
-    try:
-        await disk(path.stat)
-    except FileNotFoundError:
-        return "file_missing"  # a positive ENOENT on the source itself
+    state = await disk(source_state, path)
+    if state is not None:
+        return state
     async with preview_attempt(
         {"mesh": (path, source.file_type)},
         priority="low",
@@ -602,25 +624,25 @@ async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_
         order=order,
         on_admit=on_admit,
         on_hand_off=on_hand_off,
+        publication=library_preview.publication,
     ) as result:
         if result.outcome != "ok":
             return result.outcome
         png = result.files.get("preview")
         if png is None or result.input_digests.get("mesh") != source.file_hash:
             return "superseded"  # the bytes read are not the bytes the row names
-        if not await before_attach():
-            return "authority_missing"
-        library_source = Source(
+        library_source = library_preview.Source(
             id=source.id,
             filename=source.filename,
+            file_type=source.file_type,
             file_path=source.file_path,
             file_hash=source.file_hash,
             thumbnail_path=source.thumbnail_path,
             fs_modified_at=source.fs_modified_at,
         )
         async with database.async_session() as db:
-            committed = await attach(db, library_source, png)
-        return "succeeded" if committed else "superseded"
+            attached = await library_preview.attach_result(db, library_source, png, authorize=before_attach)
+        return _ATTACHED.get(attached, "unavailable")
 
 
 # --- the singleton ------------------------------------------------------------------------------------------------
@@ -646,6 +668,25 @@ async def stop_library_preview_jobs(cause: str = "shutdown") -> bool:
 
 def get_library_preview_jobs() -> LibraryPreviewJobs | None:
     return jobs
+
+
+async def quiesce_library_previews_for_restore(*, drain_seconds: float = 30.0) -> bool:
+    """Before a restore touches files or the database (spec §4.3): close library preview publication for good
+    (legacy STL/OBJ and sliced-source attaches included), stop the jobs with a new epoch, wait for every lease
+    already handed out to finish its owned attach, then stop the preview runtime. True only with the proof of
+    all of it; the caller refuses the restore otherwise. Nothing reopens until the process restarts."""
+    from backend.app.services import library_preview
+    from backend.app.services.preview_runtime import stop_preview_runtime
+
+    library_preview.publication.close()
+    jobs_quiet = await stop_library_preview_jobs("restore")
+    drained = await library_preview.publication.drain(drain_seconds)
+    runtime_quiet = await stop_preview_runtime()
+    proven = jobs_quiet and drained and runtime_quiet
+    logger.info(
+        "Library previews quiesced for restore: jobs=%s publications=%s runtime=%s", jobs_quiet, drained, runtime_quiet
+    )
+    return proven
 
 
 def reset_library_preview_jobs() -> None:

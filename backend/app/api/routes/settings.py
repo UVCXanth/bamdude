@@ -736,6 +736,19 @@ async def _quiesce_part_render() -> None:
         )
 
 
+async def _quiesce_library_previews() -> None:
+    """STEP spec §4.3: every library preview writer -- the STEP jobs, a handed-off attach, the legacy STL/OBJ
+    and sliced-source publications -- is closed and proven quiet before the storage guard and any file work,
+    or the restore ends here with nothing replaced."""
+    from backend.app.services import library_preview_jobs
+
+    if not await library_preview_jobs.quiesce_library_previews_for_restore():
+        raise HTTPException(409, {"error": "preview_quiesce_unproven", "message": PREVIEW_QUIESCE_UNPROVEN})
+
+
+PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Restart BamDude, then restore."
+
+
 async def _restore_backup(file: UploadFile, db: AsyncSession):
     import asyncio
     import tempfile
@@ -799,6 +812,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
                 await _quiesce_part_render()
+                await _quiesce_library_previews()
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

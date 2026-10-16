@@ -89,8 +89,16 @@ def signature(path: Path) -> tuple:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
+def _source_signature(source: Path):
+    """A positive ENOENT on the SOURCE is file_missing; every other failure, and the staging side, stays what it is."""
+    try:
+        return signature(source)
+    except FileNotFoundError:
+        raise PreviewError("file_missing") from None
+
+
 def snapshot(source: Path | bytes, destination: Path, deadline: int, *, revoke=None) -> None:
-    before = signature(source) if isinstance(source, Path) else None
+    before = _source_signature(source) if isinstance(source, Path) else None
     size = before[2] if before else len(source)
     if size > OBJECT_BYTES:
         raise PreviewError("resource_limit")
@@ -102,7 +110,11 @@ def snapshot(source: Path | bytes, destination: Path, deadline: int, *, revoke=N
                 target.write(memoryview(source)[offset : offset + CHUNK_BYTES])
                 _check(revoke)
         else:
-            with source.open("rb") as stream:
+            try:
+                opened = source.open("rb")
+            except FileNotFoundError:
+                raise PreviewError("file_missing") from None
+            with opened as stream:
                 count = 0
                 while True:
                     _check(revoke)
@@ -114,7 +126,7 @@ def snapshot(source: Path | bytes, destination: Path, deadline: int, *, revoke=N
                     if count > OBJECT_BYTES:
                         raise PreviewError("resource_limit")
                     target.write(block)  # the next iteration checks again before reading on
-            if signature(source) != before:
+            if _source_signature(source) != before:
                 raise PreviewError("render_failed")
 
 
