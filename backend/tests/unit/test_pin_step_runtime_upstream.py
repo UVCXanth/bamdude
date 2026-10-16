@@ -44,7 +44,8 @@ def manifest(status="release", uploaded="2026-10-05T13:37:04Z") -> dict:
 CURRENT = [wheel(PINNED, py) for py in ("cp311", "cp312", "cp313", "cp314")]
 
 
-def test_nothing_to_report_for_the_newest_release_already_pinned():
+def test_nothing_to_report_for_the_newest_release_already_pinned_for_every_abi_it_has(monkeypatch):
+    monkeypatch.setattr(pin, "PYTHONS", ("cp312", "cp313", "cp314", "cp315"))  # a catalog that took cp315 already
     report = pin.upstream_report(pypi(**{PINNED: CURRENT + [wheel(PINNED, "cp315")]}), manifest(), NOW)
     assert report == {"actions": [], "notices": []}
     assert pin.upstream_exit(report) == 0
@@ -73,8 +74,11 @@ def test_versions_compare_as_versions_not_text():
 
 
 def test_a_new_python_abi_of_the_pinned_release_is_a_notice():
+    """cp315 wheels arriving for the pinned release are news the catalog has not taken: the check must say so,
+    not fall silent because cp315 was 'the next Python' it watched for (review A-m15)."""
     report = pin.upstream_report(pypi(**{PINNED: CURRENT + [wheel(PINNED, "cp315")]}), manifest(), NOW)
-    assert report["notices"] == []
+    assert report["notices"] == ["new_abi:cp315"]
+    assert pin.upstream_exit(report) == 3
     report = pin.upstream_report(pypi(**{PINNED: CURRENT + [wheel(PINNED, "cp316")]}), manifest(), NOW)
     assert "new_abi:cp316" in report["notices"]
     assert pin.upstream_exit({"actions": [], "notices": ["new_abi:cp316"]}) == 3

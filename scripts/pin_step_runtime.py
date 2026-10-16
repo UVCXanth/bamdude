@@ -155,7 +155,7 @@ def upstream_report(pypi: dict, manifest: dict, now: datetime) -> dict:
         newest = max(parse_time(a["upload_time"]) for a in manifest["artifacts"])
         if now - newest >= timedelta(days=MIN_AGE_DAYS):
             actions.append("release_repin_due")
-    ceiling = max(_abi_number(p) for p in PYTHONS + (NEXT_PYTHON,))
+    ceiling = max(_abi_number(p) for p in PYTHONS)  # what the catalog took: anything above it is news
     pinned_pythons = set().union(*(_python_of(f["filename"]) for f in releases.get(pinned, [])))
     notices += [f"new_abi:{p}" for p in sorted(pinned_pythons, key=_abi_number) if _abi_number(p) > ceiling]
     latest = newer[-1] if newer else pinned
