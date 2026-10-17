@@ -35,6 +35,34 @@ def test_the_image_is_built_and_checked_natively_on_arm64():
     assert "Architecture" in runs and "arm64" in runs  # it proves the image it checked is arm64
 
 
+def _workflows():
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        yield path.name, yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_an_image_built_to_be_checked_carries_the_candidate_pin_and_a_published_one_never_does():
+    """The Dockerfile refuses a candidate STEP pin unless STEP_PREVIEW_CANDIDATE=1 (a release must never ship one).
+    So every image built to be TESTED or SCANNED asks for it — the Trivy scan of the Security Audit built without it
+    and failed on every push while the pin was a candidate — and no image built to be PUBLISHED ever does."""
+    checked, published = [], []
+    for name, workflow in _workflows():
+        for job_name, job in workflow["jobs"].items():
+            env = {**(workflow.get("env") or {}), **(job.get("env") or {})}
+            for step in job.get("steps", []):
+                run = step.get("run", "")
+                if "docker build" in run:
+                    explicit = "--build-arg STEP_PREVIEW_CANDIDATE=1" in run
+                    from_env = (
+                        "--build-arg STEP_PREVIEW_CANDIDATE " in run + " " and env.get("STEP_PREVIEW_CANDIDATE") == "1"
+                    )
+                    checked.append((name, job_name, explicit or from_env))
+                if step.get("uses", "").startswith("docker/build-push-action@"):
+                    published.append((name, job_name, "STEP_PREVIEW_CANDIDATE" in yaml.safe_dump(step)))
+    assert ("security.yml", "trivy", True) in checked
+    assert [c for c in checked if not c[2]] == []
+    assert published and [p for p in published if p[2]] == []
+
+
 def test_the_arm64_job_can_publish_nothing():
     job = _jobs()["docker-test-arm64"]
     uses = [s["uses"] for s in job["steps"] if "uses" in s]
