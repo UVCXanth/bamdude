@@ -410,14 +410,20 @@ async def _mesh_window(runtime, path) -> tuple[float, float]:
 @pytest.mark.asyncio
 async def test_four_step_timeouts_keep_the_service_and_an_stl_follows_at_once(cad_runtime, dense):
     """A deadline that lands while the dense STEP meshes ends it as a timeout, four times, with the service kept.
-    Where that lies is measured on this machine first (``_mesh_window``): the deadline sits halfway between the
-    start of the mesh and the watchdog. The reported stage is never earlier than the last marker seen."""
+
+    Where that lies is measured on this machine (``_mesh_window``), but not fixed by it: on a GitHub Windows runner
+    one attempt reached its mesh at ~2.5 s and the next had written no stage at all by 3.9 s. So the deadline starts
+    halfway inside the measured window and moves after each attempt that missed it — later when it landed before
+    the mesh, earlier when the watchdog came first — and only a timeout AT the mesh counts. Every attempt, counted
+    or not, publishes nothing, reports a stage never earlier than the last marker seen, and keeps the service."""
     from backend.app.services.preview_protocol import STAGES
 
     before = await _identity(cad_runtime)
     mesh_at, watchdog_at = await _mesh_window(cad_runtime, dense)
-    offset = mesh_at + (watchdog_at - mesh_at) / 2
-    for _ in range(4):
+    offset, step = mesh_at + (watchdog_at - mesh_at) / 2, max(0.2, (watchdog_at - mesh_at) / 4)
+    landed = []
+    while sum(1 for o, s in landed if o == "timeout" and s == "mesh") < 4:
+        assert len(landed) < 12, landed  # bounded: a machine whose window cannot be hit says so
         seen = []
         watcher = asyncio.create_task(_watch_markers(cad_runtime, seen))
         try:
@@ -426,8 +432,15 @@ async def test_four_step_timeouts_keep_the_service_and_an_stl_follows_at_once(ca
             )
         finally:
             watcher.cancel()
-        assert outcome in {"timeout", "canceled"} and not files
-        assert seen and STAGES.index(stage) >= STAGES.index(seen[-1]), (stage, seen)
+        assert outcome in {"timeout", "canceled", "resource_limit"} and not files, (outcome, stage)
+        assert (stage is None and not seen) or (
+            stage is not None and seen and STAGES.index(stage) >= STAGES.index(seen[-1])
+        ), (stage, seen)
+        landed.append((outcome, stage))
+        if outcome == "resource_limit":
+            offset -= step  # the watchdog came first
+        elif stage != "mesh":
+            offset += step  # it ended before the mesh began
     assert await _identity(cad_runtime) == before
     started = time.monotonic()
     async with cad_runtime.attempt({"mesh": (_box(), "stl")}) as result:
