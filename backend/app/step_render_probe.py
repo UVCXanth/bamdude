@@ -36,13 +36,22 @@ def _cube_stl() -> str:
     return "\n".join(rows) + "\n"
 
 
+def summary(result, kind: str) -> dict:
+    """One render as the probe reports it — on a failure with the service's closed diagnostics, so a red smoke
+    says why (the parent log line's fields; never a path or text)."""
+    png = result.files.get("preview") if result.outcome == "ok" else None
+    report = {"outcome": result.outcome, "png": png is not None and drawn(png)}
+    if kind == "step":
+        report["stage"] = result.stage
+    for key, value in (("why", result.why), ("by", result.by), ("exit", result.exit_code)):
+        if value is not None:
+            report[key] = value
+    return report
+
+
 async def _render(runtime, path: Path, kind: str) -> dict:
     async with runtime.attempt({"mesh": (path, kind)}) as result:
-        png = result.files.get("preview") if result.outcome == "ok" else None
-        report = {"outcome": result.outcome, "png": png is not None and drawn(png)}
-        if kind == "step":
-            report["stage"] = result.stage
-        return report
+        return summary(result, kind)
 
 
 async def probe(app_dir: Path, *, work: Path) -> tuple[int, dict]:

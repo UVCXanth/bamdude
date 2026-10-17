@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import time
@@ -29,6 +30,7 @@ from backend.app.services.preview_protocol import (
     VERSION,
     Command,
     PreviewError,
+    closed_why,
     decode,
     encode,
     proof_envelope,
@@ -69,8 +71,34 @@ async def settle(awaitable):
                 current.uncancel()
 
 
+def _staging_bytes(root: Path) -> int:
+    """The attempt's bytes on disk, as the watchdog counts them every poll. The child renames its own files into
+    place meanwhile (the stage marker, result.json, mesh.stl, the picture): an entry gone by the time it is stat'ed
+    was renamed or removed after the listing, and its bytes count under the new name at the next poll. Stat'ing the
+    listed path again let that rename end the attempt render_failed (CI 39059567831, win-x64-cp313/cp314)."""
+    total = 0
+    with os.scandir(root) as entries:
+        for entry in entries:
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+            except FileNotFoundError:
+                continue
+    return total
+
+
+async def _require_picture(root: Path, operation: str, result: dict) -> None:
+    """A PNG child that said ok left a picture: one that exits 0 without it is named, never left to the publish."""
+    if not await disk((root / "preview.png").is_file):
+        raise PreviewError("render_failed", why="png_missing", by=operation, exit_code=result.get("exit"))
+
+
 class _CadUnavailable(Exception):
     """The STEP bundle is absent or unusable for this attempt: a nonfatal terminal, never a service fault."""
+
+    def __init__(self, diagnostics: dict | None = None):
+        super().__init__("cad_unavailable")
+        self.diagnostics = diagnostics or {}
 
 
 class Service:
@@ -254,24 +282,29 @@ class Service:
             while self.child.process.poll() is None:
                 remaining(deadline)
                 if await disk(self.child.rss) > rss_limit:
-                    raise PreviewError("resource_limit")
-                if await disk(lambda: sum(p.stat().st_size for p in root.iterdir() if p.is_file())) > ATTEMPT_BYTES:
-                    raise PreviewError("resource_limit")
+                    raise PreviewError("resource_limit", why="rss", by=operation)
+                if await disk(_staging_bytes, root) > ATTEMPT_BYTES:
+                    raise PreviewError("resource_limit", why="staging_bytes", by=operation)
                 await asyncio.sleep(0.05)
+            code = self.child.process.poll()  # the guardian's, which is its child's
             result_path = root / "result.json"
 
             def read_result():
                 if result_path.stat().st_size > JSON_BYTES:
-                    raise PreviewError("protocol_error")
+                    raise PreviewError("protocol_error", by=operation, exit_code=code)
                 return decode(result_path.read_bytes())
 
             try:
                 result = await disk(read_result)
             except FileNotFoundError:
-                raise PreviewError("render_failed") from None  # a crash writes no result: no OOM claim
+                # a crash writes no result: no OOM claim
+                raise PreviewError("render_failed", why="no_result", by=operation, exit_code=code) from None
             if fail_on_error and result.get("outcome") != "ok":
-                raise PreviewError(result.get("outcome", "render_failed"))
+                raise PreviewError(
+                    result.get("outcome", "render_failed"), why=result.get("why"), by=operation, exit_code=code
+                )
             await disk(result_path.unlink)
+            result["exit"] = code  # the child's real exit code, never one it wrote itself
             return result
         finally:
             if self.child is not None:
@@ -320,16 +353,18 @@ class Service:
             await disk(lambda: (root / "stage").unlink(missing_ok=True))
         if result.get("stage") in STAGES:
             progress["stage"] = result["stage"]
+        said = {"why": result.get("why"), "by": "convert", "exit_code": result.get("exit")}
         if result.get("outcome") == "cad_unavailable":
-            raise _CadUnavailable
+            raise _CadUnavailable(PreviewError("cad_unavailable", **said).diagnostics())
         if result.get("outcome") != "ok":
-            raise PreviewError(result.get("outcome", "render_failed"))
+            raise PreviewError(result.get("outcome", "render_failed"), **said)
         triangles = result.get("triangles")
         if type(triangles) is not int or not 0 < triangles <= CAD_TRIANGLES:
-            raise PreviewError("render_failed")
+            raise PreviewError("render_failed", **{**said, "why": "triangles"})
         await disk((root / "input.step").unlink)  # the PNG child gets only the mesh
         progress["stage"] = "png"
-        await self.render(root, "cad_png", deadline, rss_limit=STEP_WATCHDOG_BYTES, job_memory=JOB_COMMIT_BYTES)
+        png = await self.render(root, "cad_png", deadline, rss_limit=STEP_WATCHDOG_BYTES, job_memory=JOB_COMMIT_BYTES)
+        await _require_picture(root, "cad_png", png)
 
     async def run(self, command: Command):
         root = Path(self.config["staging"]) / command.attempt_id
@@ -386,21 +421,24 @@ class Service:
                 await publish("preview", "png")
             else:
                 mesh = next(x for x in command.manifest if x.role == "mesh")
-                await self.render(root, "mesh", deadline, mesh.kind)
+                await _require_picture(root, "mesh", await self.render(root, "mesh", deadline, mesh.kind))
                 await publish("preview", "png")
             reply = {"outcome": "ok", "manifest": outputs}
             return reply
         except asyncio.CancelledError:
             reply = {"outcome": "canceled"}
             return reply
-        except _CadUnavailable:
-            reply = {"outcome": "cad_unavailable"}
+        except _CadUnavailable as exc:
+            reply = {"outcome": "cad_unavailable", **exc.diagnostics}
             return reply
         except PreviewError as exc:
-            reply = {"outcome": exc.outcome}
+            reply = {"outcome": exc.outcome, **exc.diagnostics()}
             return reply
-        except Exception:
-            reply = {"outcome": "render_failed"}
+        except Exception as exc:
+            # The service's own failure: its class names it, never its text (which can carry a path).
+            reply = {"outcome": "render_failed", "by": "service"}
+            if why := closed_why(type(exc).__name__):
+                reply["why"] = why
             return reply
         finally:
             if progress is not None:

@@ -272,6 +272,7 @@ async def test_the_png_phase_inherits_the_absolute_deadline(tmp_path, monkeypatc
         calls.append((operation, deadline, kwargs.get("rss_limit"), kwargs.get("job_memory")))
         if operation == "convert":
             return {"outcome": "ok", "stage": "mesh_write", "triangles": 12}
+        (root / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # a PNG child that says ok leaves its picture
         return {"outcome": "ok"}
 
     async def fake_get(store, ref, path, deadline):

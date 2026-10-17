@@ -31,6 +31,17 @@ _PREVIEW_BOOTSTRAP_LIMIT = 16384
 _CAMERA_BOOTSTRAP_LIMIT = 65536
 
 
+def exit_status(code: int) -> int:
+    """The child's exit code as this guardian's own, so the owner reads the child's. On Windows an NTSTATUS above
+    2**31 (0xC0000005) overflows SystemExit's C long and came out as 0xFFFFFFFF: its signed twin exits with the
+    same DWORD. On POSIX a child killed by a signal (-N) exits as the shell's 128 + N, not as 256 - N."""
+    if os.name == "nt" and code >= 2**31:
+        return code - 2**32
+    if os.name != "nt" and code < 0:
+        return 128 - code
+    return code
+
+
 def _child_bootstrap(line: bytes) -> tuple[str, bytes]:
     """Decode only the two known wire formats, without importing any worker."""
     data = json.loads(line)
@@ -118,7 +129,7 @@ def main():
     if module != "backend.app.analysis_child":
         child.stdin.close()
     threading.Thread(target=owner_died, daemon=True).start()
-    return child.wait()
+    return exit_status(child.wait())
 
 
 if __name__ == "__main__":

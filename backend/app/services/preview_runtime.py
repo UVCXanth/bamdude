@@ -50,6 +50,7 @@ from backend.app.services.preview_protocol import (
     encode,
     proves_end,
     remaining,
+    reply_diagnostics,
 )
 from backend.app.services.worker_staging import (
     abandoned_attempts,
@@ -82,6 +83,12 @@ class PreviewResult:
     attempt_id: str | None = None
     kind: str | None = None  # "sliced" | "step" | "mesh", from the input ROLES
     stage: str | None = None  # the last protocol stage a STEP attempt reached (bounded enum, for the parent log)
+    # The service's closed diagnostics of a failure, for the parent log only — nothing decides on them: a reason
+    # token or an exception's class (never text), who decided (a child by its operation, or the service), and
+    # that child's exit code.
+    why: str | None = None
+    by: str | None = None
+    exit_code: int | None = None
     # A publication lease was taken at the hand-off: the ONLY right to attach a library picture. A usable result
     # (ok, or a timeout's checkpoint) without it publishes nothing (Codex A3-R1).
     publishable: bool = False
@@ -954,6 +961,7 @@ class PreviewRuntime:
                     result.outcome = reply.get("outcome", "protocol_error")
                     if reply.get("stage") in STAGES:
                         result.stage = reply["stage"]
+                    result.why, result.by, result.exit_code = reply_diagnostics(reply)
                     if not isinstance(result.outcome, str) or result.outcome not in OUTCOMES:
                         raise PreviewError("protocol_error")
                     if result.outcome in {"unavailable", "timeout", "protocol_error"}:
@@ -1083,12 +1091,14 @@ class PreviewRuntime:
                         lease.release()
 
             await owned(finish())
+            said = (("why", result.why), ("by", result.by), ("exit", result.exit_code))
             logger.info(
-                "Preview attempt=%s kind=%s outcome=%s stage=%s elapsed_ms=%d%s",
+                "Preview attempt=%s kind=%s outcome=%s stage=%s%s elapsed_ms=%d%s",
                 attempt_id,
                 kind,
                 result.outcome,
                 result.stage,
+                "".join(f" {key}={value}" for key, value in said if value is not None),
                 (time.monotonic() - began) * 1000,
                 owner,
             )

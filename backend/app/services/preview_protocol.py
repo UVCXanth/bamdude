@@ -80,12 +80,39 @@ _BUNDLE_KEY = re.compile(r"(linux|win|darwin)-(x64|arm64)-cp3\d{1,2}\Z")
 PREVIEW_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar("preview_owner", default=None)
 
 
+#: who decided a failure: a disposable child, by its operation, or the preview service itself
+DECIDERS = frozenset({"convert", "cad_png", "mesh", "source", "plates", "service"})
+_WHY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def closed_why(value) -> str | None:
+    """A failure's reason as the parent log may carry it: a closed token or an exception's class name — never a
+    path, stderr or an exception's text."""
+    return value if isinstance(value, str) and _WHY.match(value) else None
+
+
+def _exit_code(value) -> int | None:
+    return value if type(value) is int and -(2**31) <= value < 2**32 else None
+
+
+def reply_diagnostics(reply: dict) -> tuple[str | None, str | None, int | None]:
+    """(why, by, exit) of a service reply, each dropped unless it is of its closed form."""
+    by = reply.get("by")
+    return closed_why(reply.get("why")), by if by in DECIDERS else None, _exit_code(reply.get("exit"))
+
+
 class PreviewError(Exception):
-    def __init__(self, outcome: str):
+    def __init__(self, outcome: str, *, why=None, by=None, exit_code=None):
         if outcome not in MAIN_OUTCOMES:
             raise ValueError("invalid preview outcome")
         self.outcome = outcome
+        # diagnostics only, for the parent log: nothing decides on them
+        self.why, self.by, self.exit_code = closed_why(why), by if by in DECIDERS else None, _exit_code(exit_code)
         super().__init__(outcome)
+
+    def diagnostics(self) -> dict:
+        found = (("why", self.why), ("by", self.by), ("exit", self.exit_code))
+        return {key: value for key, value in found if value is not None}
 
 
 def remaining(deadline: int) -> float:
