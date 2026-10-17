@@ -76,6 +76,15 @@ class PreviewResult:
     attempt_id: str | None = None
     kind: str | None = None  # "sliced" | "step" | "mesh", from the input ROLES
     stage: str | None = None  # the last protocol stage a STEP attempt reached (bounded enum, for the parent log)
+    # A publication lease was taken at the hand-off: the ONLY right to attach a library picture. A usable result
+    # (ok, or a timeout's checkpoint) without it publishes nothing (Codex A3-R1).
+    publishable: bool = False
+
+
+class PublicationDeferred(Revoked):
+    """A backup is copying the library's pictures: a result that must be published cannot be now. The INTERNAL
+    outcome ``publication_deferred`` — nothing handed off, nothing kept, the attempt's end proven and the slot freed;
+    its owner retries after the pause. Never a failure and never a preemption (Codex A-r3, the owner's (b))."""
 
 
 def _inputs_kind(inputs: dict) -> str:
@@ -514,24 +523,6 @@ class PreviewRuntime:
                 rpc.cancel()
             await asyncio.gather(waiter, rpc, return_exceptions=True)
 
-    @staticmethod
-    async def _unpaused_or_revoked(publication, ticket) -> None:
-        """A backup's pause of the pictures, raced against this ticket's revoke (Codex A2-R2): a ready result waiting
-        to be handed off still holds the slot, so a sliced arrival that revoked this low wins — Revoked, the result
-        discarded and the slot freed through the ordinary proof of end — instead of waiting behind the backup. A
-        pause never revokes anything by itself; the caller asks ``paused()`` again before its synchronous acquire,
-        since a new pause may begin while this wait unwinds."""
-        unpaused = asyncio.ensure_future(publication.until_unpaused())
-        revoked = asyncio.ensure_future(ticket.revoked.wait())
-        try:
-            await asyncio.wait({unpaused, revoked}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for waiter in (unpaused, revoked):
-                waiter.cancel()
-            await asyncio.gather(unpaused, revoked, return_exceptions=True)
-        if ticket.revoke.is_set():
-            raise Revoked
-
     @asynccontextmanager
     async def attempt(
         self,
@@ -544,6 +535,7 @@ class PreviewRuntime:
         on_admit: Callable[[], int | None] | None = None,
         on_hand_off: Callable[[], None] | None = None,
         publication=None,
+        publication_optional: bool = False,
     ):
         """One owned preview attempt. ``priority`` defaults from the kind (sliced high, STL/OBJ normal, STEP low);
         a revoked low ends as the INTERNAL outcome ``preempted`` (no files, no publication) — its caller requeues it,
@@ -555,14 +547,24 @@ class PreviewRuntime:
 
         ``publication`` (spec §5): a gate whose ``acquire()`` is asked in that same synchronous step, before the
         hand-off — a closed gate (restore) revokes the result, so nothing reaches its attach; the lease is held
-        through the caller's publication and released when this context exits. A paused gate (a backup copying the
-        pictures) is waited for before that step, and a revoke ends the wait (``_unpaused_or_revoked``)."""
+        through the caller's publication and released when this context exits, and ``result.publishable`` says it
+        was taken. Nothing waits for a pause inside the slot (Codex A-r3): a paused gate (a backup copying the
+        pictures) DEFERS the attempt — at entry before anything is read, at the hand-off through the ordinary proof
+        of end — and its owner retries after the pause. ``publication_optional`` (slicing, whose own output needs no
+        publication right): a paused or closed gate hands the result off WITHOUT a lease — usable, not publishable."""
         kind = _inputs_kind(inputs)
         result = PreviewResult(kind=kind)
         priority = priority or PRIORITY_BY_KIND[kind]
         mesh = inputs.get("mesh")
         if mesh and mesh[1] in CAD_KINDS and set(inputs) != {"mesh"}:
             result.outcome = "protocol_error"  # STEP never rides another attempt (refused before any command)
+            yield result
+            return
+        if publication is not None and not publication_optional and publication.paused():
+            # A backup is copying the pictures: no slot, no read, no conversion for a result that could not be
+            # published (Codex A-r3 §6); the hand-off below catches a pause that begins later.
+            result.outcome = "publication_deferred"
+            logger.info("Preview attempt kind=%s outcome=publication_deferred stage=admission (backup pause)", kind)
             yield result
             return
         if wait_seconds is None:
@@ -740,24 +742,27 @@ class PreviewRuntime:
                         # The point of no return, under the arbiter's gate: a revoke that came first wins, the
                         # ready output is discarded and the attempt ends preempted without any restart.
                         if publication is not None:
-                            while publication.paused():  # a backup copying the pictures: wait, unless revoked
-                                await self._unpaused_or_revoked(publication, ticket)
-                            lease = publication.acquire()  # None: publication closed (a restore) — nothing attaches
-                            if lease is None:
-                                raise Revoked
+                            # None: closed (a restore) or paused (a backup copying the pictures). Never waited for
+                            # here, holding the slot: a required publication is deferred or revoked, an optional
+                            # one is handed off without the right to publish (Codex A-r3).
+                            lease = publication.acquire()
+                            if lease is None and not publication_optional:
+                                raise PublicationDeferred if publication.paused() else Revoked
                         if not self.slot.hand_off(ticket):
                             if lease is not None:
                                 lease.release()
                                 lease = None
                             raise Revoked
+                        result.publishable = lease is not None
                         if on_hand_off is not None:
                             on_hand_off()  # same synchronous step as the hand-off: nothing interleaves
                     else:
                         self.slot.hand_off(ticket)  # a service terminal: nothing left to interrupt or requeue
                     self.result_handed_off = True
-            except Revoked:
+            except Revoked as exc:
                 revoked = True
-                result.outcome = "preempted"  # internal: neither a public canceled nor a failure
+                # internal: neither a public canceled nor a failure; a deferral is not even a preemption
+                result.outcome = "publication_deferred" if isinstance(exc, PublicationDeferred) else "preempted"
                 result.files.clear()
                 if command:
                     try:

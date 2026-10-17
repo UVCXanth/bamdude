@@ -6,6 +6,8 @@ and a restore that may replace files only after every library preview writer is 
 from __future__ import annotations
 
 import asyncio
+import io
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -152,7 +154,7 @@ async def test_an_authority_gone_at_the_attach_writes_nothing_and_leaves_no_png(
 # --- generate(): the kind from the type, the digest for STEP ---------------------------------------------------
 
 
-def _fake_attempt(outcome="render_failed", digest=None, preview: Path | None = None):
+def _fake_attempt(outcome="render_failed", digest=None, preview: Path | None = None, publishable=None):
     calls = []
 
     @asynccontextmanager
@@ -160,7 +162,8 @@ def _fake_attempt(outcome="render_failed", digest=None, preview: Path | None = N
         from backend.app.services.preview_runtime import PreviewResult
 
         calls.append((inputs, kwargs))
-        result = PreviewResult(outcome=outcome)
+        lease = outcome == "ok" if publishable is None else publishable  # an ok of a required publication holds one
+        result = PreviewResult(outcome=outcome, publishable=lease)
         if preview is not None:
             result.files["preview"] = preview
         if digest is not None:
@@ -183,6 +186,42 @@ async def test_generate_takes_the_kind_from_the_file_type_never_from_the_name(
     (inputs, kwargs) = calls[0]
     assert inputs["mesh"][1] == file_type
     assert kwargs.get("publication") is library_preview.publication  # every library attach takes a lease
+
+
+@pytest.mark.parametrize("door", ["generate", "perform_step"])
+@pytest.mark.asyncio
+async def test_a_result_without_its_lease_is_never_attached(publication_db, tmp_path, monkeypatch, door):
+    """Codex A3-R1: only the lease taken at the hand-off is a right to attach — a matching, ready picture is not."""
+    from backend.app.core import database
+    from backend.app.services import preview_runtime as preview_runtime_module
+    from backend.app.services.library_preview_jobs import StepSource, perform_step
+
+    settings.library_dir.mkdir(parents=True, exist_ok=True)
+    (settings.library_dir / "part.step").write_bytes(b"ISO-10303-21;")
+    source = await seed(publication_db)
+    attempt, _ = _fake_attempt(outcome="ok", digest=source.file_hash, preview=png(tmp_path), publishable=False)
+    monkeypatch.setattr(library_preview, "preview_attempt", attempt)
+    monkeypatch.setattr(preview_runtime_module, "preview_attempt", attempt)
+    monkeypatch.setattr(database, "async_session", publication_db)
+    if door == "generate":
+        async with publication_db() as db:
+            assert await library_preview.generate(db, source) is False
+    else:
+        step_source = StepSource(
+            source.id, source.filename, "step", source.file_path, source.file_hash, None, source.thumbnail_path
+        )
+        outcome = await perform_step(
+            step_source,
+            order=1,
+            wait_seconds=1,
+            on_admit=lambda: None,
+            on_hand_off=lambda: None,
+            before_attach=lambda session=None: asyncio.sleep(0, True),
+        )
+        assert outcome == "unavailable"
+    async with publication_db() as db:
+        row = await db.get(LibraryFile, source.id)
+    assert row.thumbnail_path == source.thumbnail_path and not _pngs()
 
 
 @pytest.mark.parametrize(("file_hash", "digest"), [("a" * 64, "b" * 64), (None, "a" * 64)])
@@ -811,26 +850,116 @@ async def test_every_caller_of_the_one_stop_hears_its_one_answer_and_keeps_heari
     assert len(stops) == 1  # the later answers are that stop's, never a second stop's
 
 
+async def _stl_source(publication_db, *, file_hash=None):
+    settings.library_dir.mkdir(parents=True, exist_ok=True)
+    (settings.library_dir / "cube.stl").write_bytes(_box())
+    (settings.library_dir / "thumbnails").mkdir(parents=True, exist_ok=True)
+    return await seed(
+        publication_db, filename="cube.stl", file_path="library/cube.stl", file_type="stl", file_hash=file_hash
+    )
+
+
+async def _until(predicate, seconds: float = 30.0):
+    for _ in range(int(seconds / 0.02)):
+        if predicate():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition never reached")
+
+
 @pytest.mark.asyncio
-async def test_a_publication_reaching_its_hand_off_during_a_backup_pause_waits_then_publishes(
-    publication_db, runtime, tmp_path, monkeypatch
+async def test_an_stl_picture_deferred_by_a_backup_pause_waits_outside_the_slot_then_publishes(
+    publication_db, runtime, monkeypatch
 ):
-    """The real chain: a backup holds the pictures paused; an STL picture reaching its hand-off waits (nothing is
-    written into the pictures meanwhile, no ``.part``) and publishes once the pause is lifted (Codex A-R5)."""
+    """The real chain (Codex A-r3): the backup begins while the STL renders; the result is deferred, the slot is
+    free while the caller waits (nothing written into the pictures, no ``.part``), and a fresh attempt publishes
+    once the pause lifts."""
+    from backend.app.services import preview_runtime as preview_runtime_module
+    from backend.tests.unit.services.test_preview_priority import _Pause, _pause_when_the_run_is_sent
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _stl_source(publication_db)
+    runs = []
+    original = runtime._rpc
+
+    async def counted(command, operation=None, **kwargs):
+        if operation is None and command.operation == "run":
+            runs.append(library_preview.publication.paused())
+        return await original(command, operation, **kwargs)
+
+    runtime._rpc = counted
+    pause = _Pause(library_preview.publication)
+    _pause_when_the_run_is_sent(runtime, pause)  # outermost: the backup begins before the run is counted
+
+    async def legacy():
+        async with publication_db() as db:
+            return await library_preview.generate(db, source)
+
+    task = asyncio.create_task(legacy())
+    try:
+        await asyncio.wait_for(pause.entered.wait(), 60)
+        await _until(lambda: not runtime.slot.locked())  # deferred: the slot is free while it waits
+        await asyncio.sleep(0.3)
+        assert not task.done() and runs == [True] and _pngs() == []  # one run, nothing written meanwhile
+    finally:
+        await pause.lift()
+    assert await asyncio.wait_for(task, 60) is True
+    assert runs == [True, False] and len(_pngs()) == 1  # a fresh attempt after the pause
+
+
+@pytest.mark.asyncio
+async def test_an_stl_picture_gives_up_when_the_pause_outlasts_its_bound(publication_db, runtime, monkeypatch):
+    import time as _time
+
     from backend.app.services import preview_runtime as preview_runtime_module
 
     monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
-    settings.library_dir.mkdir(parents=True, exist_ok=True)
-    (settings.library_dir / "cube.stl").write_bytes(_box())
-    source = await seed(
-        publication_db, filename="cube.stl", file_path="library/cube.stl", file_type="stl", file_hash=None
-    )
-    pictures = settings.library_dir / "thumbnails"
-    pictures.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(library_preview, "PAUSE_WAIT_SECONDS", 0.3)
+    source = await _stl_source(publication_db)
+    async with library_preview.publication.pause(1):
+        started = _time.monotonic()
+        async with publication_db() as db:
+            assert await library_preview.generate(db, source) is False
+        assert _time.monotonic() - started < 5
+    assert _pngs() == [] and not runtime.slot.locked() and library_preview.publication.leases == 0
+
+
+@pytest.mark.asyncio
+async def test_a_request_shares_one_pause_bound_across_its_files(publication_db, runtime, monkeypatch):
+    """A ZIP or the batch button asks one picture after another: the files of one request share one bound, so a
+    long backup costs the request that bound once, never once per file."""
+    import time as _time
+
+    from backend.app.services import preview_runtime as preview_runtime_module
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    monkeypatch.setattr(library_preview, "PAUSE_WAIT_SECONDS", 0.4)
+    source = await _stl_source(publication_db)
+    async with library_preview.publication.pause(1):
+        started = _time.monotonic()
+        budget = library_preview.PauseBudget()
+        async with publication_db() as db:
+            for _ in range(5):
+                assert await library_preview.generate(db, source, pause_budget=budget) is False
+        assert _time.monotonic() - started < 1.2  # one bound of 0.4 s, not five (2 s)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["trashed", "bytes_replaced"])
+async def test_an_stl_picture_deferred_while_its_source_changes_is_never_attached(
+    publication_db, runtime, monkeypatch, change
+):
+    """The retry is a fresh attempt: it reads the file again and attaches only through the row's CAS."""
+    import hashlib
+
+    from backend.app.services import preview_runtime as preview_runtime_module
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _stl_source(publication_db, file_hash=hashlib.sha256(_box()).hexdigest())
     lifted = asyncio.Event()
 
     async def backup():
-        async with library_preview.publication.pause(5):
+        async with library_preview.publication.pause(1):
             await lifted.wait()
 
     copying = asyncio.create_task(backup())
@@ -840,23 +969,164 @@ async def test_a_publication_reaching_its_hand_off_during_a_backup_pause_waits_t
         async with publication_db() as db:
             return await library_preview.generate(db, source)
 
-    reached = asyncio.Event()
-    gate = library_preview.publication
-    real_wait = gate.until_unpaused
-
-    async def at_hand_off():
-        reached.set()  # its result is ready and it stands at the hand-off
-        await real_wait()
-
-    monkeypatch.setattr(gate, "until_unpaused", at_hand_off)
     task = asyncio.create_task(legacy())
-    await asyncio.wait_for(reached.wait(), 60)
     await asyncio.sleep(0.3)
-    assert not task.done() and sorted(pictures.iterdir()) == []  # waiting, nothing written into the pictures
+    assert not task.done()
+    if change == "trashed":
+        async with publication_db() as db:
+            await db.execute(update(LibraryFile).where(LibraryFile.id == source.id).values(deleted_at=datetime.now()))
+            await db.commit()
+    else:
+        (settings.library_dir / "cube.stl").write_bytes(_box() + b"\n")  # other bytes than the row names
     lifted.set()
     await copying
-    assert await task is True
-    assert [p.suffix for p in pictures.iterdir()] == [".png"]
+    assert await asyncio.wait_for(task, 60) is False
+    assert _pngs() == []
+    async with publication_db() as db:
+        assert (await db.get(LibraryFile, source.id)).thumbnail_path == "library/old.png"
+
+
+@pytest.mark.asyncio
+async def test_a_caller_cancelled_while_its_picture_waits_for_a_pause_holds_nothing(
+    publication_db, runtime, monkeypatch
+):
+    from backend.app.services import preview_runtime as preview_runtime_module
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _stl_source(publication_db)
+    async with library_preview.publication.pause(1):
+
+        async def legacy():
+            async with publication_db() as db:
+                return await library_preview.generate(db, source)
+
+        task = asyncio.create_task(legacy())
+        await asyncio.sleep(0.3)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not runtime.slot.locked() and library_preview.publication.leases == 0 and _pngs() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["backup_failed", "restore_closed"])
+async def test_the_wait_ends_with_the_pause_whatever_ends_it(publication_db, runtime, monkeypatch, ending):
+    """A backup that fails lifts its pause and the picture publishes; a restore closing the gate ends the wait at
+    once with nothing published — never a wait for a resume that cannot come."""
+    from backend.app.services import preview_runtime as preview_runtime_module
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _stl_source(publication_db)
+    failed = asyncio.Event()
+
+    async def backup():
+        async with library_preview.publication.pause(1):
+            await failed.wait()
+            raise OSError("the copy failed")
+
+    copying = asyncio.create_task(backup())
+    await asyncio.sleep(0.05)
+
+    async def legacy():
+        async with publication_db() as db:
+            return await library_preview.generate(db, source)
+
+    task = asyncio.create_task(legacy())
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    if ending == "backup_failed":
+        failed.set()
+        await asyncio.gather(copying, return_exceptions=True)
+        assert await asyncio.wait_for(task, 60) is True and len(_pngs()) == 1
+    else:
+        library_preview.publication.close()
+        try:
+            assert await asyncio.wait_for(task, 5) is False and _pngs() == []
+        finally:
+            failed.set()
+            await asyncio.gather(copying, return_exceptions=True)
+
+
+# --- A3-R1: the slicing output and the right to attach a library picture are apart -----------------------------
+
+
+async def _sliced_source(publication_db):
+    import hashlib
+
+    return await _stl_source(publication_db, file_hash=hashlib.sha256(_box()).hexdigest())
+
+
+@pytest.mark.asyncio
+async def test_a_sliced_preview_under_a_pause_keeps_its_output_and_attaches_nothing(
+    publication_db, runtime, monkeypatch
+):
+    """Codex A3-R1 on the real chain: the slicing output is not lost to a backup, and the source picture is never
+    attached without a lease."""
+    from backend.app.services import preview_runtime as preview_runtime_module
+    from backend.tests.unit.services.test_preview_priority import _sliced
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _sliced_source(publication_db)
+    attaches = []
+
+    async def spy(db, src, png, **kwargs):
+        attaches.append((library_preview.publication.paused(), library_preview.publication.leases))
+        return "attached"
+
+    monkeypatch.setattr(library_preview, "attach_result", spy)
+    content = _sliced()
+    async with library_preview.publication.pause(1), publication_db() as db:
+        out = await asyncio.wait_for(library_preview.sliced_preview(db, content, model_bytes=_box(), source=source), 60)
+    assert attaches == []
+    assert out != content and zipfile.is_zipfile(io.BytesIO(out))  # the slicing output, not the input back
+
+
+@pytest.mark.asyncio
+async def test_a_sliced_preview_that_timed_out_with_a_ready_picture_attaches_nothing(
+    publication_db, tmp_path, monkeypatch
+):
+    """A timeout keeps the checkpoint for the slicing output; it gives no right to attach the source picture."""
+    from backend.app.services.preview_runtime import PreviewResult
+
+    source = await _sliced_source(publication_db)
+    picture, checkpoint = png(tmp_path), tmp_path / "checkpoint.3mf"
+    checkpoint.write_bytes(b"the checkpoint")
+    attaches = []
+
+    @asynccontextmanager
+    async def timed_out(inputs, **kwargs):
+        yield PreviewResult(outcome="timeout", files={"preview": picture, "checkpoint": checkpoint})
+
+    async def spy(db, src, png_path, **kwargs):
+        attaches.append(src.id)
+        return "attached"
+
+    monkeypatch.setattr(library_preview, "preview_attempt", timed_out)
+    monkeypatch.setattr(library_preview, "attach_result", spy)
+    async with publication_db() as db:
+        out = await library_preview.sliced_preview(db, b"input", model_bytes=_box(), source=source)
+    assert out == b"the checkpoint" and attaches == []
+
+
+@pytest.mark.asyncio
+async def test_a_sliced_preview_with_its_lease_attaches_the_source_picture(publication_db, runtime, monkeypatch):
+    from backend.app.services import preview_runtime as preview_runtime_module
+    from backend.tests.unit.services.test_preview_priority import _sliced
+
+    monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
+    source = await _sliced_source(publication_db)
+    attaches = []
+    real = library_preview.attach_result
+
+    async def spy(db, src, png_path, **kwargs):
+        attaches.append(library_preview.publication.leases)
+        return await real(db, src, png_path, **kwargs)
+
+    monkeypatch.setattr(library_preview, "attach_result", spy)
+    async with publication_db() as db:
+        await library_preview.sliced_preview(db, _sliced(), model_bytes=_box(), source=source)
+    assert attaches == [1] and len(_pngs()) == 1  # attached under its lease
 
 
 @pytest.mark.asyncio

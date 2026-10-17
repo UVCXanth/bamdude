@@ -8,8 +8,12 @@ Nothing here is stored: no table, no replay after a restart. A job's budgets run
 preview slot — 120 s of cumulative active time and 600 s of wall time, both across preemptions — and a separate
 1800 s bounds the wait before that admission. Only a sliced attempt preempts an active STEP (the arbiter's rule);
 a preempted execution goes back to the head of the queue with its original order, at most three times. A user
-cancel, a shutdown or a restore is decided once and a later preemption never overwrites it. The jobs epoch is this
-service's own random id — a preview service relaunch keeps it, a main restart or a restore changes it.
+cancel, a shutdown or a restore is decided once and a later preemption never overwrites it. A backup pausing the
+library's pictures DEFERS an execution it catches before its hand-off — requeued with its order, never counted as
+a preemption — and no attempt starts while the pause holds: the runner waits without a slot, a session or a lease,
+the wait spends no active budget and resets no limit, and a limit passing meanwhile ends the job as
+``backup_in_progress``. The jobs epoch is this service's own random id — a preview service relaunch keeps it, a
+main restart or a restore changes it.
 
 Each attempt runs in a child task of the runner, so the runner never becomes the runtime's ``active_task`` and
 a preemption cancels no task. No DB session is held while CAD runs.
@@ -56,6 +60,7 @@ JOB_REASONS = frozenset(
         "preemption_limit",
         "expired_before_start",
         "job_expired",
+        "backup_in_progress",
         "authority_missing",
         "source_unverified",
         "superseded",
@@ -182,8 +187,10 @@ class LibraryPreviewJobs:
         checks=None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        publication=None,
     ):
         self.epoch = uuid.uuid4().hex
+        self._publication = publication  # None: library_preview.publication, read at use time
         self.open = False
         self._perform = perform or perform_step
         self._checks = checks or DatabaseChecks()
@@ -305,6 +312,13 @@ class LibraryPreviewJobs:
 
     # --- the runner -------------------------------------------------------------------------------------------
 
+    def _gate(self):
+        if self._publication is not None:
+            return self._publication
+        from backend.app.services import library_preview
+
+        return library_preview.publication
+
     def _head(self) -> Execution | None:
         queued = [e for e in self._pending.values() if e.state == "queued"]
         return min(queued, key=lambda e: e.order) if queued else None
@@ -324,24 +338,48 @@ class LibraryPreviewJobs:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
-            if self._expired(execution) or not await self._prechecks(execution):
+            if self._expired(execution):
+                continue
+            gate = self._gate()
+            if gate.paused() or not gate.open:
+                await self._wait_for_publication(gate)
+                continue  # the head, its limits and its prechecks are asked again
+            if not await self._prechecks(execution):
                 continue
             outcome = await self._attempt(execution)
             if execution.state != "running":
                 continue  # finished meanwhile (a stop)
             await self._settle(execution, outcome)
 
-    def _expired(self, execution: Execution) -> bool:
+    def _expired(self, execution: Execution, *, backup: bool = False) -> bool:
+        """``backup``: the job was held by a backup's pause of the pictures when its limit passed — it says so,
+        never that its file was at fault (Codex A-r3 §5). The active budget is the CAD's own: still ``timeout``."""
         now = self._clock()
         if execution.first_admission is None and now - execution.enqueued >= WAIT_BEFORE_START:
-            self._finish(execution, "failed", "expired_before_start")
+            self._finish(execution, "failed", "backup_in_progress" if backup else "expired_before_start")
         elif execution.first_admission is not None and now - execution.first_admission >= WALL_SECONDS:
-            self._finish(execution, "failed", "job_expired")
+            self._finish(execution, "failed", "backup_in_progress" if backup else "job_expired")
         elif execution.active_used >= ACTIVE_SECONDS:
             self._finish(execution, "failed", "timeout")
         else:
             return False
         return True
+
+    async def _wait_for_publication(self, gate) -> None:
+        """A backup is copying the library's pictures, or a restore closed them: nothing could be published, so
+        no attempt starts — no stat, no slot, no CAD (Codex A-r3, the owner's (b)). Wait without a slot, a session
+        or a lease while the queue still ends on time, until the pause lifts; a closed gate waits for the stop
+        that follows it. The wait spends no active budget and resets no limit."""
+        logger.info("Preview jobs wait: the library pictures are %s", "paused by a backup" if gate.open else "closed")
+        while self._head() is not None and (gate.paused() or not gate.open):
+            for queued in [e for e in self._pending.values() if e.state == "queued"]:
+                self._expired(queued, backup=gate.open)
+            waiter = asyncio.ensure_future(gate.until_unpaused() if gate.open else asyncio.Event().wait())
+            try:
+                await asyncio.wait({waiter}, timeout=WATCH_TICK)
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
 
     async def _prechecks(self, execution: Execution) -> bool:
         """Read-only, before any CAD: the receipts whose actor still holds its right, and the live source."""
@@ -480,6 +518,14 @@ class LibraryPreviewJobs:
                 self._finish(execution, "failed", "preemption_limit")
             else:
                 self._requeue(execution)  # the head again: its order is unchanged
+        elif outcome == "publication_deferred":
+            # a backup began while it converted: its picture was not published, its end proven, the slot freed.
+            # Requeued with its order and never a preemption; the runner waits out the pause before any retry.
+            execution.handed_off = False
+            logger.info(
+                "Preview job=%s file=%s deferred: a backup is copying the pictures", execution.id, execution.source.id
+            )
+            self._requeue(execution)
         elif outcome == "busy":
             self._requeue(execution)
             await self._sleep(BUSY_BACKOFF)  # the wait budgets end it at the head of the loop
@@ -685,7 +731,9 @@ async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_
         if result.outcome == "source_changed":
             return "superseded"  # its bytes moved while they were read: the row will name new ones
         if result.outcome != "ok":
-            return result.outcome
+            return result.outcome  # publication_deferred included: the runner requeues it
+        if not result.publishable:
+            return "unavailable"  # no lease, no attach (an ok of a required publication always holds one)
         png = result.files.get("preview")
         if png is None or result.input_digests.get("mesh") != source.file_hash:
             return "superseded"  # the bytes read are not the bytes the row names

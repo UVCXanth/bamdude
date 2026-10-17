@@ -105,6 +105,7 @@ from backend.app.services.library_helpers import (
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_preview import (
+    PauseBudget as PreviewPauseBudget,
     Source as PreviewSource,
     generate as generate_library_preview,
     sliced_preview,
@@ -3843,6 +3844,7 @@ async def extract_zip_file(
     errors: list[ZipExtractError] = []
     folders_created = 0
     folder_cache: dict[str, int] = {}  # path -> folder_id
+    picture_pause = PreviewPauseBudget()  # one bound for every picture of this ZIP on a backup's pause
 
     # If create_folder_from_zip is True, create a folder named after the ZIP file
     zip_folder_id = folder_id
@@ -4023,7 +4025,9 @@ async def extract_zip_file(
                         and len(file_content) >= MIN_USABLE_STL_BYTES
                     ):
                         try:
-                            await generate_library_preview(db, PreviewSource.capture(library_file))
+                            await generate_library_preview(
+                                db, PreviewSource.capture(library_file), pause_budget=picture_pause
+                            )
                         except Exception:
                             logger.warning("Preview skipped for extracted file %s", library_file.id, exc_info=True)
 
@@ -4114,6 +4118,7 @@ async def batch_generate_stl_thumbnails(
     sources = [PreviewSource.capture(row) for row in rows if not is_cad_preview(row.file_type)]
     # This route owns only an auth/selection read transaction.
     await db.commit()
+    picture_pause = PreviewPauseBudget()  # one bound for the whole batch on a backup's pause
     for file_id, filename in cad_files:
         results.append(
             BatchThumbnailResult(
@@ -4134,7 +4139,7 @@ async def batch_generate_stl_thumbnails(
             if size < MIN_USABLE_STL_BYTES:
                 error, error_code = "File too small to contain a usable mesh", "too_small"
             else:
-                success = await generate_library_preview(db, source)
+                success = await generate_library_preview(db, source, pause_budget=picture_pause)
         except FileNotFoundError:
             error, error_code = "File not found on disk", "file_missing"
         except Exception:

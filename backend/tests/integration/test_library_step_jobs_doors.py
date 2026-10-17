@@ -143,10 +143,11 @@ async def test_an_api_key_upload_carries_the_key_as_its_authority(async_client, 
 
 @pytest.mark.asyncio
 async def test_a_zip_queues_its_steps_only_after_its_own_stl_pictures(async_client, db_session, jobs, monkeypatch):
-    events = []
+    events, budgets = [], []
 
-    async def stl_preview(db, source):
+    async def stl_preview(db, source, *, pause_budget=None):
         events.append(("stl", source.filename))
+        budgets.append(pause_budget)
         return False
 
     real_enqueue = jobs.enqueue
@@ -167,6 +168,7 @@ async def test_a_zip_queues_its_steps_only_after_its_own_stl_pictures(async_clie
     )
     assert response.status_code == 200
     assert [kind for kind, _ in events] == ["stl", "step", "step"]  # STEP only after the synchronous STL/OBJ
+    assert len(budgets) == 1 and budgets[0] is not None  # the ZIP's one bound on a backup's pause
     by_name = {item["filename"]: item for item in response.json()["files"]}
     assert by_name["one.step"]["thumbnail_job"]["receipt_id"] and by_name["two.stp"]["thumbnail_job"]["receipt_id"]
     assert by_name["cube.stl"]["thumbnail_job"] is None
