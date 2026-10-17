@@ -263,9 +263,12 @@ def test_an_owner_killed_mid_install_takes_its_whole_tree_with_it(tmp_path):
             assert time.monotonic() < deadline and owner.poll() is None
             time.sleep(0.05)
         writer, grandchild = (int(x) for x in pids.read_text().split())
+        # Taken while they run: the tree may follow its owner before the next line could look them up (measured on
+        # a GitHub Linux runner: NoSuchProcess), and a process object pins its identity against a reused PID.
+        tree_procs = [psutil.Process(writer), psutil.Process(grandchild)]
         owner.kill()
         owner.wait(timeout=10)
-        gone, alive = psutil.wait_procs([psutil.Process(writer), psutil.Process(grandchild)], timeout=15)
+        gone, alive = psutil.wait_procs(tree_procs, timeout=15)
         assert not [p for p in alive if p.status() != psutil.STATUS_ZOMBIE]  # the tree followed its owner
         with sr._platform_lock(root, "linux-x64-cp312", 10):
             sr._reclaim_staging(staging.parent)
