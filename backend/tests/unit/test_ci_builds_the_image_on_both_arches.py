@@ -20,7 +20,9 @@ def _jobs() -> dict:
 
 def _image_checks(job: dict) -> list[str]:
     """The commands that run inside the built image (``docker run ... bamdude:test``)."""
-    return [s["run"] for s in job["steps"] if "run" in s and "docker run" in s["run"] and "bamdude:test" in s["run"]]
+    return [
+        s["run"] for s in job["steps"] if "run" in s and "docker run --rm" in s["run"] and "bamdude:test" in s["run"]
+    ]
 
 
 def test_the_image_is_built_and_checked_natively_on_arm64():
@@ -70,3 +72,15 @@ def test_the_arm64_job_can_publish_nothing():
     runs = " ".join(s.get("run", "") for s in job["steps"])
     assert "docker push" not in runs and "docker login" not in runs and "--push" not in runs
     assert "secrets." not in yaml.safe_dump(job)
+
+
+def test_docker_checks_the_production_server_and_backend_keeps_the_full_suite():
+    jobs = _jobs()
+    runs = "\n".join(s.get("run", "") for s in jobs["docker-test"]["steps"])
+    assert "docker run -d --name bamdude-ci-http --network none bamdude:test" in runs
+    assert "docker exec -i bamdude-ci-http python - < scripts/docker_http_smoke.py" in runs
+    assert "integration-test-runner" not in runs
+    assert "backend/tests/ -v" in jobs["backend-tests"]["steps"][-1]["run"]
+    # Owner selected optimization 2, not 1: preserve the job dependency gates.
+    assert jobs["docker-test"]["needs"] == ["backend-tests", "postgres-scenarios", "frontend-build"]
+    assert any(s.get("if") == "always()" and "docker rm" in s.get("run", "") for s in jobs["docker-test"]["steps"])

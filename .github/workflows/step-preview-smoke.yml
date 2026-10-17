@@ -58,6 +58,10 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
       - name: System libraries of the CAD closure (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libgl1 libx11-6 libexpat1
@@ -78,13 +82,15 @@ jobs:
       - name: Verify it read-only
         run: python -m backend.app.step_runtime verify
       - name: The requires_cad lane, strictly
-        run: python -m pytest backend/tests -m requires_cad -v --tb=short --timeout=300 --timeout-method=thread -n 1
+        # Each worker owns its temp roots, broker and children; only the installed bundle is shared read-only.
+        # Keep concurrency at two: CAD stress tests deliberately approach the per-child memory limit.
+        run: python -m pytest backend/tests -m requires_cad -v --tb=short --timeout=300 --timeout-method=thread -n 2 --durations=15
       - name: Runtime unit tests
         run: >
           python -m pytest backend/tests/unit/services/test_step_runtime_catalog.py
           backend/tests/unit/services/test_step_runtime_install.py backend/tests/unit/services/test_step_runtime_child.py
           backend/tests/unit/test_step_render_probe.py backend/tests/unit/test_step_preview_smoke_covers_every_key.py
-          -v --tb=short --timeout=300 --timeout-method=thread -n 1
+          -v --tb=short --timeout=300 --timeout-method=thread -n 2 --durations=15
       - name: Render through the real preview chain
         shell: bash
         run: python -m backend.app.step_render_probe | tee step-probe.json
