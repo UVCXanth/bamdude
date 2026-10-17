@@ -59,6 +59,7 @@
 
 ### Fixed
 
+- **File previews survive a slow first start.** When the local preview service failed to start — on a busy Windows machine, say — thumbnails stayed off until BamDude was restarted. It is now tried again on its own, up to three attempts with short pauses, as long as the failed attempt is proven fully cleaned up; a process that cannot be confirmed stopped still disables previews until a restart, as before. The log now names the step where a start stopped.
 - Polygon checks pause an already-started print when calibration, camera capture or analysis is unavailable, with a distinct explanation. Unavailable rectangle checks retain their legacy permissive policy and are no longer logged as an empty plate.
 - **Order plans can override print parameters per sliced printer model.** Only new plan jobs snapshot the explicit choices; auto-queue promotion and rebalance retain them without changing saved operator profiles or existing jobs. Routing-target edits keep the captured file's choices; replacing the file selects the new sliced model's entry. The editor reuses the print dialog and the mirrored BambuStudio capability catalog, hiding unsupported functions and refusing unsupported automatic calibration modes.
 
