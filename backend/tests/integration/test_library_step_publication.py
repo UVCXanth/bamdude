@@ -666,6 +666,7 @@ async def test_a_restore_answers_in_budget_while_the_real_runtime_is_stuck_in_a_
 
     monkeypatch.setattr(runtime, "cad_descriptor", descriptor)
     monkeypatch.setattr(r, "runtime", runtime)
+    monkeypatch.setattr(r, "_stopping", None)  # an unproven stop is kept by design: never let one leak onward
     monkeypatch.setattr(r, "snapshot", hung)
 
     async def stuck():
@@ -702,6 +703,112 @@ async def test_no_replacement_runtime_starts_while_the_old_one_is_still_stopping
     with pytest.raises(RuntimeError):
         await r.start_preview_runtime(tmp_path)
     pending.cancel()
+
+
+def _runtime_singleton(tmp_path, monkeypatch):
+    """A real, never started runtime as the module's singleton, with no stop of it yet; jobs and publication
+    isolated, so a quiesce asks only the runtime."""
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
+
+    rt = r.PreviewRuntime(tmp_path / "runtime")
+    monkeypatch.setattr(r, "runtime", rt)
+    monkeypatch.setattr(r, "_stopping", None)
+    monkeypatch.setattr(library_preview, "publication", library_preview.PublicationGate())
+    monkeypatch.setattr(jobs_module, "jobs", None)
+    return rt
+
+
+class _UnprovenService:
+    def stop(self):
+        raise PermissionError("the service's end is not proven")
+
+
+@pytest.mark.asyncio
+async def test_a_second_restore_still_refuses_a_runtime_whose_end_was_never_proven(tmp_path, monkeypatch):
+    """Codex A2-R1: the real stop ends unproven (the service's stop raised). Its negative answer and its runtime are
+    kept: a second restore, the shutdown's stop and a replacement start hear the same refusal — the singleton is
+    never cleared into «no runtime, so nothing to prove»."""
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
+
+    rt = _runtime_singleton(tmp_path, monkeypatch)
+    rt.service = _UnprovenService()
+    assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=1) is False
+    assert rt.uncertain
+    assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=1) is False
+    assert await r.stop_preview_runtime_within(1) is False
+    assert await r.stop_preview_runtime() is False
+    assert r.runtime is rt and r.get_preview_health().reason == "ownership_uncertain"
+    with pytest.raises(RuntimeError):
+        await r.start_preview_runtime(tmp_path)  # never a replacement beside an unproven service
+    assert r.runtime is rt
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_failed_is_no_proof_for_a_later_restore_or_a_replacement(tmp_path, monkeypatch):
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
+
+    rt = _runtime_singleton(tmp_path, monkeypatch)
+
+    async def broken():
+        raise RuntimeError("the stop itself failed")
+
+    monkeypatch.setattr(rt, "stop", broken)
+    assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=1) is False
+    assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=1) is False
+    assert await r.stop_preview_runtime() is False  # an unbounded caller hears the refusal too, not the error
+    assert r.runtime is rt
+    with pytest.raises(RuntimeError):
+        await r.start_preview_runtime(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_ends_with_the_slot_still_held_is_no_proof(tmp_path, monkeypatch):
+    """An attempt still in its tail when the stop ends: no proof. The refusal stands until a restart — it is not
+    re-judged later from a slot that has since been freed."""
+    from backend.app.services import preview_runtime as r
+
+    rt = _runtime_singleton(tmp_path, monkeypatch)
+    holder = await rt.slot.acquire("normal", 1)
+
+    async def stop():
+        pass
+
+    monkeypatch.setattr(rt, "stop", stop)
+    assert await r.stop_preview_runtime() is False
+    rt.slot.release(holder)
+    assert await r.stop_preview_runtime() is False
+    assert r.runtime is rt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proven", [False, True])
+async def test_every_caller_of_the_one_stop_hears_its_one_answer_and_keeps_hearing_it(proven, tmp_path, monkeypatch):
+    """Concurrent callers share one stop and one answer; a caller that gave up first never cancels it; whatever it
+    ends with is what every later caller hears — a proven end clears the singleton, an unproven one keeps it."""
+    from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
+
+    rt = _runtime_singleton(tmp_path, monkeypatch)
+    ended, stops = asyncio.Event(), []
+
+    async def stop():
+        stops.append(rt)
+        await ended.wait()  # an owned read of a hung share, say
+        rt.uncertain = not proven
+
+    monkeypatch.setattr(rt, "stop", stop)
+    waiting = [
+        asyncio.create_task(r.stop_preview_runtime()),
+        asyncio.create_task(r.stop_preview_runtime_within(30)),
+        asyncio.create_task(jobs_module.quiesce_library_previews_for_restore(drain_seconds=30)),
+    ]
+    await asyncio.sleep(0.05)
+    assert await r.stop_preview_runtime_within(0.05) is False  # an impatient caller: no proof yet, the stop goes on
+    ended.set()
+    assert await asyncio.gather(*waiting) == [proven, proven, proven]
+    assert await r.stop_preview_runtime() is proven
+    assert await jobs_module.quiesce_library_previews_for_restore(drain_seconds=1) is proven
+    assert (r.runtime is None) is proven
+    assert len(stops) == 1  # the later answers are that stop's, never a second stop's
 
 
 @pytest.mark.asyncio

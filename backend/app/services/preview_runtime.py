@@ -900,6 +900,9 @@ async def start_preview_runtime(base: Path, app_dir: Path | None = None):
     await runtime.start()
 
 
+# The one stop of `runtime`. Cleared, with the runtime, only by a PROVEN end; a stop that ended unproven, failed or
+# was cancelled stays here done — its runtime with it — so every later restore, shutdown and start hears the same
+# refusal until the process restarts (Codex A2-R1): «no runtime» is never mistaken for a proof.
 _stopping: asyncio.Task | None = None
 
 
@@ -907,21 +910,32 @@ async def _stop_and_clear(stopping: PreviewRuntime) -> bool:
     global runtime, _stopping
     try:
         await stopping.stop()
-        return not stopping.uncertain and not stopping.slot.locked()
-    finally:
-        if runtime is stopping:
-            runtime = None  # only once the old runtime has really stopped: never a replacement beside it
-        _stopping = None
+    except Exception:
+        logger.warning("Preview runtime stop failed; its ownership stays unproven until a restart", exc_info=True)
+        return False
+    if stopping.uncertain or stopping.slot.locked():
+        logger.warning(
+            "Preview runtime stop unproven: uncertain=%s slot_held=%s; refused until a restart",
+            stopping.uncertain,
+            stopping.slot.locked(),
+        )
+        return False
+    if runtime is stopping:
+        runtime = None  # only once the old runtime has really stopped: never a replacement beside it
+    _stopping = None
+    return True
 
 
 def _stop_task() -> asyncio.Task | None:
-    """The one stop of the current runtime: started once, shared by every caller (restore, shutdown, tests)."""
+    """The one stop of the current runtime: started once, shared by every caller (restore, shutdown, tests). A stop
+    that ended without a proof is returned again, done, with its answer — never a second one."""
     global _stopping
+    if _stopping is not None:
+        return _stopping
     if runtime is None:
         return None
-    if _stopping is None:
-        _stopping = asyncio.ensure_future(_stop_and_clear(runtime))
-        _stopping.set_name("preview-runtime-stop")
+    _stopping = asyncio.ensure_future(_stop_and_clear(runtime))
+    _stopping.set_name("preview-runtime-stop")
     return _stopping
 
 
@@ -930,14 +944,19 @@ async def stop_preview_runtime() -> bool:
     task = _stop_task()
     if task is None:
         return True
-    return await asyncio.shield(task)  # a cancelled caller never cancels the stop it waits for
+    try:
+        return await asyncio.shield(task)  # a cancelled caller never cancels the stop it waits for
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return False  # the stop itself was cancelled (the loop is closing): no proof
+        raise
 
 
 async def stop_preview_runtime_within(seconds: float) -> bool:
     """The same stop, its answer bounded (Codex A-R2): an attempt inside an owned read of a hung share cannot be
     cancelled out of it, so past ``seconds`` the caller hears False while the stop goes on, owned and shared — the
-    slot and the staging stay held, the singleton stays until that stop ends, and a later call waits for the same
-    stop rather than starting another."""
+    slot and the staging stay held, the singleton stays until that stop ends proven, and a later call waits for the
+    same stop rather than starting another (or hears its negative answer again)."""
     task = _stop_task()
     if task is None:
         return True
