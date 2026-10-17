@@ -508,7 +508,8 @@ async def test_a_deadline_spent_by_cleanup_admits_no_further_spawn(tmp_path, mon
         await asyncio.wait_for(asyncio.gather(rt.starter, return_exceptions=True), 30)
         assert len(services) == 1 and services[0].stopped  # the cleanup ended with its proof...
         assert rt.health().reason == "startup_failed"  # ...and no further spawn was admitted
-        assert any("exhausted_deadline" in m for m in _failures(caplog))
+        failures = _failures(caplog)  # one line, and it never announces a retry the deadline already forbids
+        assert len(failures) == 1 and "next=exhausted_deadline" in failures[0], failures
     finally:
         hold.set()
         await _stopped(rt)
@@ -751,5 +752,276 @@ async def test_a_retry_sweeps_only_preview_buckets(tmp_path, monkeypatch, shared
         await _until(lambda: rt.ready, 60)
         names = sorted(stream.config.name for stream in await js.streams_info())
         assert names == sorted(["OBJ_foreign", f"OBJ_{rt.bucket}"])
+    finally:
+        await _stopped(rt)
+
+
+# --- Codex implementation review r1: the start caller, the owner's first tick, a late wake, the terminal line ------
+
+
+def _fake_transport(monkeypatch, *, entered=None, release=None) -> list:
+    """Codex's fake Client: connect may be held on a barrier; nothing leaves the process."""
+    import nats.aio.client as client_module
+
+    clients = []
+
+    class Client:
+        is_connected = True
+
+        def __init__(self):
+            self.closed = False
+            clients.append(self)
+
+        async def connect(self, *args, **kwargs):
+            if entered is not None:
+                entered.set()
+                await release.wait()
+
+        def jetstream(self, **kwargs):
+            return self
+
+        async def streams_info(self):
+            return []
+
+        async def create_object_store(self, **kwargs):
+            return object()
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(client_module, "Client", Client)
+    return clients
+
+
+def _stopped_lines(caplog) -> list[str]:
+    return [m for m in _messages(caplog) if m.startswith("Preview startup stopped:")]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_start_caller_stops_the_owner_before_it_launches(tmp_path, monkeypatch, caplog):
+    """FSR-I-R1: a lifespan whose startup is aborted cannot rely on its shutdown half; the cancelled caller ends
+    the start through the runtime's one stop, owned, and only then hears its cancellation."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    entered, release = asyncio.Event(), asyncio.Event()
+    clients = _fake_transport(monkeypatch, entered=entered, release=release)
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url="unused"))
+    launches = []
+
+    async def launch(attempt=None):
+        launches.append(attempt)
+        rt.ready, rt.reason = True, None
+
+    rt._launch = launch
+    starting = asyncio.create_task(rt.start())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 5)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(rt.starter, return_exceptions=True), 5)
+        assert launches == [] and rt.closed and not rt.ready and all(c.closed for c in clients)
+        assert rt.monitor is None or rt.monitor.done()
+        assert len(_stopped_lines(caplog)) == 1
+    finally:
+        release.set()
+        await rt.stop()
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["proven", "unproven"])
+async def test_a_start_cancelled_during_its_spawn_ends_with_proof_or_keeps_the_uncertainty(
+    ending, tmp_path, monkeypatch, shared_broker
+):
+    _fast(monkeypatch)
+    entered, release, services = threading.Event(), threading.Event(), []
+
+    def held_spawn(*args, **kwargs):
+        entered.set()
+        assert release.wait(30)
+        if ending == "unproven":
+            raise SpawnUnproven(12345)
+        services.append(_FakeService())
+        return services[-1]
+
+    monkeypatch.setattr(r, "PreviewProcess", held_spawn)
+    rt = r.PreviewRuntime(tmp_path / "preview", shared_broker)
+    starting = asyncio.create_task(rt.start())
+    try:
+        await _until(entered.is_set)
+        starting.cancel()
+        await asyncio.sleep(0.3)
+        assert not starting.done()  # the cancelled caller waits for the owned spawn and the stop after it
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 30)
+        assert rt.closed and rt.monitor is None and not rt.ready and rt.nc is None
+        if ending == "proven":
+            assert services[0].stopped and not rt.uncertain
+        else:
+            assert rt.uncertain and rt.health().reason == "ownership_uncertain"  # never lost on the way out
+    finally:
+        release.set()
+        await _stopped(rt)
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_the_owner_first_runs_ends_the_start(tmp_path, monkeypatch, caplog):
+    """FSR-I-R2: a stop that lands before the owner ever ran must not leave start() waiting for a verdict."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    clients = _fake_transport(monkeypatch)
+    prior = asyncio.all_tasks()
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url="unused"))
+    starting = asyncio.create_task(rt.start())
+    try:
+        await asyncio.sleep(0)
+        assert rt.starter is not None and rt.start_attempt == 0
+        rt.starter.cancel()  # the owner is cancelled before it ever ran: none of its own code will say so
+        await asyncio.wait_for(rt.stop(), 5)
+        done, _ = await asyncio.wait({starting}, timeout=1)
+        assert starting in done and not starting.cancelled()
+        assert rt.closed and not clients and rt.service is None and rt.monitor is None
+        assert len(_stopped_lines(caplog)) == 1 and "attempt=0/" in _stopped_lines(caplog)[0]
+        assert not [t for t in asyncio.all_tasks() - prior if not t.done()]  # nothing left pending
+    finally:
+        pending = [t for t in asyncio.all_tasks() - prior if not t.done()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_late_wake_from_a_pause_admits_no_attempt_after_the_deadline(tmp_path, monkeypatch, caplog):
+    """FSR-I-R3: the deadline is asked again when the pause ends — a suspended process or a busy loop that wakes
+    late admits nothing. Only the runtime's admission clock moves; asyncio's own time stays real."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _fake_transport(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(r, "time", SimpleNamespace(monotonic=lambda: clock[0], monotonic_ns=time.monotonic_ns))
+    monkeypatch.setattr(r, "STARTUP_SECONDS", 1.0)
+    monkeypatch.setattr(r, "STARTUP_PAUSES", (0.2, 0.2))
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url="unused"))
+    launches = []
+
+    async def launch(attempt=None):
+        launches.append(attempt)
+        if attempt == 1:
+            raise PreviewError("unavailable")
+        rt.ready, rt.reason = True, None
+
+    rt._launch = launch
+    try:
+        await rt.start()  # attempt 1 failed; the owner sleeps in its pause
+        assert launches == [1] and not rt.starter.done()
+        clock[0] = 100.0  # the process was suspended past the 3.4 s admission deadline
+        await asyncio.wait_for(asyncio.shield(rt.starter), 5)
+        assert launches == [1] and rt.health().reason == "startup_failed"
+        assert any("exhausted_deadline" in m for m in _failures(caplog))
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_start_ends_with_one_terminal_line(tmp_path, monkeypatch, caplog):
+    """FSR-I-M1: a start stopped during connect says so once — generation, attempt, phase, elapsed — and claims
+    no proven end for the cleanup its stop owns."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    entered, release = asyncio.Event(), asyncio.Event()
+    _fake_transport(monkeypatch, entered=entered, release=release)
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url="unused"))
+    starting = asyncio.create_task(rt.start())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await rt.stop()
+        await starting
+        lines = _stopped_lines(caplog)
+        assert len(lines) == 1 and "attempt=1/3" in lines[0] and "phase=connect" in lines[0], lines
+        assert "elapsed_ms=" in lines[0] and rt.generation in lines[0]
+    finally:
+        release.set()
+        await rt.stop()
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_ended_with_its_own_outcome_gets_no_second_terminal_line(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _fast(monkeypatch, attempts=1)
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url=_closed_port_url()))
+    try:
+        await rt.start()
+        await asyncio.gather(rt.starter, return_exceptions=True)
+        await rt.stop()  # a later stop of a start that already said how it ended
+        assert len(_failures(caplog)) == 1 and _stopped_lines(caplog) == []
+    finally:
+        await _stopped(rt)
+
+
+@pytest.mark.asyncio
+async def test_every_stop_of_a_runtime_is_one_and_the_same(tmp_path, monkeypatch):
+    """A cancelled start, the module's shared stop and any other caller join ONE stop: never a second teardown
+    beside it (FSR-I-R1)."""
+    _fast(monkeypatch, pauses=(5.0, 5.0))
+    rt = r.PreviewRuntime(tmp_path / "preview")
+    runs, real = [], rt._stop_once
+
+    async def counted(**kwargs):
+        runs.append(1)
+        return await real(**kwargs)
+
+    rt._stop_once = counted
+    monkeypatch.setattr(r, "runtime", rt)
+    monkeypatch.setattr(r, "_stopping", None)
+
+    async def launch(attempt=None):
+        raise PreviewError("unavailable")
+
+    rt._launch = launch
+    await rt.start()  # it now waits in its first pause
+    _, _, proven = await asyncio.gather(rt.stop(), rt.stop(), r.stop_preview_runtime())
+    assert proven is True
+    assert runs == [1] and rt.closed
+
+
+@pytest.mark.asyncio
+async def test_a_stop_asked_from_inside_an_attempt_neither_waits_for_it_nor_cancels_it(tmp_path):
+    import trimesh
+
+    rt = r.PreviewRuntime(tmp_path / "preview")
+    await rt.start()
+    try:
+        async with rt.attempt({"mesh": (trimesh.creation.box().export(file_type="stl"), "stl")}) as result:
+            assert result.outcome == "ok"
+            await asyncio.wait_for(rt.stop(), 30)  # the attempt's own task: spared, never awaited by its stop
+        assert rt.closed and not rt.slot.locked()
+    finally:
+        await _stopped(rt)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_wins_the_race_after_a_final_outcome_adds_no_second_terminal_line(
+    tmp_path, monkeypatch, caplog
+):
+    """White-box: an external stop gets in between the owner's final failure line and its own give-up, so the
+    shared stop cancels the owner. The outcome was already said; the cancelled owner says nothing more."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    _fast(monkeypatch, attempts=1)
+    rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url=_closed_port_url()))
+    real = rt._log_start_failure
+
+    def then_an_external_stop(*args):
+        real(*args)
+        if args[-1] == "final" or args[-1].startswith("exhausted"):
+            rt._stop_task = asyncio.ensure_future(rt._stop_once(spare=None))  # the external stop got in first
+
+    rt._log_start_failure = then_an_external_stop
+    try:
+        await rt.start()
+        await asyncio.gather(rt.starter, return_exceptions=True)
+        await rt.stop()
+        assert rt.starter.cancelled()  # the race really happened
+        assert len(_failures(caplog)) == 1 and _stopped_lines(caplog) == []
     finally:
         await _stopped(rt)

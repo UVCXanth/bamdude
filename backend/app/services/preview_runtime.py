@@ -137,6 +137,9 @@ class PreviewRuntime:
         self._phase_started = 0.0
         self._failed_phase: str | None = None
         self._failed_phase_ms = 0.0
+        self._start_begun = 0.0
+        self._start_outcome_logged = False  # ready, a final failure or a stop: said once (FSR-I-M1)
+        self._stop_task: asyncio.Task | None = None  # the ONE stop of this runtime, shared by every caller
 
     def health(self) -> PreviewHealth:
         """In-memory snapshot only: never probe processes, disk or the broker here."""
@@ -184,9 +187,38 @@ class PreviewRuntime:
         if self.starter is not None:
             raise RuntimeError("this preview runtime was already started")
         self.reason = "starting"
+        self._start_begun = time.monotonic()
         first_ended = asyncio.Event()
         self.starter = asyncio.create_task(self._run_start(first_ended), name="preview-runtime-start")
-        await asyncio.shield(first_ended.wait())  # a cancelled caller leaves the owner to its stop
+        self.starter.add_done_callback(self._starter_ended)
+        verdict = asyncio.ensure_future(first_ended.wait())
+        try:
+            # The first verdict — or the owner's end: a stop that lands before the owner's first step leaves no
+            # verdict at all (FSR-I-R2).
+            await asyncio.wait({verdict, self.starter}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # The caller gave up on the start (an aborted lifespan, a cancelled test): the owner must not outlive
+            # it and launch a service nobody stops. The runtime's ONE stop ends it — owned, so a repeated cancel
+            # cannot cut its cleanup short — and only then does the cancellation go on (FSR-I-R1).
+            await owned(self.stop())
+            raise
+        finally:
+            verdict.cancel()
+
+    def _starter_ended(self, task: asyncio.Task) -> None:
+        if task.cancelled() and not self._start_outcome_logged:
+            self._log_start_stopped()  # also a stop before the owner's first step: it never ran its own code
+
+    def _log_start_stopped(self) -> None:
+        self._start_outcome_logged = True
+        logger.info(
+            "Preview startup stopped: generation=%s attempt=%d/%d phase=%s elapsed_ms=%d; its cleanup is the stop's",
+            self.generation,
+            self.start_attempt,
+            STARTUP_ATTEMPTS,
+            self.phase or "none",
+            (time.monotonic() - self._start_begun) * 1000,
+        )
 
     async def _run_start(self, first_ended: asyncio.Event) -> None:
         begun = time.monotonic()
@@ -200,6 +232,7 @@ class PreviewRuntime:
                 verdict, exc = await self._start_attempt(attempt)
                 first_ended.set()
                 if verdict == "ready":
+                    self._start_outcome_logged = True
                     logger.info(
                         "Preview startup ready: generation=%s attempts=%d elapsed_ms=%d",
                         self.generation,
@@ -208,7 +241,8 @@ class PreviewRuntime:
                     )
                     return
                 if verdict == "final" and exc is None:
-                    return  # a stop came in as the last step returned: it owns what is left, nothing failed
+                    self._log_start_stopped()  # a stop came in as the last step returned: it owns what is left
+                    return
                 if verdict == "final":
                     next_step = "final"
                 elif attempt == STARTUP_ATTEMPTS:
@@ -220,18 +254,31 @@ class PreviewRuntime:
                     )
                 self._log_start_failure(attempt, exc, started, begun, next_step)
                 if not next_step.startswith("retry_in_"):
-                    if not self.closed:  # a stop already under way owns the rest
-                        if self.reason not in {"recovery_required", "ownership_uncertain"}:
-                            self._unavailable("startup_failed", exc)
-                        await self.stop()
+                    await self._give_up(exc)
                     return
                 await asyncio.sleep(pause)  # a stop cancels it at once
                 if self.closed:
                     return
+                if time.monotonic() >= admit_until:
+                    # Asked again on waking: a late wake — a suspended process, a busy loop — admits nothing past
+                    # the deadline (FSR-I-R3). The pause is not repeated and the budget is not renewed.
+                    self._log_start_failure(attempt, exc, started, begun, "exhausted_deadline")
+                    await self._give_up(exc)
+                    return
         finally:
             first_ended.set()
 
+    async def _give_up(self, exc) -> None:
+        """The owner's own end of a start that failed for good. A stop already under way owns the rest."""
+        if self.closed:
+            return
+        if self.reason not in {"recovery_required", "ownership_uncertain"}:
+            self._unavailable("startup_failed", exc)
+        await self.stop(from_owner=True)
+
     def _log_start_failure(self, attempt: int, exc, started: float, begun: float, next_step: str) -> None:
+        if not next_step.startswith("retry_in_"):
+            self._start_outcome_logged = True
         now = time.monotonic()
         logger.warning(
             "Preview startup_failed: generation=%s attempt=%d/%d phase=%s error=%s phase_ms=%d elapsed_ms=%d next=%s",
@@ -1046,13 +1093,26 @@ class PreviewRuntime:
                 owner,
             )
 
-    async def stop(self):
+    async def stop(self, *, from_owner: bool = False):
+        """The ONE stop of this runtime, shared by every caller — a cancelled start, the module's shared stop, the
+        owner's own give-up — and owned: a caller cancelled while it waits does not cut the stop short. The task
+        that asks it (the owner giving up, an attempt's caller) is spared: the stop never waits for its caller,
+        and such a caller still hears a cancellation the stop sends it."""
+        caller = asyncio.current_task()
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop_once(spare=caller), name="preview-runtime-instance-stop")
+        if from_owner or (caller is not None and caller in (self.starter, self.active_task)):
+            await asyncio.shield(self._stop_task)
+        else:
+            await owned(self._stop_task)
+
+    async def _stop_once(self, *, spare: asyncio.Task | None):
         self.closed = True
         self.ready = False
         if self.reason in {None, "starting", "worker_restarting", "not_started"}:
             self.reason = "stopped"
         starter = self.starter
-        if starter is not None and not starter.done() and starter is not asyncio.current_task():
+        if starter is not None and not starter.done() and starter is not spare:
             # The start's owner first: its pause ends at once, an attempt's owned I/O and cleanup are waited for —
             # never cut by any deadline — and no attempt or monitor begins after this point (R5).
             starter.cancel()
@@ -1060,7 +1120,7 @@ class PreviewRuntime:
         if self.monitor:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
-        if self.active_task and self.active_task is not asyncio.current_task():
+        if self.active_task and self.active_task is not spare:
             self.active_task.cancel()
             await asyncio.gather(self.active_task, return_exceptions=True)
         try:
