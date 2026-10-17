@@ -526,3 +526,40 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker compose -f docker-compose.test.yml down -v --remove-orphans
+
+  # The same image, built and checked natively on arm64 (owner, 2026-10-17): every release publishes both arches,
+  # and before this a release tag was the first arm64 build the image ever had — the STEP bundle's arm64 wheels met
+  # it on the way to users. Only what the image itself must prove runs here (the compose integration suite above is
+  # not per-arch). Nothing is published: no login, no push, no secrets.
+  docker-test-arm64:
+    name: Docker Build (linux/arm64, native)
+    runs-on: ubuntu-24.04-arm
+    needs: [backend-tests, postgres-scenarios, frontend-build]
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    timeout-minutes: 60
+    env:
+      STEP_PREVIEW_CANDIDATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker build --build-arg STEP_PREVIEW_CANDIDATE -t bamdude:test .
+
+      - name: Verify the image is arm64
+        run: test "$(docker image inspect bamdude:test --format '{{.Architecture}}')" = arm64
+
+      - name: Verify backend imports
+        run: docker run --rm bamdude:test python -c "import backend.app.main; print('Backend imports OK')"
+
+      - name: Verify static files exist
+        run: docker run --rm bamdude:test test -d /app/static
+
+      - name: Render the fixtures inside the image
+        run: docker run --rm bamdude:test python -m backend.app.part_render_probe render
+
+      # The entrypoint drops to PUID 1000: both run as the app's user, read-only over the bundle, offline.
+      - name: Verify the STEP-preview bundle inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_runtime verify
+
+      - name: Render an STL and a STEP inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_render_probe
