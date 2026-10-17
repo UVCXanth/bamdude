@@ -311,9 +311,18 @@ async def cad_runtime(tmp_path):
     await rt.start()
     assert rt.ready
     try:
+        await _warm(rt)
         yield rt
     finally:
         await rt.stop()
+
+
+async def _warm(runtime) -> None:
+    """One picture before any timing: a fresh runtime's first render pays one-time costs in its own MPLCONFIGDIR
+    (matplotlib's font cache) — the first sliced picture took 15.8 s against ~1.2 s for the next three on a GitHub
+    macOS arm64 runner — which no latency or deadline in these tests is about."""
+    async with runtime.attempt({"mesh": (_box(), "stl")}) as result:
+        assert result.outcome == "ok"
 
 
 @pytest.mark.requires_cad
