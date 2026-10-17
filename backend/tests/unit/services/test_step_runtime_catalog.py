@@ -13,6 +13,13 @@ import pytest
 
 from backend.app import step_runtime as sr
 
+
+@pytest.fixture
+def tmp_path(install_tmp_path):
+    """Installs need a root as short as a real one (see ``install_tmp_path``), never pytest's deep tmp_path."""
+    return install_tmp_path
+
+
 WIN312 = ["cp312-cp312-win_amd64", "cp312-abi3-win_amd64", "cp312-none-win_amd64", "py3-none-any"]
 LINUX_ARM313 = ["cp313-cp313-manylinux_2_28_aarch64", "cp313-abi3-manylinux_2_28_aarch64", "py3-none-any"]
 

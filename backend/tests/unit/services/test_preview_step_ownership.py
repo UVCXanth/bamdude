@@ -368,20 +368,52 @@ async def test_four_preemptions_in_a_row_reap_the_converter_and_keep_the_service
     assert await _identity(cad_runtime) == before
 
 
+async def _mesh_window(runtime, path) -> tuple[float, float]:
+    """One attempt with no short deadline, measured on THIS machine: when its converter begins meshing, and when the
+    aggregate-RSS watchdog ends it (``resource_limit`` at ``mesh``, the service kept). Both move with the machine's
+    speed — 2.2 s and 4.2 s idle here, the watchdog at 2.7 s on a GitHub macOS arm64 runner — so a fixed deadline
+    meant to land while it meshes lands after the watchdog on a faster one."""
+    mesh_at = []
+
+    async def watch(started: float):
+        while not mesh_at:
+            for marker in (runtime.staging / "service").glob("*/stage"):
+                try:
+                    if marker.read_text(encoding="ascii") == "mesh":
+                        mesh_at.append(time.monotonic() - started)
+                        break
+                except OSError:
+                    pass
+            await asyncio.sleep(0.005)
+
+    started = time.monotonic()
+    watcher = asyncio.create_task(watch(started))
+    try:
+        result = await _attempt_outcome(runtime, path)
+    finally:
+        watcher.cancel()
+    ended = time.monotonic() - started
+    assert result == ("resource_limit", "mesh", {}) and mesh_at, result  # the watchdog ends it mid-mesh
+    return mesh_at[0], ended
+
+
 @pytest.mark.requires_cad
 @pytest.mark.asyncio
 async def test_four_step_timeouts_keep_the_service_and_an_stl_follows_at_once(cad_runtime, dense):
-    """The dense STEP meshes from ~2.2 s and meets the watchdog at ~4.2 s (measured, idle machine): a 3.2 s
-    deadline lands while it meshes. The reported stage is never earlier than the last marker seen."""
+    """A deadline that lands while the dense STEP meshes ends it as a timeout, four times, with the service kept.
+    Where that lies is measured on this machine first (``_mesh_window``): the deadline sits halfway between the
+    start of the mesh and the watchdog. The reported stage is never earlier than the last marker seen."""
     from backend.app.services.preview_protocol import STAGES
 
     before = await _identity(cad_runtime)
+    mesh_at, watchdog_at = await _mesh_window(cad_runtime, dense)
+    offset = mesh_at + (watchdog_at - mesh_at) / 2
     for _ in range(4):
         seen = []
         watcher = asyncio.create_task(_watch_markers(cad_runtime, seen))
         try:
             outcome, stage, files = await _attempt_outcome(
-                cad_runtime, dense, deadline=time.monotonic_ns() + int(3.2e9)
+                cad_runtime, dense, deadline=time.monotonic_ns() + int(offset * 1e9)
             )
         finally:
             watcher.cancel()
