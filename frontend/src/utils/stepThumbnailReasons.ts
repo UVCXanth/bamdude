@@ -9,6 +9,7 @@ export const THUMBNAIL_REASONS = [
   'preemption_limit',
   'expired_before_start',
   'job_expired',
+  'backup_in_progress',
   'authority_missing',
   'use_thumbnail_jobs',
   'cad_unavailable',

@@ -5488,6 +5488,7 @@ export default {
         preemption_limit: 'slicing kept interrupting it — try again when the farm is quieter',
         expired_before_start: 'it waited too long to start',
         job_expired: 'it ran out of time',
+        backup_in_progress: 'a backup kept the thumbnails paused for too long — try again once it has finished',
         authority_missing: 'the permission it needs is gone',
         use_thumbnail_jobs: 'STEP thumbnails are made in the background',
         cad_unavailable: 'the STEP component is not available on this server',
