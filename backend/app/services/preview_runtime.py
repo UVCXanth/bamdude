@@ -24,7 +24,7 @@ from backend.app.services.preview_artifacts import (
     put,
     snapshot,
 )
-from backend.app.services.preview_process import PreviewProcess
+from backend.app.services.preview_process import PreviewProcess, SpawnUnproven
 from backend.app.services.preview_protocol import (
     ACTIVE_SECONDS,
     ATTEMPT_BYTES,
@@ -66,6 +66,12 @@ RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-prev
 # budget is C_cancel plus the normal admission wait, counted once (never extended per poll). Spec §4.2.
 HIGH_WAIT_SECONDS = C_CANCEL_SECONDS + QUEUE_SECONDS
 PRIORITY_BY_KIND = {"sliced": "high", "mesh": "normal", "step": "low"}
+# A first start that fails with a PROVEN cleanup is tried again in the background (spec
+# preview-runtime-first-start-recovery r2): attempts in all, the pauses between them, and how long the service
+# may take to answer ready inside one attempt.
+STARTUP_ATTEMPTS = 3
+STARTUP_PAUSES = (2.0, 4.0)
+READY_SECONDS = 8.0
 
 
 @dataclass
@@ -125,6 +131,12 @@ class PreviewRuntime:
         self.error_type = None
         self._last_staging_issue = None
         self._last_admission_issue = None
+        self.starter: asyncio.Task | None = None  # the one owner of the start, its first attempt included
+        self.start_attempt = 0
+        self.phase: str | None = None  # the start phase last entered (spec R1)
+        self._phase_started = 0.0
+        self._failed_phase: str | None = None
+        self._failed_phase_ms = 0.0
 
     def health(self) -> PreviewHealth:
         """In-memory snapshot only: never probe processes, disk or the broker here."""
@@ -165,73 +177,216 @@ class PreviewRuntime:
             )
 
     async def start(self):
+        """Start this runtime. The first attempt runs inline and this returns once it has ended (ready, or failed);
+        when it failed with a PROVEN cleanup, up to ``STARTUP_ATTEMPTS`` - 1 more follow in the background. One
+        owner holds all of it (``self.starter``): a stop cancels it and waits for its attempt and that attempt's
+        cleanup (spec preview-runtime-first-start-recovery r2, R4–R5)."""
+        if self.starter is not None:
+            raise RuntimeError("this preview runtime was already started")
         self.reason = "starting"
-        recovery_errors: tuple[type[Exception], ...] = ()
+        first_ended = asyncio.Event()
+        self.starter = asyncio.create_task(self._run_start(first_ended), name="preview-runtime-start")
+        await asyncio.shield(first_ended.wait())  # a cancelled caller leaves the owner to its stop
+
+    async def _run_start(self, first_ended: asyncio.Event) -> None:
+        begun = time.monotonic()
+        # Admission of a NEW attempt ends here, counted from the first attempt: three budgets and two pauses. It
+        # never cuts a cleanup short — a cleanup that ran past it admits no further spawn (R4).
+        admit_until = begun + STARTUP_ATTEMPTS * STARTUP_SECONDS + sum(STARTUP_PAUSES)
         try:
-            import nats
+            for attempt in range(1, STARTUP_ATTEMPTS + 1):
+                self.start_attempt = attempt
+                started = time.monotonic()
+                verdict, exc = await self._start_attempt(attempt)
+                first_ended.set()
+                if verdict == "ready":
+                    logger.info(
+                        "Preview startup ready: generation=%s attempts=%d elapsed_ms=%d",
+                        self.generation,
+                        attempt,
+                        (time.monotonic() - begun) * 1000,
+                    )
+                    return
+                if verdict == "final" and exc is None:
+                    return  # a stop came in as the last step returned: it owns what is left, nothing failed
+                if verdict == "final":
+                    next_step = "final"
+                elif attempt == STARTUP_ATTEMPTS:
+                    next_step = "exhausted_attempts"
+                else:
+                    pause = STARTUP_PAUSES[min(attempt - 1, len(STARTUP_PAUSES) - 1)]
+                    next_step = (
+                        "exhausted_deadline" if time.monotonic() + pause >= admit_until else f"retry_in_{pause:g}s"
+                    )
+                self._log_start_failure(attempt, exc, started, begun, next_step)
+                if not next_step.startswith("retry_in_"):
+                    if not self.closed:  # a stop already under way owns the rest
+                        if self.reason not in {"recovery_required", "ownership_uncertain"}:
+                            self._unavailable("startup_failed", exc)
+                        await self.stop()
+                    return
+                await asyncio.sleep(pause)  # a stop cancels it at once
+                if self.closed:
+                    return
+        finally:
+            first_ended.set()
+
+    def _log_start_failure(self, attempt: int, exc, started: float, begun: float, next_step: str) -> None:
+        now = time.monotonic()
+        logger.warning(
+            "Preview startup_failed: generation=%s attempt=%d/%d phase=%s error=%s phase_ms=%d elapsed_ms=%d next=%s",
+            self.generation,
+            attempt,
+            STARTUP_ATTEMPTS,
+            self._failed_phase,
+            type(exc).__name__ if exc is not None else "none",
+            self._failed_phase_ms,
+            (now - begun) * 1000,
+            next_step,
+        )
+
+    def _enter(self, phase: str, attempt: int | None) -> None:
+        """Entering a start phase is logged — not only leaving it: an owned I/O that hangs never leaves (R1)."""
+        self.phase, self._phase_started = phase, time.monotonic()
+        if attempt is not None:
+            logger.info(
+                "Preview startup phase=%s generation=%s attempt=%d/%d",
+                phase,
+                self.generation,
+                attempt,
+                STARTUP_ATTEMPTS,
+            )
+
+    async def _start_attempt(self, attempt: int):
+        """One attempt. ``("ready", None)``; ``("retry", exc)`` only when its own cleanup PROVED everything it may
+        have started gone (R2); ``("final", exc)`` otherwise. A stop's cancellation is not caught here."""
+        recovery_errors: tuple[type[Exception], ...] = ()
+        if attempt > 1:
+            self.reason = "worker_restarting"
+        self.phase = None  # a failure before any phase (a missing dependency) is final: a retry repeats it
+        try:
             from embedded_nats import NatsServer, RecoveryRequired
-            from nats.js.api import ObjectStoreConfig
 
             recovery_errors = (RecoveryRequired,)
-            self.token = self.shared_broker.token if self.shared_broker else secrets.token_urlsafe(32)
-            await disk(self._directories)
-            self.broker = self.shared_broker or NatsServer(
-                self.root / "broker",
-                auth_token=self.token,
-                max_file_store="3072MB",
-                max_memory_store="64MB",
-                max_payload=1024**2,
-                startup_timeout=15,
-                shutdown_timeout=2,
-                recover_stale=True,
-            )
+            if attempt == 1:
+                self._enter("staging", attempt)
+                self.token = self.shared_broker.token if self.shared_broker else secrets.token_urlsafe(32)
+                await disk(self._directories)
+                self.broker = self.shared_broker or NatsServer(
+                    self.root / "broker",
+                    auth_token=self.token,
+                    max_file_store="3072MB",
+                    max_memory_store="64MB",
+                    max_payload=1024**2,
+                    startup_timeout=15,
+                    shutdown_timeout=2,
+                    recover_stale=True,
+                )
             async with asyncio.timeout(STARTUP_SECONDS):
-                if not self.shared_broker:
+                if attempt == 1 and not self.shared_broker:
+                    self._enter("broker", attempt)
                     await disk(self.broker.start)
-                if not self.shared_broker and self.broker.recovered_generation:
-                    logger.warning(
-                        "Preview broker recovered abandoned generation=%s; runtime_dir=%s. "
-                        "Old preview staging is retained until manual ownership verification; see %s",
-                        self.broker.recovered_generation,
-                        self.root,
-                        RECOVERY_GUIDE,
-                    )
-                self.nc = await nats.connect(
-                    self.broker.url,
-                    token=self.token,
-                    allow_reconnect=False,
-                    connect_timeout=CONTROL_SECONDS,
-                    closed_cb=self.disconnected,
-                )
-                js = self.nc.jetstream(timeout=CONTROL_SECONDS)
-                # A clean package start proves exclusive store ownership. Old
-                # preview buckets are disposable; no other namespaces touched.
-                streams = await js.streams_info()
-                for stream in streams:
-                    if stream.config.name.startswith("OBJ_bamdude_preview_"):
-                        await js.delete_stream(stream.config.name)
-                # Broker ownership says nothing about an old worker/renderer's
-                # disk I/O. Even a later clean restart cannot prove it is gone.
-                await disk(self._report_retained_staging)
-                self.store = await js.create_object_store(
-                    bucket=self.bucket,
-                    config=ObjectStoreConfig(
-                        bucket=self.bucket, max_bytes=BUCKET_BYTES, ttl=TTL_SECONDS, storage="file"
-                    ),
-                )
-                await self._launch()
+                    if self.broker.recovered_generation:
+                        logger.warning(
+                            "Preview broker recovered abandoned generation=%s; runtime_dir=%s. "
+                            "Old preview staging is retained until manual ownership verification; see %s",
+                            self.broker.recovered_generation,
+                            self.root,
+                            RECOVERY_GUIDE,
+                        )
+                await self._bootstrap_transport(attempt)
+                await self._launch(attempt)
+            if self.closed:
+                return "final", None  # a stop came in as the last step returned: it owns what is left
             self.monitor = asyncio.create_task(self._monitor(), name="preview-service-monitor")
+            return "ready", None
         except Exception as exc:
-            self._unavailable("recovery_required" if isinstance(exc, recovery_errors) else "startup_failed", exc)
+            # the phase it failed in and how long it had run, read BEFORE the cleanup phase is entered
+            self._failed_phase, self._failed_phase_ms = self.phase, (time.monotonic() - self._phase_started) * 1000
             if isinstance(exc, recovery_errors):
+                self._unavailable("recovery_required", exc)
                 logger.warning(
                     "Preview broker recovery refused: reason=%s marker=%s; follow %s",
                     exc.reason,
                     exc.marker_path or (self.broker.recovery_marker_path if self.broker else None),
                     RECOVERY_GUIDE,
                 )
-            logger.debug("Preview startup failure", exc_info=True)
-            await self.stop()
+                return "final", exc
+            if self.uncertain or self.closed or self._failed_phase in {None, "staging", "broker"}:
+                return "final", exc  # unproven ownership, a stop under way, or the broker/staging itself failed
+            proven = await self._abandon_attempt(attempt)
+            return ("retry" if proven else "final"), exc
+
+    async def _bootstrap_transport(self, attempt: int) -> None:
+        """This attempt's client, owned BEFORE connect — a handshake that times out or is cancelled still has an
+        owner that closes it (Codex FSR-R2) — and bound by identity: a late callback of an earlier attempt's
+        client changes nothing here."""
+        from nats.aio.client import Client
+        from nats.js.api import ObjectStoreConfig
+
+        client = self.nc = Client()
+
+        async def closed(client=client):
+            if self.nc is client:
+                await self.disconnected()
+
+        async def error(exc):
+            logger.debug("Preview transport error: generation=%s error=%s", self.generation, type(exc).__name__)
+
+        self._enter("connect", attempt)
+        await client.connect(
+            self.broker.url,
+            token=self.token,
+            allow_reconnect=False,
+            connect_timeout=CONTROL_SECONDS,
+            closed_cb=closed,
+            error_cb=error,
+        )
+        js = client.jetstream(timeout=CONTROL_SECONDS)
+        # A clean package start proves exclusive store ownership. Old preview buckets — this generation's own
+        # from an earlier attempt among them — are disposable; no other namespace is touched.
+        self._enter("stream_list", attempt)
+        for stream in await js.streams_info():
+            if stream.config.name.startswith("OBJ_bamdude_preview_"):
+                self._enter("stream_delete", attempt)
+                await js.delete_stream(stream.config.name)
+        if attempt == 1:
+            # Broker ownership says nothing about an old worker/renderer's disk I/O. Even a later clean restart
+            # cannot prove it is gone.
+            self._enter("staging", attempt)
+            await disk(self._report_retained_staging)
+        self._enter("store_create", attempt)
+        self.store = await js.create_object_store(
+            bucket=self.bucket,
+            config=ObjectStoreConfig(bucket=self.bucket, max_bytes=BUCKET_BYTES, ttl=TTL_SECONDS, storage="file"),
+        )
+
+    async def _close_transport(self) -> bool:
+        """Detach first — an intentional close is no broker failure — then close, owned. False when the close
+        itself failed: no new attempt follows a transport whose end is not known (R2)."""
+        client, self.nc = self.nc, None
+        self.store = None
+        if client is None:
+            return True
+        try:
+            await owned(client.close())
+        except Exception as exc:
+            logger.warning(
+                "Preview transport close failed: generation=%s error=%s", self.generation, type(exc).__name__
+            )
+            return False
+        return True
+
+    async def _abandon_attempt(self, attempt: int) -> bool:
+        """The failed attempt's own cleanup, outside its budget and never cut short: its service stopped with proof
+        (or never created), its client closed and detached, the slot free. True only with all of it (R2)."""
+        self._enter("cleanup", attempt)
+        try:
+            await self._retire()
+        except Exception:
+            return False  # _retire has made the runtime ownership_uncertain
+        closed = await self._close_transport()
+        return closed and not self.uncertain and not self.slot.locked()
 
     def _directories(self):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -340,31 +495,47 @@ class PreviewRuntime:
             cad,
         )
 
-    async def _launch(self):
+    async def _launch(self, attempt: int | None = None):
         self.epoch = uuid.uuid4().hex
 
         async def spawn():
-            self.service = await disk(
-                PreviewProcess,
-                "backend.app.preview_service",
-                {
-                    "url": self.broker.url,
-                    "token": self.token,
-                    "bucket": self.bucket,
-                    "generation": self.generation,
-                    "epoch": self.epoch,
-                    "staging": str(self.staging / "service"),
-                    "cache": str(self.root / "matplotlib"),
-                    # the root the service rebuilds a STEP bundle path under, from the command's key/digest only
-                    "app_dir": str(self.app_dir),
-                    "quarantine": str(self.quarantine),
-                },
-                self.root / "matplotlib",
-            )
+            try:
+                self.service = await disk(
+                    PreviewProcess,
+                    "backend.app.preview_service",
+                    {
+                        "url": self.broker.url,
+                        "token": self.token,
+                        "bucket": self.bucket,
+                        "generation": self.generation,
+                        "epoch": self.epoch,
+                        "staging": str(self.staging / "service"),
+                        "cache": str(self.root / "matplotlib"),
+                        # the root the service rebuilds a STEP bundle path under, from the command's key/digest only
+                        "app_dir": str(self.app_dir),
+                        "quarantine": str(self.quarantine),
+                    },
+                    self.root / "matplotlib",
+                )
+            except SpawnUnproven as exc:
+                # Recorded HERE, inside the owned task: an outer timeout or stop that landed meanwhile only reads
+                # this task's result and raises its own error, which would hide it (Codex FSR-R1). No service was
+                # assigned, and that is no proof that nothing runs: final until BamDude restarts.
+                self.uncertain = True
+                self._unavailable("ownership_uncertain", exc)
+                logger.warning(
+                    "Preview service spawn unproven: generation=%s guardian_pid=%s; restart disabled until BamDude "
+                    "restarts",
+                    self.generation,
+                    exc.pid,
+                )
+                raise
 
         # Capture ownership even when cancellation lands during Popen/Job attach.
+        self._enter("service_spawn", attempt)
         await owned(spawn())
-        deadline = time.monotonic() + 8
+        self._enter("service_ready", attempt)
+        deadline = time.monotonic() + READY_SECONDS
         while time.monotonic() < deadline:
             if self.service.process.poll() is not None:
                 raise PreviewError("unavailable")
@@ -443,7 +614,7 @@ class PreviewRuntime:
         # (bare outcome, busy, unavailable, an uncertain service, a forged field, no reply in C_cancel) retires.
         # Returns the stage the service's answer names: a run that never replied still says where it stopped.
         stage = None
-        if command and self.nc.is_connected:
+        if command and self.nc is not None and self.nc.is_connected:
             try:
                 reply = await self._rpc(command, "cancel", timeout=C_CANCEL_SECONDS)
                 self._service_cleanup_reply(reply, command.attempt_id)
@@ -459,7 +630,7 @@ class PreviewRuntime:
     async def _monitor(self):
         while not self.closed:
             await asyncio.sleep(0.5)
-            if self.service and self.service.process.poll() is None and self.nc.is_connected:
+            if self.service and self.service.process.poll() is None and self.nc is not None and self.nc.is_connected:
                 continue
             self.ready = False
             if self.active_task:
@@ -474,7 +645,7 @@ class PreviewRuntime:
             except Exception:
                 logger.warning("Preview process ownership uncertain; restart disabled")
                 return
-            if not self.nc.is_connected:  # Broker recovery happens on the next application start, not in-flight.
+            if self.nc is None or not self.nc.is_connected:  # Broker recovery: the next application start.
                 self._unavailable("broker_disconnected")
                 return
             self.reason = "worker_restarting"
@@ -490,6 +661,9 @@ class PreviewRuntime:
             try:
                 await self._launch()
             except Exception as exc:
+                if self.uncertain:  # a relaunch whose spawn cleanup was unproven is final too (R2)
+                    logger.warning("Preview process ownership uncertain; restart disabled")
+                    return
                 self._unavailable("worker_restarting", exc)
                 try:
                     await self._retire()
@@ -877,6 +1051,12 @@ class PreviewRuntime:
         self.ready = False
         if self.reason in {None, "starting", "worker_restarting", "not_started"}:
             self.reason = "stopped"
+        starter = self.starter
+        if starter is not None and not starter.done() and starter is not asyncio.current_task():
+            # The start's owner first: its pause ends at once, an attempt's owned I/O and cleanup are waited for —
+            # never cut by any deadline — and no attempt or monitor begins after this point (R5).
+            starter.cancel()
+            await asyncio.gather(starter, return_exceptions=True)
         if self.monitor:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
@@ -887,8 +1067,7 @@ class PreviewRuntime:
             await self._retire()
         except Exception:
             logger.warning("Preview process ownership uncertain; staging retained")
-        if self.nc:
-            await self.nc.close()
+        await self._close_transport()
         if self.broker and not self.shared_broker:
             try:
                 await disk(self.broker.stop)

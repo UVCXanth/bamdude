@@ -167,7 +167,7 @@ async def local_runtime(tmp_path):
 async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkeypatch):
     service = PreviewRuntime(tmp_path / "failed readiness")
 
-    async def failed():
+    async def failed(attempt=None):
         raise PreviewError("unavailable")
 
     monkeypatch.setattr(service, "_launch", failed)
@@ -176,6 +176,9 @@ async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkey
     async with service.attempt({"mesh": (b"x", "stl")}) as result:
         assert result.outcome == "unavailable"
     assert not service.slot.locked()
+    # A failed first start is tried again in the background now (its cleanup was proven); the stop ends that,
+    # and what the failed runtime held must not keep a new one on the same root from starting.
+    await service.stop()
     replacement = PreviewRuntime(service.root)
     await replacement.start()
     try:
