@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.app.services.library_preview import PublicationGate
 from backend.app.services.preview_protocol import C_CANCEL_SECONDS
 from backend.app.services.preview_runtime import PreviewRuntime
 
@@ -205,6 +206,151 @@ async def test_an_stl_behind_an_active_low_gets_its_picture_with_the_default_wai
         order.append(("normal", result.outcome))
     await low_task
     assert order == [("low", "ok"), ("normal", "ok")]
+
+
+# --- a backup's pause of the pictures (Codex A2-R2) ----------------------------------------------------------------
+
+
+class _ObservedGate(PublicationGate):
+    """The real gate; it only says when an attempt reached its wait for a pause."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = asyncio.Event()
+
+    async def until_unpaused(self):
+        self.waiting.set()
+        await super().until_unpaused()
+
+
+async def _low_behind_a_pause(rt, inputs, gate, seen):
+    async with rt.attempt(inputs, priority="low", publication=gate) as result:
+        seen["low"], seen["files"] = result.outcome, dict(result.files)
+
+
+async def _sliced_during_a_pause(rt, gate, seen, inputs) -> None:
+    """A low is waiting with its ready result for the backup's pause: a sliced arrival revokes it and gets its
+    picture while the pause still holds; the low ends preempted, with nothing leased and no service restart."""
+    before = await _identity(rt)
+    async with gate.pause(1):
+        task = asyncio.create_task(_low_behind_a_pause(rt, inputs, gate, seen))
+        await asyncio.wait_for(gate.waiting.wait(), 60)
+        ticket = rt.slot.holder
+        assert ticket is not None and not rt.slot._handed_off  # a ready result, not yet handed off
+        async with rt.attempt({"sliced": (_sliced(), "3mf"), "mesh": (_box(), "stl")}) as high:
+            seen["high"] = high.outcome
+            assert high.outcome == "ok", f"the sliced picture lost to the backup's pause: {high.outcome}"
+            assert gate.paused()  # it did not wait for the backup
+        assert ticket.revoke.is_set()
+        await asyncio.wait_for(task, 30)  # nor did the low it revoked
+        assert gate.paused() and gate.leases == 0
+    assert seen == {"low": "preempted", "files": {}, "high": "ok"}
+    assert await _identity(rt) == before
+
+
+@pytest.mark.asyncio
+async def test_a_sliced_arrival_revokes_a_low_waiting_for_a_backup_pause(runtime):
+    await _sliced_during_a_pause(runtime, _ObservedGate(), {}, {"mesh": (_box(), "stl")})
+
+
+@pytest.mark.requires_cad
+@pytest.mark.asyncio
+async def test_a_sliced_arrival_revokes_a_converted_step_waiting_for_a_backup_pause(cad_runtime):
+    """The same on the real STEP chain: the converter and the PNG child made the picture; the backup holds it."""
+    from backend.app.step_runtime import PROBE_STEP
+
+    await _sliced_during_a_pause(cad_runtime, _ObservedGate(), {}, {"mesh": (PROBE_STEP, "step")})
+
+
+@pytest.mark.asyncio
+async def test_a_pause_lifted_in_the_same_step_as_a_revoke_lets_the_revoke_win(runtime):
+    gate, seen = _ObservedGate(), {}
+
+    async def high():
+        async with runtime.attempt({"sliced": (_sliced(), "3mf"), "mesh": (_box(), "stl")}) as result:
+            seen["high"] = result.outcome
+
+    async with gate.pause(1):
+        low = asyncio.create_task(_low_behind_a_pause(runtime, {"mesh": (_box(), "stl")}, gate, seen))
+        await asyncio.wait_for(gate.waiting.wait(), 30)
+        arrival = asyncio.create_task(high())  # it runs (and revokes) only after the pause below has lifted
+    await asyncio.wait_for(asyncio.gather(low, arrival), 60)
+    assert seen == {"low": "preempted", "files": {}, "high": "ok"}
+    assert gate.leases == 0 and not runtime.slot.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_pause_that_begins_again_while_the_wait_unwinds_holds_the_result_never_discards_it(runtime):
+    """A second backup pauses the pictures right as the first lifts: the waiting result waits again and publishes
+    after it — a pause is never mistaken for a restore's closed gate."""
+    gate, seen = _ObservedGate(), {}
+    again, lifted = asyncio.Event(), asyncio.Event()
+
+    async def second_backup():
+        await gate.until_unpaused()  # woken right after the waiting attempt
+        async with gate.pause(1):
+            again.set()
+            await lifted.wait()
+
+    async with gate.pause(1):
+        low = asyncio.create_task(_low_behind_a_pause(runtime, {"mesh": (_box(), "stl")}, gate, seen))
+        await asyncio.wait_for(gate.waiting.wait(), 30)
+        copy = asyncio.create_task(second_backup())
+        await asyncio.sleep(0.05)
+    await asyncio.wait_for(again.wait(), 5)
+    await asyncio.sleep(0.2)
+    assert not low.done() and gate.leases == 0  # waiting again, nothing published under the second pause
+    lifted.set()
+    await asyncio.wait_for(asyncio.gather(low, copy), 30)
+    assert seen["low"] == "ok" and "preview" in seen["files"]
+
+
+@pytest.mark.asyncio
+async def test_a_low_waiting_for_a_backup_pause_ends_cleanly_on_a_stop_and_on_a_closed_gate(tmp_path):
+    rt = PreviewRuntime(tmp_path / "preview")
+    await rt.start()
+    try:
+        gate, seen = _ObservedGate(), {}
+        async with gate.pause(1):  # a restore closes the gate while the low waits: it never attaches
+            low = asyncio.create_task(_low_behind_a_pause(rt, {"mesh": (_box(), "stl")}, gate, seen))
+            await asyncio.wait_for(gate.waiting.wait(), 30)
+            gate.close()
+        await asyncio.wait_for(low, 30)
+        assert seen == {"low": "preempted", "files": {}} and gate.leases == 0
+        gate, seen = _ObservedGate(), {}
+        async with gate.pause(1):  # the restore's runtime stop cancels the waiting low
+            low = asyncio.create_task(_low_behind_a_pause(rt, {"mesh": (_box(), "stl")}, gate, seen))
+            await asyncio.wait_for(gate.waiting.wait(), 30)
+            await asyncio.wait_for(rt.stop(), 60)
+            assert low.cancelled() and seen == {}
+            assert gate.leases == 0 and not rt.slot.locked() and not rt.uncertain
+    finally:
+        if not rt.closed:
+            await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_after_hand_off_neither_a_pause_nor_a_sliced_arrival_interrupts_the_publication(runtime):
+    gate, seen = PublicationGate(), {}
+    paused = asyncio.Event()
+
+    async def backup():
+        async with gate.pause(30):
+            paused.set()
+
+    async def high():
+        async with runtime.attempt({"sliced": (_sliced(), "3mf"), "mesh": (_box(), "stl")}) as result:
+            seen["high"] = result.outcome
+
+    async with runtime.attempt({"mesh": (_box(), "stl")}, priority="low", publication=gate) as low:
+        assert low.outcome == "ok" and gate.leases == 1
+        ticket = runtime.slot.holder
+        copy, arrival = asyncio.create_task(backup()), asyncio.create_task(high())
+        await asyncio.sleep(0.3)
+        assert not paused.is_set()  # the pause waits for the publication in flight
+        assert not ticket.revoke.is_set() and runtime.slot.holder is ticket and "high" not in seen
+    await asyncio.wait_for(asyncio.gather(copy, arrival), 60)
+    assert paused.is_set() and seen == {"high": "ok"} and gate.leases == 0
 
 
 @pytest.mark.asyncio

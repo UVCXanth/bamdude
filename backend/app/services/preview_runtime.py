@@ -514,6 +514,24 @@ class PreviewRuntime:
                 rpc.cancel()
             await asyncio.gather(waiter, rpc, return_exceptions=True)
 
+    @staticmethod
+    async def _unpaused_or_revoked(publication, ticket) -> None:
+        """A backup's pause of the pictures, raced against this ticket's revoke (Codex A2-R2): a ready result waiting
+        to be handed off still holds the slot, so a sliced arrival that revoked this low wins — Revoked, the result
+        discarded and the slot freed through the ordinary proof of end — instead of waiting behind the backup. A
+        pause never revokes anything by itself; the caller asks ``paused()`` again before its synchronous acquire,
+        since a new pause may begin while this wait unwinds."""
+        unpaused = asyncio.ensure_future(publication.until_unpaused())
+        revoked = asyncio.ensure_future(ticket.revoked.wait())
+        try:
+            await asyncio.wait({unpaused, revoked}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in (unpaused, revoked):
+                waiter.cancel()
+            await asyncio.gather(unpaused, revoked, return_exceptions=True)
+        if ticket.revoke.is_set():
+            raise Revoked
+
     @asynccontextmanager
     async def attempt(
         self,
@@ -537,7 +555,8 @@ class PreviewRuntime:
 
         ``publication`` (spec §5): a gate whose ``acquire()`` is asked in that same synchronous step, before the
         hand-off — a closed gate (restore) revokes the result, so nothing reaches its attach; the lease is held
-        through the caller's publication and released when this context exits."""
+        through the caller's publication and released when this context exits. A paused gate (a backup copying the
+        pictures) is waited for before that step, and a revoke ends the wait (``_unpaused_or_revoked``)."""
         kind = _inputs_kind(inputs)
         result = PreviewResult(kind=kind)
         priority = priority or PRIORITY_BY_KIND[kind]
@@ -721,7 +740,8 @@ class PreviewRuntime:
                         # The point of no return, under the arbiter's gate: a revoke that came first wins, the
                         # ready output is discarded and the attempt ends preempted without any restart.
                         if publication is not None:
-                            await publication.until_unpaused()  # a backup copying the pictures: wait, not revoke
+                            while publication.paused():  # a backup copying the pictures: wait, unless revoked
+                                await self._unpaused_or_revoked(publication, ticket)
                             lease = publication.acquire()  # None: publication closed (a restore) — nothing attaches
                             if lease is None:
                                 raise Revoked
