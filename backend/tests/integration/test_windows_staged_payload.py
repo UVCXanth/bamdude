@@ -112,3 +112,24 @@ def test_the_built_payload_is_exact():
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
     assert build.step_payload_problems(STAGING / "app") == []
+
+
+ISCC = Path(
+    os.environ.get("BAMDUDE_ISCC") or Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe"
+)
+ISS = ROOT / "installers" / "windows" / "bamdude.iss"
+
+
+@pytest.mark.skipif(not ISCC.is_file(), reason="named skip: no ISCC.exe (BAMDUDE_ISCC or the per-user Inno Setup 6)")
+def test_iscc_compiles_the_installer_script_against_the_built_payload():
+    """A syntax and [Code] check of the real script with the generated define (/O-: no output written)."""
+    p = subprocess.run([str(ISCC), "/O-", "/Q", str(ISS)], capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, (p.stdout + p.stderr)[-2000:]
+
+
+@pytest.mark.skipif(not ISCC.is_file(), reason="named skip: no ISCC.exe (BAMDUDE_ISCC or the per-user Inno Setup 6)")
+def test_iscc_refuses_the_script_without_the_generated_limit(tmp_path):
+    copy = tmp_path / "bamdude.iss"
+    shutil.copyfile(ISS, copy)  # no build\staging\version.iss beside it: no StepMaxAppDirLen
+    p = subprocess.run([str(ISCC), "/O-", "/Q", str(copy)], capture_output=True, text=True, timeout=120)
+    assert p.returncode != 0 and "StepMaxAppDirLen" in (p.stdout + p.stderr)

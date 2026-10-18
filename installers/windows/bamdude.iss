@@ -312,8 +312,10 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
-  // A silent install "clicks" Next too: every box here is suppressible.
-  if (CurPageID = wpSelectDir) and (Length(WizardDirValue) > {#StepMaxAppDirLen}) then
+  // A silent install "clicks" Next too, and a False here ends it with another code than 7: the directory
+  // check is the wizard's early word for an interactive install only; a silent one is refused by
+  // PrepareToInstall (exit code 7), still before anything is stopped or created. Every box is suppressible.
+  if (CurPageID = wpSelectDir) and (not WizardSilent) and (Length(WizardDirValue) > {#StepMaxAppDirLen}) then
   begin
     SuppressibleMsgBox(FmtMessage(CustomMessage('AppDirTooLong'), [IntToStr({#StepMaxAppDirLen})]),
       mbError, MB_OK, IDOK);
@@ -393,8 +395,7 @@ function ControlService(hService: THandle; dwControl: Cardinal; var lpServiceSta
 function CloseServiceHandle(hSCObject: THandle): Boolean;
   external 'CloseServiceHandle@advapi32.dll stdcall';
 
-// The class of the service's state and, when read, its raw SCM state. ``Access`` is what the service handle
-// needs besides SERVICE_QUERY_STATUS (SERVICE_STOP to ask it to stop through the same handle).
+// The class of the service's state, read with SERVICE_QUERY_STATUS alone.
 function ServiceState(const ServiceName: String): Integer;
 var
   Manager, Service: THandle;

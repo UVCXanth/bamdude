@@ -85,7 +85,8 @@ REM The STEP-preview CAD bundle must pass its full verify (rehash + a real
 REM STEP->PNG) before the service may start with it. A failure keeps the
 REM service down - registered, with its database settings, but on demand start
 REM so a reboot does not bring it up - and Setup reports it (exit code 42).
-"%PYTHON%" -m backend.app.step_runtime verify --app-dir "%APP_DIR%"
+REM stderr stays out of the log: only the helper's closed JSON answer, never a traceback with a path.
+"%PYTHON%" -m backend.app.step_runtime verify --app-dir "%APP_DIR%" 2>nul
 set "VERIFY_RC=!errorlevel!"
 if not "!VERIFY_RC!"=="0" (
     echo [install-service] the CAD runtime failed its verification ^(exit !VERIFY_RC!^) - the service is not started
@@ -104,7 +105,7 @@ if not "!VERIFY_RC!"=="0" (
 REM Old CAD bundles go only now: the new one verified, BamDude proven stopped.
 REM Best effort - whatever it has to keep (in use, busy) is no reason to keep
 REM BamDude down.
-"%PYTHON%" -m backend.app.step_runtime prune --app-dir "%APP_DIR%" --other-keys
+"%PYTHON%" -m backend.app.step_runtime prune --app-dir "%APP_DIR%" --other-keys 2>nul
 if errorlevel 1 echo [install-service] CAD prune could not run - old bundles stay
 
 REM ---------------------------------------------------------------------------

@@ -76,6 +76,14 @@ def test_prepare_refuses_unless_bamdude_is_absent_or_stopped():
     assert re.search(r"AppDirTooLong", prepare[:grace])
     nxt = _routine("NextButtonClick")
     assert "wpSelectDir" in nxt and "{#StepMaxAppDirLen}" in nxt
+    # NextButtonClick runs on a silent install too, and a False there exits Setup with ANOTHER code than 7: the
+    # wizard's early word is for an interactive install only, a silent one must reach PrepareToInstall's 7.
+    assert re.search(r"\(CurPageID = wpSelectDir\) and \(not WizardSilent\) and", nxt)
+
+
+def test_no_stale_comment_names_a_parameter_the_routine_lacks():
+    state = _routine("ServiceState")
+    assert "``Access``" not in _section("Code").split("function ServiceState", 1)[0][-600:] + state
 
 
 def test_the_generated_limit_is_required():
@@ -159,6 +167,25 @@ def test_service_state_tells_absent_from_unknown():
     for tool in ("find", "ping"):
         assert not re.search(rf"^\s*{tool}\b|[(&|]\s*{tool}\b", state, re.M | re.I), tool
         assert f"System32\\{tool}.exe" in state, tool
+
+
+def test_the_helper_calls_keep_python_stderr_out_of_the_log():
+    """install-service.log gets the helper's closed JSON answer, never a traceback with the install path in it."""
+    main = _main()
+    for call in ("-m backend.app.step_runtime verify", "-m backend.app.step_runtime prune"):
+        line = next(line for line in main.splitlines() if call in line)
+        assert line.rstrip().endswith("2>nul"), line
+
+
+@pytest.mark.skipif(os.name != "nt", reason="named skip: sc.exe is Windows'")
+def test_a_temp_dir_with_an_exclamation_mark_still_reads_the_state(tmp_path):
+    """Delayed expansion strips a `!` from a path it parses: a user named `Bob!` must not turn ABSENT into UNKNOWN."""
+    temp = tmp_path / "bd!x"
+    temp.mkdir()
+    name = f"BamDudeNoSuch{uuid.uuid4().hex[:12]}"
+    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp)}
+    p = subprocess.run(["cmd", "/c", str(SERVICE / "service-state.bat"), name, "2"], capture_output=True, env=env)
+    assert p.returncode == 0, p.stdout
 
 
 def test_no_service_script_trusts_path_for_find_or_ping():
