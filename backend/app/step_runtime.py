@@ -1011,7 +1011,7 @@ def prune(
 def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -> int:
     ap = argparse.ArgumentParser(prog="python -m backend.app.step_runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("install", "verify", "select", "requirements", "prune", "choose", "status"):
+    for name in ("install", "verify", "select", "requirements", "prune", "choose", "status", "limits"):
         p = sub.add_parser(name)
         p.add_argument("--app-dir", type=Path, default=Path(__file__).resolve().parents[2])
         if name == "choose":
@@ -1046,6 +1046,10 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             p.add_argument("--other-keys", action="store_true", help="also this platform's other Python ABIs")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "limits":  # what an install really bounds (spec stage C R6b): the scripts name these
+            limits = {"lock_seconds": INSTALL_SECONDS, "pip_seconds": INSTALL_SECONDS}
+            print(json.dumps({**limits, "smoke_seconds": SMOKE_SECONDS, "render_seconds": RENDER_SECONDS}))
+            return EXIT_OK
         if a.cmd == "choose":
             write_choice(a.app_dir, a.choice, by=a.by)
             print(json.dumps({"ok": True, "choice": a.choice}))
