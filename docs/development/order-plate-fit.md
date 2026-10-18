@@ -1,8 +1,9 @@
 # Whole-plate order quantities
 
-The order-line **Plate quantities** action browses nearby exact quantities. The
-**Adjust without surplus** action beside whole-plan enqueue starts with the
-closest lower, current (when exact), and closest higher quantities. Type a new
+The single **Adjust without surplus** action beside whole-plan enqueue starts
+with the closest lower, current (when exact), and closest higher quantities.
+**Show more options** loads a wider range in that same dialog, with discrete
+slider, arrows and range paging; line quantities have no duplicate action. Type a new
 centre to jump straight to 20,000; the slider indexes only the displayed exact
 answers. Search is bounded by the existing one-million-unit intake limit, not
 by a percentage around the current order. Changes above 10% in either direction

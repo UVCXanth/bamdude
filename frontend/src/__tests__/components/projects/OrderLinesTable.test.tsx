@@ -109,13 +109,10 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens plate quantity browsing next to the quantity of the requested line', () => {
-    const browse = vi.fn();
-    render(<OrderLinesTable order={order} canEdit onPlateFit={browse} />);
+  it('keeps the line quantity free of the duplicate calculator action', () => {
+    render(<OrderLinesTable order={order} canEdit />);
     const row = screen.getByTestId('line-10-quantity').closest('td')!;
-    fireEvent.click(within(row).getByRole('button', { name: 'Plate quantities' }));
-    expect(browse).toHaveBeenCalledWith(10);
-    expect(screen.getAllByRole('button', { name: 'Plate quantities' })).toHaveLength(2);
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('renders lines in sort order with six columns, the menu one named only for a screen reader', () => {

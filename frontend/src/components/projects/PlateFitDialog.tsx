@@ -11,7 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 
 export interface PlateFitDraft { orderId: number; lineId: number; quantity: number; rows: PlanRow[]; revision: number; planSignature: string }
 export interface PlateFitDoor {
-  orderId: number; lineId?: number; mode: 'nearest' | 'browse';
+  orderId: number; lineId?: number;
   selectedPlates?: Record<number, number[]>;
   onApplied: (draft: PlateFitDraft) => void;
 }
@@ -27,6 +27,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   const order = useQuery({ queryKey: ['plate-fit-order', door.orderId], queryFn: () => api.getOrder(door.orderId), staleTime: 0, refetchOnMount: 'always', refetchOnWindowFocus: false });
   const [lineId, setLineId] = useState(door.lineId);
   const [typed, setTyped] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [data, setData] = useState<PlateFitResponse | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [ack, setAck] = useState(false);
@@ -53,12 +54,12 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
     const known = ['banked_output', 'stale', 'large_change', 'queue_change', 'plates', 'ambiguous_output', 'unmapped_output', 'parts_line', 'composition', 'busy', 'invalid_plan', 'order_closed'];
     setError(code && known.includes(code) ? t(`plateFit.errors.${code}`) : e instanceof Error ? e.message : t('plateFit.failed'));
   };
-  const calculate = async (around = quantity) => {
+  const calculate = async (around = quantity, more = expanded) => {
     if (!line || !Number.isSafeInteger(around) || around < 1 || around > 1_000_000) return;
     const request = ++sequence.current;
     setBusy(true); setError(null); setData(null); setSelected(null); setAck(false); setQueueAck(false);
     try {
-      const result = await api.getPlateFit(door.orderId, line.id, { around, plate_ids: door.selectedPlates?.[line.id], steps: door.mode === 'browse' ? 3 : 1, ...(replacePending ? { replace_pending: true } : {}) });
+      const result = await api.getPlateFit(door.orderId, line.id, { around, plate_ids: door.selectedPlates?.[line.id], steps: more ? 3 : 1, ...(replacePending ? { replace_pending: true } : {}) });
       if (request !== sequence.current) return;
       setData(result);
       const preferred = result.options.find(o => o.quantity === around) ?? result.options.find(o => o.quantity > around) ?? result.options.at(-1);
@@ -101,9 +102,9 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   };
   const index = data?.options.findIndex(o => o.quantity === selected) ?? -1;
   const nearest = data?.options.filter(o => o.quantity === data.around || o.quantity === data.options.filter(v => v.quantity < data.around).at(-1)?.quantity || o.quantity === data.options.find(v => v.quantity > data.around)?.quantity) ?? [];
-  const options = door.mode === 'browse' ? data?.options ?? [] : nearest;
+  const options = expanded ? data?.options ?? [] : nearest;
   const selectedPlateIds = line ? door.selectedPlates?.[line.id] : undefined;
-  return <Modal title={t(door.mode === 'browse' ? 'plateFit.browse' : 'plateFit.nearest')} icon={<Calculator className="w-5 h-5" />} size="3xl"
+  return <Modal title={t('plateFit.nearest')} icon={<Calculator className="w-5 h-5" />} size="3xl"
     onClose={() => { sequence.current++; onClose(); }} closeDisabled={busy}
     footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
       <Button onClick={() => void apply()} disabled={busy || !current || (large && !ack) || (removedCount > 0 && !queueAck) || cannotTakeStock}>
@@ -141,12 +142,15 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
             {o.quantity.toLocaleString()} · {delta(o.quantity - data.current_quantity)} ({delta(Math.round((o.quantity - data.current_quantity) / data.current_quantity * 1000) / 10)}%)
           </Button>)}
         </div>
-        {door.mode === 'browse' && data.options.length > 1 && <div className="flex items-center gap-3">
+        {!expanded && <Button variant="secondary" disabled={busy || !!saved} onClick={() => { setExpanded(true); void calculate(data.around, true); }}>
+          {t('plateFit.showMore')}
+        </Button>}
+        {expanded && data.options.length > 1 && <div className="flex items-center gap-3">
           <Button variant="secondary" aria-label={t('plateFit.previous')} disabled={busy || !!saved || index <= 0} onClick={() => choose(data.options[index - 1].quantity)}><ChevronLeft className="w-4 h-4" /></Button>
           <input aria-label={t('plateFit.results')} type="range" className="flex-1 accent-bambu-green" min={0} max={data.options.length - 1} step={1} value={Math.max(0, index)} disabled={busy || !!saved} onChange={e => choose(data.options[Number(e.target.value)].quantity)} />
           <Button variant="secondary" aria-label={t('plateFit.next')} disabled={busy || !!saved || index < 0 || index >= data.options.length - 1} onClick={() => choose(data.options[index + 1].quantity)}><ChevronRight className="w-4 h-4" /></Button>
         </div>}
-        {door.mode === 'browse' && data.options.length > 0 && <div className="flex gap-2 flex-wrap">
+        {expanded && data.options.length > 0 && <div className="flex gap-2 flex-wrap">
           <Button size="sm" variant="secondary" disabled={busy || !!saved} onClick={() => { const n = data.options[0].quantity; setTyped(String(n)); void calculate(n); }}>{t('plateFit.moreBelow')}</Button>
           <Button size="sm" variant="secondary" disabled={busy || !!saved} onClick={() => { const n = data.options.at(-1)!.quantity; setTyped(String(n)); void calculate(n); }}>{t('plateFit.moreAbove')}</Button>
         </div>}

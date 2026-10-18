@@ -376,8 +376,8 @@ describe('OrdersPage', () => {
       vi.mocked(api.getOrder).mockResolvedValue(makeOrder({ id: 1 }));
       window.history.pushState({}, '', '/projects?order=1');
       render(<OrdersPage />);
-      fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities' }));
-      expect(await screen.findByRole('dialog', { name: 'Plate quantities' })).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus' }));
+      expect(await screen.findByRole('dialog', { name: 'Adjust without surplus' })).toBeInTheDocument();
       expect(await within(screen.getByRole('dialog')).findByRole('spinbutton')).toHaveValue(10);
     });
     // V02 (Codex r1), through the real router: history moves to a page whose answer is held. The

@@ -6,7 +6,7 @@ import { PlateFitDialog, type PlateFitDoor } from '../../../components/projects/
 import { makeOrder, makeLine } from '../../fixtures/orderDetail';
 
 const order = makeOrder({ id: 41, lines: [makeLine({ id: 17, product_name: 'Product A', quantity: 1000 }), makeLine({ id: 18, product_name: 'Product B', quantity: 20 })] });
-const door: PlateFitDoor = { orderId: 41, lineId: 17, mode: 'nearest', selectedPlates: { 17: [7] }, onApplied: vi.fn() };
+const door: PlateFitDoor = { orderId: 41, lineId: 17, selectedPlates: { 17: [7] }, onApplied: vi.fn() };
 function readyPlan(): OrderPlan {
   return { lines: [{ line_id: 17, product_id: 1, product_name: 'Product A', material: null, outstanding_before: [{ part_id: 1, name: 'Part A', count: 2930 }], rows: [], surplus_after: [], unsatisfiable: [], candidates: [7], not_sliced: [] }], totals: { prints: 0, rows: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null }, truncated: false };
 }
@@ -85,17 +85,45 @@ describe('whole-plate quantity review', () => {
     expect(screen.getByRole('button', { name: 'Set quantity to 3,000' })).toBeDisabled();
   });
   it('browses discrete quantities near 20,000 without a global production slider', async () => {
-    vi.mocked(api.getPlateFit).mockResolvedValue(result([19992, 20004, 20016]));
-    render(<PlateFitDialog door={{ ...door, mode: 'browse' }} onClose={vi.fn()} />);
+    vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([19992, 20004, 20016]), around: 20000 });
+    render(<PlateFitDialog door={door} onClose={vi.fn()} />);
     const input = await screen.findByRole('spinbutton', { name: /Desired quantity/ });
     fireEvent.change(input, { target: { value: '20000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByRole('button', { name: 'Show more options' });
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more options' }));
     await screen.findByRole('slider');
     expect(api.getPlateFit).toHaveBeenCalledWith(41, 17, { around: 20000, plate_ids: [7], steps: 3 });
     expect(screen.getByRole('slider')).toHaveAttribute('max', '2');
     fireEvent.change(screen.getByRole('slider'), { target: { value: '2' } });
     expect(screen.getByRole('button', { name: 'Set quantity to 20,016' })).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
+  });
+  it('loads the wider range on demand and resets consent without writing or enqueueing', async () => {
+    await calculate();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    vi.mocked(api.getPlateFit).mockResolvedValue(result([900, 3000, 6000]));
+    fireEvent.click(screen.getByRole('button', { name: 'Show more options' }));
+    await screen.findByRole('slider');
+    expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 3 });
+    expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
+    fireEvent.change(screen.getByRole('slider'), { target: { value: '2' } });
+    expect(screen.getByRole('button', { name: 'Set quantity to 6,000' })).toBeDisabled();
+    expect(api.updateOrderLine).not.toHaveBeenCalled();
+  });
+  it('can retry a failed expansion and keeps subsequent calculations in the wider range', async () => {
+    await calculate();
+    vi.mocked(api.getPlateFit).mockRejectedValueOnce(new Error('preview unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show more options' }));
+    await screen.findByText('preview unavailable');
+    expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
+    vi.mocked(api.getPlateFit).mockResolvedValue(result([19992, 20004, 20016]));
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '20000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByRole('slider');
+    expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 20000, plate_ids: [7], steps: 3 });
+    expect(api.updateOrderLine).not.toHaveBeenCalled();
   });
   it('invalidates results and acknowledgement when desired quantity or line changes', async () => {
     await calculate();

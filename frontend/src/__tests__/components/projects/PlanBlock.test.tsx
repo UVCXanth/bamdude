@@ -375,6 +375,17 @@ describe('PlanBlock', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it('keeps the single calculator available when the current plan is already covered', async () => {
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, lines: [] });
+    const open = vi.fn();
+    render(<PlanBlock order={order} canEdit onPlateFit={open} />);
+    await screen.findByTestId('plan-empty');
+    const buttons = screen.getAllByRole('button', { name: 'Adjust without surplus' });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
   it('applies exact run counts to the existing editor and keeps them on an identical refresh', async () => {
     render(<PlanBlock order={order} canEdit fitDraft={{ orderId: order.id, lineId: 10, quantity: 12, rows: [{ ...plan.lines[0].rows[0], count: 0 }, { ...plan.lines[0].rows[1], count: 2 }].filter(r => r.count > 0), revision: 1, planSignature: JSON.stringify(plan.lines[0]) }} />);
     await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(0));

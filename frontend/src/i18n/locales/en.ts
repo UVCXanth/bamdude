@@ -4,7 +4,7 @@ export default {
     queueWarning: '{{count}} pending Auto Queue jobs will be removed when applying. Assigned, scheduled, staged, pinned and printer-queue jobs remain fixed. The replacement is a draft: send it separately with “Whole plan to queue”, using the current print settings.',
     queueAck: 'I confirm removing these {{count}} jobs. I will send the replacement plan to the queue separately.', queueIds: 'Jobs proposed for removal',
     applyQueue: 'Set {{quantity}} and remove {{count}} pending jobs',
-    browse: 'Plate quantities', nearest: 'Adjust without surplus',
+    showMore: 'Show more options', nearest: 'Adjust without surplus',
     explanation: 'Find quantities that leave no surplus under the existing greedy plate planner. Free finished products, kits and individual parts are used first, alongside allocated stock, good output, running prints and both queues. Applying reserves the shown free stock; rejects are excluded.',
     line: 'Order line', current: 'Currently ordered: {{quantity}}', wanted: 'Desired quantity (1–1,000,000)', calculate: 'Calculate',
     platesScope: 'Selected plates: {{count}}. When no draft selection exists, use the current server plan. Run counts may change; files stay the same.',

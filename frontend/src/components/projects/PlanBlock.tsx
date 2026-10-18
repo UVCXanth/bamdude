@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Loader2, Send } from 'lucide-react';
+import { AlertTriangle, Calculator, Loader2, Send } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -571,6 +571,13 @@ export function PlanBlock({
     );
   }
 
+  const fitAction = onPlateFit && order.lines.some(l => l.mode !== 'parts') ? (
+    <Button variant="secondary" className="ring-1 ring-bambu-green/60" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
+      <Calculator className="w-5 h-5 shrink-0 text-bambu-green" aria-hidden="true" />
+      {t('plateFit.nearest')}
+    </Button>
+  ) : null;
+
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {queueConfirmation}
@@ -598,14 +605,15 @@ export function PlanBlock({
         </div>
       )}
 
-      {lines.length === 0 ? (
+      {lines.length === 0 ? (<>
         <p
           className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm text-white"
           data-testid="plan-empty"
         >
           {t('orders.plan.nothingOutstanding')}
         </p>
-      ) : (
+        {fitAction && <div className="flex justify-end">{fitAction}</div>}
+      </>) : (
         <>
           <div className="space-y-3">
             {lines.map((line) => (
@@ -664,11 +672,7 @@ export function PlanBlock({
               )}
             </p>
 
-            {onPlateFit && order.lines.some(l => l.mode !== 'parts') && (
-              <Button size="sm" variant="secondary" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
-                {t('plateFit.nearest')}
-              </Button>
-            )}
+            {fitAction}
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"

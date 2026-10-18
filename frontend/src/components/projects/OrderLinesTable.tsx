@@ -37,7 +37,6 @@ function configCaption(line: ProjectLine, t: ReturnType<typeof useTranslation>['
 }
 
 interface OrderLinesTableProps {
-  onPlateFit?: (lineId: number) => void;
   order: Order;
   canEdit: boolean;
   /** Delegates to the existing plan editor; never queues from this table. */
@@ -63,7 +62,7 @@ interface OrderLinesTableProps {
  * The queue shortcuts delegate to PlanBlock's review and writer. The table never
  * derives a second plan or opens PrintModal with a plate outside that plan.
  */
-export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan, onPlateFit }: OrderLinesTableProps) {
+export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan }: OrderLinesTableProps) {
   const { t } = useTranslation();
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const { showToast } = useToast();
@@ -240,11 +239,6 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
                         ? t('orders.lines.partsQty', { count: line.quantity })
                         : t('orders.lines.unitsQty', { count: line.quantity })}
                     </span>
-                    {canEdit && order.status === 'active' && line.mode !== 'parts' && onPlateFit && (
-                      <button type="button" className="mt-1 block text-xs text-bambu-green hover:underline" onClick={() => onPlateFit(line.id)}>
-                        {t('plateFit.browse')}
-                      </button>
-                    )}
                     {(line.from_finished > 0 || line.from_kit_units > 0) && (
                       <small className="block mt-0.5 text-xs text-bambu-gray" data-testid={`line-${line.id}-from-stock-shown`}>
                         {t('orders.lines.fromStock', {
