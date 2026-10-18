@@ -188,7 +188,8 @@ async def test_two_runs_in_one_process_do_not_share_records(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_a_cancel_stays_a_cancel_when_the_run_fails_with_it(tmp_path, monkeypatch, caplog):
     """A spawn that breaks while the cancel stops it must not turn the cancellation into an ordinary failure: the
-    update that asked for the stop would carry on as if the helper had merely failed."""
+    update that asked for the stop would carry on as if the helper had merely failed. An end the launcher did not
+    account for proves nothing about the tree: the records stay (Codex C-I-R1)."""
     root = tmp_path / ".owner"
     started = threading.Event()
 
@@ -205,7 +206,81 @@ async def test_a_cancel_stays_a_cancel_when_the_run_fails_with_it(tmp_path, monk
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert "outcome=failed" in caplog.text
+    assert "outcome=unproven" in caplog.text and len(list(root.iterdir())) == 1
+
+
+def _failed_look(*args, **kwargs):
+    raise OSError("injected: the tree could not be looked at")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_look_at_the_tree_still_ends_it_on_cancel(tmp_path, monkeypatch):
+    """Codex C-I-R1: an OS error while listing the tree's members used to skip ending it, and the run's records were
+    wiped with the grandchild alive — the next run was allowed beside it. Listing is diagnostics; the end is not."""
+    root, marker = tmp_path / ".owner", tmp_path / "grandchild.pid"
+    monkeypatch.setattr(child, "_members", _failed_look)
+    task = asyncio.ensure_future(
+        child.run_owned([sys.executable, str(SLEEPY), str(marker)], owner_root=root, timeout=60, label="t")
+    )
+    pid = await _marker_pid(marker)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not _alive(pid), "the cancel left the grandchild running"
+    replacement = await child.run_owned(_script(tmp_path, "ok", "pass\n"), owner_root=root, timeout=60, label="t")
+    assert replacement.outcome == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "timeout", "outcome"), [("pass\n", 60, "ok"), ("import time; time.sleep(30)\n", 1, "timeout")]
+)
+async def test_a_failed_look_at_the_tree_still_proves_its_end(tmp_path, monkeypatch, body, timeout, outcome):
+    root = tmp_path / ".owner"
+    monkeypatch.setattr(child, "_members", _failed_look)
+    answer = await child.run_owned(_script(tmp_path, "run", body), owner_root=root, timeout=timeout, label="t")
+    assert answer.outcome == outcome
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_proving_the_end_keeps_the_records(tmp_path, monkeypatch):
+    """An error inside the proof is no proof: unproven, records kept, the next run refused."""
+    root = tmp_path / ".owner"
+    real = child._tree_gone
+
+    def broken_proof(owner, timeout):
+        real(owner, timeout)  # the tree really ends — only the answer is lost
+        raise OSError("injected: the proof could not be completed")
+
+    monkeypatch.setattr(child, "_tree_gone", broken_proof)
+    first = await child.run_owned(_script(tmp_path, "ok", "pass\n"), owner_root=root, timeout=60, label="t")
+    assert first.outcome == "unproven" and len(list(root.iterdir())) == 1
+    monkeypatch.setattr(child, "_tree_gone", real)
+    second = await child.run_owned(_script(tmp_path, "ok", "pass\n"), owner_root=root, timeout=60, label="t")
+    assert second.outcome == "helper_unproven"
+
+
+@pytest.mark.asyncio
+async def test_an_end_the_launcher_does_not_account_for_keeps_the_records(tmp_path, monkeypatch):
+    root = tmp_path / ".owner"
+
+    def unknown(*args, **kwargs):
+        raise KeyError("an end nobody planned for")
+
+    monkeypatch.setattr(child, "run_tree", unknown)
+    first = await child.run_owned(["x"], owner_root=root, timeout=60, label="t")
+    assert first.outcome == "unproven" and len(list(root.iterdir())) == 1
+    second = await child.run_owned(["x"], owner_root=root, timeout=60, label="t")
+    assert second.outcome == "helper_unproven"
+
+
+@pytest.mark.asyncio
+async def test_a_command_refused_before_its_launch_leaves_nothing(tmp_path):
+    root = tmp_path / ".owner"
+    with pytest.raises(ValueError):
+        await child.run_owned(["not-python", "x"], owner_root=root, timeout=2, label="t")
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.asyncio

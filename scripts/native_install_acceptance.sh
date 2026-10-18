@@ -31,6 +31,10 @@ HEADS=""   # the report's proven checkouts, JSON objects joined by commas (no ar
 NOTES=""
 OS=""
 OWNER=""
+# The prefix that runs a command as the install's owner (`sudo -u <owner>`, or nothing on macOS). An array, not a
+# function, so it also prefixes what crosses `bounded`'s external timeout, which can run no shell function
+# (Codex C-I-R2). `${OWNER_PREFIX[@]+…}` keeps an empty one empty under `set -u` on bash 3.2.
+OWNER_PREFIX=()
 PYTHON=""
 PORT=""
 INSTALL_PATH=""
@@ -121,13 +125,14 @@ as_root() {
 }
 
 as_owner() {
-    if [[ -n "$OWNER" ]]; then sudo -u "$OWNER" "$@"; else "$@"; fi
+    ${OWNER_PREFIX[@]+"${OWNER_PREFIX[@]}"} "$@"
 }
 
 # ---- the local remote -------------------------------------------------------------------------------------------
 
-# A shallow bare remote: the candidate as `main`, the previous release as `baseline` (the newest stable tag before
-# the candidate, or BASELINE_TAG). Two depth-1 refs keep the artifact small; the SHAs are the real ones.
+# A bare remote with the candidate as `main` and the previous release as `baseline` (the newest stable tag before
+# the candidate, or BASELINE_TAG), each with its WHOLE history: install.sh and update.sh clone and fetch it
+# unchanged, and two shallow roots made N3's ordinary fetch keep the baseline — with exit 0 (Codex C-I-R3).
 fixture() {
     local out="$1" candidate tag="${BASELINE_TAG:-}" t baseline
     candidate=$(git rev-parse --verify "$2^{commit}") || fail "the candidate $2 is not a commit here"
@@ -146,7 +151,7 @@ fixture() {
     git update-ref refs/acceptance/main "$candidate"
     git update-ref refs/acceptance/baseline "$baseline"
     git init -q --bare "$out/bamdude.git"
-    git -C "$out/bamdude.git" fetch -q --no-tags --depth=1 "$PWD" \
+    git -C "$out/bamdude.git" fetch -q --no-tags "$PWD" \
         refs/acceptance/main:refs/heads/main refs/acceptance/baseline:refs/heads/baseline
     git update-ref -d refs/acceptance/main
     git update-ref -d refs/acceptance/baseline
@@ -545,6 +550,21 @@ clone_as_ci() {
     as_owner git clone -q --branch main "$REPO_URL" "$INSTALL_PATH" || fail "the candidate could not be cloned"
 }
 
+# The app's venv, built by the install's owner in the install (F1 has no installer to build it). What crosses the
+# deadline is an executable (`sudo` / `bash`), with its cwd set inside it.
+build_venv() {
+    # shellcheck disable=SC2016  # expanded by the inner shell
+    logged venv 1800 ${OWNER_PREFIX[@]+"${OWNER_PREFIX[@]}"} bash -c \
+        'cd "$1" && "$2" -m venv venv && venv/bin/pip install -q -r requirements.txt' _ "$INSTALL_PATH" "$PYTHON"
+}
+
+# The component installed by the install's own helper, as its owner, under the component's deadline.
+install_component() {
+    # shellcheck disable=SC2016  # expanded by the inner shell
+    logged helper-install "$ENABLE_SECONDS" ${OWNER_PREFIX[@]+"${OWNER_PREFIX[@]}"} bash -c \
+        'cd "$1" && exec venv/bin/python -m backend.app.step_runtime install --app-dir "$1"' _ "$INSTALL_PATH"
+}
+
 scenario_F1() {  # a clean Fedora container, no service: the libraries, the helper as a non-root user, a real STEP
     logged tools 900 dnf install -y git sudo python3.12 findutils iproute procps-ng tar util-linux ||
         fail "the harness's tools could not be installed"
@@ -560,10 +580,8 @@ scenario_F1() {  # a clean Fedora container, no service: the libraries, the help
     # shellcheck disable=SC2046  # one word per package
     note packages "$(rpm -q $(step_packages dnf) | tr '\n' ' ')"
     note packages_added "$(comm -13 "$STATE_DIR/rpm-before.txt" "$STATE_DIR/rpm-after.txt" | tr '\n' ' ')"
-    # shellcheck disable=SC2016  # expanded by the inner shell
-    logged venv 1800 as_owner bash -c 'cd "$1" && python3.12 -m venv venv && venv/bin/pip install -q -r requirements.txt' \
-        _ "$INSTALL_PATH" || fail "the app's venv could not be built"
-    logged helper-install "$ENABLE_SECONDS" helper install || fail "the helper's install exited $?"
+    build_venv || fail "the app's venv could not be built"
+    install_component || fail "the helper's install exited $?"
     [[ "$(checked_bundle)" == "works" ]] || fail "status --check does not say works"
     start_app
     http step-ok || fail "a STEP did not get its thumbnail"
@@ -606,6 +624,7 @@ run_scenario() {
             [[ "$(uname -s)" == "Darwin" ]] || fail "M1 needs a macOS runner"
             ;;
     esac
+    if [[ -n "$OWNER" ]]; then OWNER_PREFIX=(sudo -u "$OWNER"); else OWNER_PREFIX=(); fi
     note port "$PORT"
     note install_path "$INSTALL_PATH"
     "scenario_$name"

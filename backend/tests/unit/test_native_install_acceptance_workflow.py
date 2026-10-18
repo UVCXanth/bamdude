@@ -209,6 +209,40 @@ def test_the_fixture_serves_the_candidate_and_the_previous_release(tmp_path):
     ]
 
 
+def test_the_fixture_lets_an_install_of_the_baseline_update_to_the_candidate(tmp_path):
+    """N3's path with the real fixture and plain git, as install.sh and update.sh use it (Codex C-I-R3): clone main
+    while it is the baseline, move main to the candidate, an ordinary fetch, a reset. Shallow roots made that fetch
+    keep the old SHA — with exit 0."""
+    bash = _bash()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    for n, tag in ((1, None), (2, "v0.7.0"), (3, None), (4, None)):
+        (repo / "f.txt").write_text(str(n), encoding="utf-8")
+        _git(repo, "add", "f.txt")
+        _git(repo, "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "-m", f"c{n}")
+        if tag:
+            _git(repo, "tag", tag)
+    candidate = _git(repo, "rev-parse", "HEAD")
+    baseline = _git(repo, "rev-parse", "v0.7.0^{commit}")
+    out = tmp_path / "fixture"
+    made = subprocess.run(
+        [bash, SCRIPT.as_posix(), "fixture", out.as_posix(), candidate], cwd=repo, capture_output=True
+    )
+    assert made.returncode == 0, made.stderr
+    subprocess.run(["tar", "-xf", "bamdude.git.tar"], cwd=out, check=True)
+    bare = out / "bamdude.git"
+    _git(out, "--git-dir", "bamdude.git", "update-ref", "refs/heads/main", baseline)
+    _git(tmp_path, "clone", "-q", "--branch", "main", bare.as_uri(), "installed")
+    installed = tmp_path / "installed"
+    assert _git(installed, "rev-parse", "HEAD") == baseline
+    _git(out, "--git-dir", "bamdude.git", "update-ref", "refs/heads/main", candidate)
+    _git(installed, "fetch", "--prune", "origin")
+    assert _git(installed, "rev-parse", "origin/main") == candidate
+    _git(installed, "reset", "-q", "--hard", "origin/main")
+    assert _git(installed, "rev-parse", "HEAD") == candidate
+
+
 def test_a_failed_scenario_still_writes_its_report(tmp_path):
     bash = _bash()
     reports = tmp_path / "reports"
@@ -286,6 +320,66 @@ def test_expect_head_refuses_another_commit(tmp_path):
     assert rc == 0 and f'"expected": "{head}", "actual": "{head}"' in out, out
     rc, out = _sourced(tmp_path, f"INSTALL_PATH='{repo.as_posix()}'; expect_head install {'0' * 40}")
     assert rc == 1 and f"HEAD is {head}, expected {'0' * 40}" in out, out
+
+
+def test_nothing_hands_a_shell_function_to_the_deadline():
+    """`bounded` runs GNU timeout, an external program: a harness function given to it is "No such file or
+    directory", exit 127 (Codex C-I-R2: F1's venv and helper steps). Every bounded command is an executable."""
+    text = _script()
+    functions = set(re.findall(r"^(\w+)\(\) \{", text, re.M))
+    for line in text.splitlines():
+        code = line.split("#", 1)[0]
+        m = re.search(r"\blogged\s+\S+\s+\S+\s+(.+)", code) or re.search(r"\bbounded\s+\S+\s+(.+)", code)
+        if not m or code.strip().startswith(("logged()", "bounded()")):
+            continue
+        words = [w for w in m.group(1).split() if not w.startswith("${OWNER_PREFIX")]
+        if words and words[0] not in ('"$@"', "\\"):
+            assert words[0].strip("\"'") not in functions, line
+
+
+def _owner_steps(tmp_path: Path, extra: str = "") -> tuple[int, str, list[str]]:
+    install = tmp_path / "inst dir"
+    (install / "venv" / "bin").mkdir(parents=True)
+    calls = tmp_path / "calls.txt"
+    calls.write_text("", encoding="utf-8")
+    recorder = (
+        "#!/usr/bin/env bash\n"
+        'printf "%s cwd=%s" "$(basename "$0")" "$(basename "$PWD")" >> "$CALLS"\n'
+        'for a in "$@"; do printf " [%s]" "$a" >> "$CALLS"; done\n'
+        'echo >> "$CALLS"\n'
+        'if [[ -n "${FAKE_SLEEP:-}" && "$(basename "$0")" == python ]]; then exec sleep "$FAKE_SLEEP"; fi\n'
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for path in (install / "venv" / "bin" / "python", install / "venv" / "bin" / "pip", bindir / "python3.12"):
+        path.write_text(recorder, encoding="utf-8", newline="\n")
+        path.chmod(0o755)
+    steps = (
+        f"export CALLS='{calls.as_posix()}'; {extra}"
+        f"OWNER_PREFIX=(); PYTHON='{(bindir / 'python3.12').as_posix()}'; INSTALL_PATH='{install.as_posix()}'; "
+        "build_venv && install_component"
+    )
+    rc, out = _sourced(tmp_path, steps)
+    return rc, out, calls.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_owner_steps_cross_the_deadline_as_commands(tmp_path):
+    if not shutil.which("timeout"):
+        pytest.skip("named skip: no GNU timeout here, bounded runs in-shell")
+    rc, out, calls = _owner_steps(tmp_path)
+    assert rc == 0, out
+    assert calls == [
+        "python3.12 cwd=inst dir [-m] [venv] [venv]",
+        "pip cwd=inst dir [install] [-q] [-r] [requirements.txt]",
+        f"python cwd=inst dir [-m] [backend.app.step_runtime] [install] [--app-dir] [{(tmp_path / 'inst dir').as_posix()}]",
+    ], out
+
+
+def test_an_owner_step_past_its_deadline_is_ended(tmp_path):
+    if not shutil.which("timeout"):
+        pytest.skip("named skip: no GNU timeout here, bounded runs in-shell")
+    rc, out, _ = _owner_steps(tmp_path, "export FAKE_SLEEP=30; ENABLE_SECONDS=1; ")
+    assert rc == 124 and "helper-install: exit 124" in out, out  # the helper step hit its deadline, and only it
 
 
 def test_the_harness_parses_and_has_lf_endings():

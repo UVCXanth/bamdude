@@ -91,6 +91,14 @@ class TreeUnproven(RuntimeError):
         self.survivors = survivors or []
 
 
+class SpawnFailed(RuntimeError):
+    """The command could not be started at all (the OS refused the process): nothing of it runs."""
+
+
+class TreeFailed(RuntimeError):
+    """The run broke after its spawn (its cause chained), and its whole tree was then ended, the end proven."""
+
+
 def _identities(pids) -> list[list]:
     import psutil
 
@@ -203,6 +211,15 @@ def _reaped(process: subprocess.Popen) -> bool:
     return True
 
 
+def _proven_ended(owner, process: subprocess.Popen) -> bool:
+    """End the tree and prove it, the bootstrap reaped too. An error while doing so is no proof (Codex C-I-R1)."""
+    try:
+        return _tree_gone(owner, PROOF_SECONDS) and _reaped(process)
+    except Exception as exc:
+        logger.warning("ending a CAD helper's process tree failed (%s): its end is not proven", type(exc).__name__)
+        return False
+
+
 def _tree_gone(owner, timeout: float) -> bool:
     """End every process of the tree and prove none is left."""
     if os.name == "nt":
@@ -295,9 +312,11 @@ def run_tree(
     """Run ``[sys.executable, '-m', module, ...]`` or ``[sys.executable, script, ...]`` as an owned tree — or, with
     ``interpreter``, that interpreter's own ``[interpreter, ...]`` (started itself, with ``env`` as given). Raises
     ValueError before any launch or spawn for any other command, subprocess.TimeoutExpired after ending the tree,
-    TreeUnproven when its end cannot be proven, RecordUnwritable when ``records`` could not hold the bootstrap's
-    record (nothing was released), TreeStopped when ``stop`` was set: before the launch nothing is started; later
-    the tree is ended exactly as on a timeout, its end proven."""
+    TreeUnproven when its end cannot be proven, RecordUnwritable when ``records`` could not hold the launch or the
+    bootstrap's record (nothing was released), SpawnFailed when the OS refused the process, TreeFailed when the
+    run broke after its spawn (the tree ended, the end proven), TreeStopped when ``stop`` was set: before the
+    launch nothing is started; later the tree is ended exactly as on a timeout, its end proven. No other exception
+    leaves it once the process exists."""
     from backend.app.services import part_render_tree as tree
     from backend.app.services.worker_containment import contained_interpreter
 
@@ -311,41 +330,60 @@ def run_tree(
         interpreter, env = contained_interpreter(env)  # never a venv redirector the Job could miss
     if stop is not None and stop.is_set():
         raise TreeStopped(started=False)  # not even a launch record
-    token = tree.launch(records, _LAUNCH_NAME) if records is not None else uuid.uuid4().hex  # before the spawn
-    process = subprocess.Popen(
-        _bootstrapped(cmd, interpreter, token),
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        **kwargs,
-    )
+    try:
+        token = tree.launch(records, _LAUNCH_NAME) if records is not None else uuid.uuid4().hex  # before the spawn
+    except Exception as exc:
+        raise RecordUnwritable(type(exc).__name__) from exc  # nothing was launched
+    try:
+        process = subprocess.Popen(
+            _bootstrapped(cmd, interpreter, token),
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **kwargs,
+        )
+    except Exception as exc:  # the OS refused the process: Popen reaps what it forked before it raises
+        if records is not None:
+            _drop_records(records)
+        raise SpawnFailed(type(exc).__name__) from exc
+    # From here every way out either proves the tree ended or is TreeUnproven with its records kept: an unexpected
+    # error never reads as "nothing ran" (Codex C-I-R1).
     out, err = _Tail(process.stdout), _Tail(process.stderr)
     try:
         owner = _own(process)
-    except Exception:
-        process.kill()
-        process.wait(timeout=30)
+    except BaseException as exc:
+        try:  # never released: the bootstrap started nothing, so it alone has to go
+            process.kill()
+            process.wait(timeout=PROOF_SECONDS)
+        except Exception:
+            raise TreeUnproven("a bootstrap that could not be owned could not be proven ended") from exc
+        if records is not None:
+            _drop_records(records)
+        if isinstance(exc, Exception):
+            raise TreeFailed(type(exc).__name__) from exc
         raise
     if records is not None:
         try:
             tree.record(records / f"{_LAUNCH_NAME}.pid", process.pid)  # durable before its go
         except Exception as exc:
-            process.stdin.close()  # EOF: it ends unrun
-            proven = _tree_gone(owner, PROOF_SECONDS) and _reaped(process)
-            if not proven:
+            with contextlib.suppress(OSError):
+                process.stdin.close()  # EOF: it ends unrun
+            if not _proven_ended(owner, process):
                 raise TreeUnproven("an unreleased bootstrap could not be proven ended") from exc
             _drop_records(records)
             raise RecordUnwritable(type(exc).__name__) from exc
     if stop is not None and stop.is_set():  # stopped inside the spawn: never released, it ends unrun
-        process.stdin.close()
-        if not (_tree_gone(owner, PROOF_SECONDS) and _reaped(process)):
+        with contextlib.suppress(OSError):
+            process.stdin.close()
+        if not _proven_ended(owner, process):
             raise TreeUnproven("an unreleased bootstrap could not be proven ended")
         if records is not None:
             _drop_records(records)
         raise TreeStopped(started=False)
     timed_out = stopped = False
+    broke: BaseException | None = None
     try:
         process.stdin.write(GO)  # released: from here every process it starts is owned
         process.stdin.flush()  # the pipe stays open: the bootstrap's watch on its owner
@@ -361,20 +399,29 @@ def run_tree(
                 if time.monotonic() >= deadline:
                     timed_out = True
                     break
-    finally:
+    except BaseException as exc:  # the run broke: the tree is ended all the same before anything is concluded
+        broke = exc
+    try:
         members = _members(process, owner)
-        proven = _tree_gone(owner, PROOF_SECONDS) and _reaped(process)
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
+    except Exception:
+        members = []  # a failed look at the tree is diagnostics lost, never a reason to leave it running
+    proven = _proven_ended(owner, process)
+    with contextlib.suppress(OSError):
+        process.stdin.close()
     if not proven:
-        survivors = _still_alive(members)
+        try:
+            survivors = _still_alive(members)
+        except Exception:
+            survivors = members
         if records is not None:
             _record_survivors(records, survivors)
-        raise TreeUnproven("the installer's process tree could not be proven ended", survivors)
+        raise TreeUnproven("the installer's process tree could not be proven ended", survivors) from broke
     if records is not None:
         _drop_records(records)
+    if broke is not None:
+        if isinstance(broke, Exception):
+            raise TreeFailed(type(broke).__name__) from broke
+        raise broke  # an interruption of this thread goes on, the tree already over
     if stopped:
         raise TreeStopped(started=True)
     if timed_out:
@@ -450,14 +497,21 @@ def _drop_run(records: Path) -> None:
         records.rmdir()
 
 
+_PROVEN_ENDS = (subprocess.TimeoutExpired, TreeStopped, RecordUnwritable, SpawnFailed, TreeFailed)
+
+
 def _settled(task: asyncio.Future, records: Path) -> tuple[str, int | None, str]:
-    """The finished thread task's outcome; the run's records go only with a proven end."""
+    """The finished thread task's outcome; the run's records go only with a proven end. Only ``run_tree``'s own
+    answers prove one — a command it refused before any launch (ValueError, re-raised), its proven ends and its
+    result; any other exception proves nothing about the tree, so the records stay (Codex C-I-R1)."""
     exc = task.exception()
-    if isinstance(exc, TreeUnproven):
-        return "unproven", None, ""
-    if exc is not None and not isinstance(exc, (subprocess.TimeoutExpired, TreeStopped, RecordUnwritable)):
-        _drop_run(records)  # raised before any launch (a refused command)
+    if isinstance(exc, ValueError):
+        _drop_run(records)  # refused before any launch: nothing was recorded or started
         raise exc
+    if exc is not None and not isinstance(exc, _PROVEN_ENDS):
+        if not isinstance(exc, TreeUnproven):
+            logger.warning("a CAD helper run ended with %s, which proves nothing of its tree", type(exc).__name__)
+        return "unproven", None, ""
     _drop_run(records)
     if exc is None:
         result = task.result()
@@ -527,4 +581,9 @@ async def _run_owned(cmd, owner_root: Path, timeout: float, cwd, env, label: str
         raise
     except Exception:
         pass  # the task's own exception: settled below
-    return ended(*_settled(task, records))
+    try:
+        settled = _settled(task, records)
+    except Exception:
+        ended("failed")  # one terminal line on every way out
+        raise
+    return ended(*settled)
