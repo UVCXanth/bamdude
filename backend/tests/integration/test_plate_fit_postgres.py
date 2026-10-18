@@ -123,6 +123,6 @@ async def test_pending_removal_and_quantity_commit_atomically_against_a_real_cla
             assert (await db.get(ProjectLine, line_id)).quantity == 9
             assert (await db.get(AutoQueueItem, new_id)).status == "pending"
     finally:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+        # The disposable PostgreSQL container owns cleanup. Application metadata
+        # contains unnamed cyclic FKs, so drop_all cannot sort it on PostgreSQL.
         await engine.dispose()
