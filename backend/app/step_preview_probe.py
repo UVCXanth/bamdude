@@ -11,9 +11,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import site as _site
 import sys
 from pathlib import Path
+
+# The system libraries a Linux bundle's wheels leave to the machine (spec stage C R8): a closed list, so a missing one
+# is named by its soname — the install scripts translate it into their distribution's package. Anything else stays
+# "import"; the loader's text and its paths never leave this process.
+SYSTEM_LIBRARIES = ("libGL.so.1", "libX11.so.6", "libexpat.so.1", "libz.so.1")
+_SYSTEM_LIBRARY = re.compile(
+    r"(?:\S*/)?(" + "|".join(re.escape(name) for name in SYSTEM_LIBRARIES) + r"): cannot open shared object file"
+)
+
+
+def import_reason(exc: ImportError) -> str:
+    match = _SYSTEM_LIBRARY.match(str(exc))
+    return f"system_library:{match.group(1)}" if match else "import"
 
 
 class BundleOriginError(ImportError):
@@ -67,8 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except BundleOriginError:
         print(json.dumps({"ok": False, "reason": "origin"}))
-    except ImportError:
-        print(json.dumps({"ok": False, "reason": "import"}))
+    except ImportError as exc:
+        print(json.dumps({"ok": False, "reason": import_reason(exc)}))
     except Exception as exc:
         print(json.dumps({"ok": False, "reason": type(exc).__name__}))
     return 1
