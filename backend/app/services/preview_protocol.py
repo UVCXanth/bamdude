@@ -95,10 +95,14 @@ def _exit_code(value) -> int | None:
     return value if type(value) is int and -(2**31) <= value < 2**32 else None
 
 
+def _decider(value) -> str | None:
+    # the type first: a JSON array or object is unhashable, and a TypeError here turned an ok render unavailable
+    return value if isinstance(value, str) and value in DECIDERS else None
+
+
 def reply_diagnostics(reply: dict) -> tuple[str | None, str | None, int | None]:
     """(why, by, exit) of a service reply, each dropped unless it is of its closed form."""
-    by = reply.get("by")
-    return closed_why(reply.get("why")), by if by in DECIDERS else None, _exit_code(reply.get("exit"))
+    return closed_why(reply.get("why")), _decider(reply.get("by")), _exit_code(reply.get("exit"))
 
 
 class PreviewError(Exception):
@@ -107,7 +111,7 @@ class PreviewError(Exception):
             raise ValueError("invalid preview outcome")
         self.outcome = outcome
         # diagnostics only, for the parent log: nothing decides on them
-        self.why, self.by, self.exit_code = closed_why(why), by if by in DECIDERS else None, _exit_code(exit_code)
+        self.why, self.by, self.exit_code = closed_why(why), _decider(by), _exit_code(exit_code)
         super().__init__(outcome)
 
     def diagnostics(self) -> dict:

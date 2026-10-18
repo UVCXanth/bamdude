@@ -450,6 +450,10 @@ def test_a_real_png_child_that_exits_0_without_a_picture_says_why(tmp_path, oper
         ({"why": "C:\\secret\\x.step", "by": "convert", "exit": 1}, (None, "convert", 1)),
         ({"why": "no_result", "by": "uvicorn", "exit": "1"}, ("no_result", None, None)),
         ({"why": "no_result", "by": "convert", "exit": True}, ("no_result", "convert", None)),
+        # JSON arrays and objects are unhashable: dropped like any other wrong form, never a TypeError (Codex D-M1)
+        ({"why": "no_result", "by": [], "exit": 1}, ("no_result", None, 1)),
+        ({"why": "no_result", "by": {}, "exit": 1}, ("no_result", None, 1)),
+        ({"why": ["no_result"], "by": "mesh", "exit": {}}, (None, "mesh", None)),
         ({}, (None, None, None)),
     ],
 )
@@ -457,6 +461,41 @@ def test_main_takes_only_closed_diagnostics_from_a_reply(reply, expected):
     from backend.app.services.preview_protocol import reply_diagnostics
 
     assert reply_diagnostics(reply) == expected
+
+
+@pytest.mark.parametrize("by", [[], {}, ["convert"]])
+def test_a_preview_error_drops_a_decider_of_the_wrong_type(by):
+    error = PreviewError("render_failed", why="no_result", by=by, exit_code=1)
+    assert (error.outcome, error.diagnostics()) == ("render_failed", {"why": "no_result", "exit": 1})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostics", [{"by": []}, {"by": {}, "why": [], "exit": {}}, {"by": "mesh"}])
+async def test_malformed_diagnostics_never_change_a_successful_render(tmp_path, monkeypatch, diagnostics):
+    """The real chain: a service reply that carries diagnostics of a wrong type is still the ok it says, published
+    with its picture — diagnostics decide nothing, not even by failing to parse."""
+    import trimesh
+
+    from backend.app.services.preview_protocol import decode
+    from backend.app.services.preview_runtime import PreviewRuntime
+
+    runtime = PreviewRuntime(tmp_path / "preview")
+    await runtime.start()
+    original = runtime._rpc
+
+    async def rpc(command, operation=None, **kwargs):
+        reply = await original(command, operation, **kwargs)
+        if (operation or command.operation) == "run":
+            reply = decode(json.dumps({**reply, **diagnostics}).encode())
+        return reply
+
+    monkeypatch.setattr(runtime, "_rpc", rpc)
+    try:
+        async with runtime.attempt({"mesh": (trimesh.creation.box().export(file_type="stl"), "stl")}) as result:
+            assert result.outcome == "ok" and result.files["preview"].is_file()
+            assert result.by == diagnostics.get("by") if diagnostics.get("by") == "mesh" else result.by is None
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.requires_cad
