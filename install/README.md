@@ -256,6 +256,10 @@ sudo ./update.sh
 
 The updater performs:
 - Root permission check (fails fast before any work)
+- Runs git, pip and npm as the install's owner, never as root; root keeps systemd. The owner must be the
+  service's user, and nothing of the install outside `data/`, `logs/`, `backups/` and `runtime/` may belong to
+  anyone else (an update run as root before left such files). Either problem stops the update before anything
+  changes and names the repair, e.g. `sudo chown -R bamdude: /opt/bamdude`
 - Optional built-in backup API call (`/api/v1/settings/backup`) before update
 - Keeps only the newest 5 local backup ZIP files
 - Local-change warning + confirmation before `git reset --hard`

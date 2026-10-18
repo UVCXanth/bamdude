@@ -42,6 +42,47 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
+# The install's own files are changed by their owner, never by root: git (the
+# rollback included), the venv's pip and npm. Root keeps systemd. A root-run git
+# met "dubious ownership" in the service user's tree on every fresh install, and
+# root-run writes left files the service could not change later (the in-app
+# update runs as the service user). The owner must be the service's user.
+INSTALL_OWNER=""
+resolve_install_owner() {
+  local owner service_user
+  owner="$(stat -c %U "$INSTALL_DIR" 2>/dev/null || true)"
+  service_user="$(systemctl show "$SERVICE_NAME" -p User --value 2>/dev/null || true)"
+  [ -n "$service_user" ] || service_user=root # a unit without User= runs as root
+  if [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
+    die "Cannot tell which user owns $INSTALL_DIR. Nothing was changed."
+  fi
+  if [ "$owner" != "$service_user" ]; then
+    die "$INSTALL_DIR belongs to $owner, but $SERVICE_NAME runs as $service_user. The update changes the install's files as their owner, who must be the service's user. Nothing was changed. Give the install to $service_user (sudo chown -R $service_user: $INSTALL_DIR) or correct the unit's User=, then run the update again."
+  fi
+  [ "$owner" = root ] || require_cmd sudo
+  INSTALL_OWNER="$owner"
+}
+
+as_owner() {
+  if [ "$INSTALL_OWNER" = root ]; then "$@"; else sudo -H -u "$INSTALL_OWNER" "$@"; fi
+}
+
+# What the owner's git, pip and npm write must already be the owner's: an
+# earlier update run as root left root-owned files they cannot replace, which
+# would break the update half way, with the service stopped. Data, logs,
+# backups and the runtimes are not theirs to write and are left out. Found, the
+# update stops before anything changes, with the repair to run — never a
+# hidden chown.
+check_owner_can_write() {
+  local stray
+  stray="$(find "$INSTALL_DIR" -xdev \( -path "$INSTALL_DIR/data" -o -path "$INSTALL_DIR/logs" \
+    -o -path "$BACKUP_DIR" -o -path "$INSTALL_DIR/runtime" \) -prune -o ! -user "$INSTALL_OWNER" -print -quit \
+    2>/dev/null || true)"
+  if [ -n "$stray" ]; then
+    die "Part of $INSTALL_DIR does not belong to $INSTALL_OWNER (first: ${stray#"$INSTALL_DIR"/}), likely left by an earlier update run as root. Nothing was changed. Give it back with: sudo chown -R $INSTALL_OWNER: $INSTALL_DIR — then run the update again."
+  fi
+}
+
 # Restore the --loop asyncio pin on a unit file written before it existed
 # (upstream 0dfcff59).
 #
@@ -161,8 +202,8 @@ forward, easiest last:
 
        sudo systemctl stop ${SERVICE_NAME}
        sudo rm -rf ${INSTALL_DIR}/venv
-       sudo python3 -m venv ${INSTALL_DIR}/venv
-       sudo ${INSTALL_DIR}/venv/bin/pip install -r ${INSTALL_DIR}/requirements.txt
+       sudo -u ${INSTALL_OWNER:-bamdude} python3 -m venv ${INSTALL_DIR}/venv
+       sudo -u ${INSTALL_OWNER:-bamdude} ${INSTALL_DIR}/venv/bin/pip install -r ${INSTALL_DIR}/requirements.txt
        sudo systemctl start ${SERVICE_NAME}
 
   2. Install a newer Python alongside the system one and rebuild the venv with
@@ -201,7 +242,7 @@ on_error() {
   if [ "$SERVICE_STOPPED" -eq 1 ]; then
     if [ "$CODE_UPDATED" -eq 1 ] && [ -n "$old_commit" ]; then
       warn "Update failed after code change, attempting rollback to $old_commit"
-      git reset --hard "$old_commit" || warn "Rollback reset failed"
+      as_owner git reset --hard "$old_commit" || warn "Rollback reset failed"
     fi
 
     warn "Update failed, attempting to restart service: $SERVICE_NAME"
@@ -354,28 +395,32 @@ EOF
   exit 1
 fi
 
-if [ -z "$BRANCH" ]; then
-  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  [ "$BRANCH" = "HEAD" ] && BRANCH="main"
-fi
-
 load_state="$(systemctl show "$SERVICE_NAME" --property=LoadState --value 2>/dev/null || true)"
 if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
   die "Service not found: ${SERVICE_NAME}.service"
 fi
 
+# Before any git: who changes the files, and whether they can.
+resolve_install_owner
+check_owner_can_write
+
+if [ -z "$BRANCH" ]; then
+  BRANCH="$(as_owner git rev-parse --abbrev-ref HEAD)"
+  [ "$BRANCH" = "HEAD" ] && BRANCH="main"
+fi
+
 check_python_version
 
-old_commit="$(git rev-parse --short HEAD || true)"
+old_commit="$(as_owner git rev-parse --short HEAD || true)"
 
 log "Fetching latest code from origin/$BRANCH"
-git fetch --prune origin
+as_owner git fetch --prune origin
 
-remote_commit="$(git rev-parse --short "origin/$BRANCH" || true)"
+remote_commit="$(as_owner git rev-parse --short "origin/$BRANCH" || true)"
 log "Current commit: ${old_commit:-unknown}"
 log "Remote commit: ${remote_commit:-unknown}"
 
-if git diff --quiet HEAD "origin/$BRANCH"; then
+if as_owner git diff --quiet HEAD "origin/$BRANCH"; then
   log "You are already running the latest version of BamDude."
   read -r -p "Do you want to run the update process anyway? [y/N]: " run_anyway
   case "${run_anyway:-}" in
@@ -390,7 +435,7 @@ else
   esac
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(as_owner git status --porcelain)" ]; then
   if [ "$FORCE" != "1" ]; then
     read -r -p "Local edits were detected in your installation. Updating now will overwrite those edits. Continue? [y/N]: " answer
     case "${answer:-}" in
@@ -410,12 +455,12 @@ systemctl stop "$SERVICE_NAME"
 SERVICE_STOPPED=1
 
 log "Updating code to origin/$BRANCH"
-git reset --hard "origin/$BRANCH"
+as_owner git reset --hard "origin/$BRANCH"
 CODE_UPDATED=1
 
 if [ -x "$VENV_PIP" ] && [ -f requirements.txt ]; then
   log "Updating Python dependencies"
-  "$VENV_PIP" install -r requirements.txt
+  as_owner "$VENV_PIP" install -r requirements.txt
 else
   warn "Skipping Python dependency update (venv pip or requirements.txt missing)."
 fi
@@ -445,8 +490,8 @@ if [ -f "$FRONTEND_DIR/package.json" ]; then
     log "Building frontend"
     (
       cd "$FRONTEND_DIR"
-      npm ci
-      npm run build
+      as_owner npm ci
+      as_owner npm run build
     )
   else
     warn "Skipping frontend build (npm not installed)."
@@ -463,5 +508,5 @@ systemctl start "$SERVICE_NAME"
 SERVICE_STOPPED=0
 systemctl --no-pager --lines=8 status "$SERVICE_NAME"
 
-new_commit="$(git rev-parse --short HEAD || true)"
+new_commit="$(as_owner git rev-parse --short HEAD || true)"
 log "Update complete: ${old_commit:-unknown} -> ${new_commit:-unknown}"
