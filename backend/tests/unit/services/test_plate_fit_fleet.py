@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from backend.app.schemas.plate_fit import PlateFitRequest
-from backend.app.services import plan_engine, plate_fit as fit, stock_offers
+from backend.app.services import plan_engine, plate_fit as fit, stock_offers, stock_pick
 from backend.app.services.forecast_operator_hours import OperatorHours
 from backend.tests.unit.services.test_plan_engine import _cand, _ctx, _figs, _line, _part
 from backend.tests.unit.services.test_plate_fit import snapshot, solve
@@ -118,6 +118,55 @@ async def test_expanded_browsing_uses_fresh_copies_of_the_same_fleet_for_every_o
     result = await fit.proposals(s, PlateFitRequest(around=1000, steps=3))
     assert [o.quantity for o in result["options"]] == [970, 980, 990, 1000, 1010, 1020, 1030]
     assert all({r.plate_id for r in o.runs} == {1, 2, 3, 4} for o in result["options"])
+    assert all(m.free_at == 0 for m in s.capacity.machines)
+
+
+@pytest.mark.parametrize(
+    "around,stock,below,above",
+    [(1000, 0, 840, 1012), (1100, 0, 1044, 1371), (1000, 8, 848, 1020), (1100, 8, 1052, 1379)],
+)
+async def test_dense_eight_plate_search_with_free_kits_finds_both_sides(monkeypatch, around, stock, below, above):
+    specs = [
+        ((9, 0), 16493, "A1 Mini"),
+        ((0, 16), 43778, "A1 Mini"),
+        ((42, 0), 59399, "H2D"),
+        ((0, 49), 105517, "H2D"),
+        ((0, 35), 75149, "P1S"),
+        ((25, 0), 35895, "P1S"),
+        ((0, 36), 77289, "P2S"),
+        ((25, 0), 34121, "P2S"),
+    ]
+    s = snapshot(
+        [fit.Part(1, "Part A", 1, Fraction(0), 0), fit.Part(2, "Part B", 1, Fraction(0), 0)],
+        [fit.Plate(i + 1, yields, seconds) for i, (yields, seconds, _model) in enumerate(specs)],
+        quantity=1043,
+    )
+    for (_, _, recipe), (_yields, _seconds, model) in zip(s.candidates, specs, strict=True):
+        recipe.printer_model = model
+    s.capacity = farm().capacity
+    for machine in s.capacity.machines:
+        machine.prep_seconds, machine.gap_seconds = 120, 600
+    s.capacity.operator_hours = OperatorHours(
+        datetime(2026, 10, 18, 21, 16, 3, 194952), time(23), time(8), ZoneInfo("Europe/Kyiv")
+    )
+    line = _line(1, 1, 1043)
+    line.mode = "product"
+    s.context = _ctx([line], [_part(1, 1, "Part A", 1), _part(2, 1, "Part B", 1)])
+    s.recipes = {1: s.candidates}
+    s.supply = stock_offers.Supply(
+        {1: stock_pick.Suggestion(1, 0, stock, 0, 0, 1, None, None)}, {1: {1: stock, 2: stock}}
+    )
+    # Arithmetic assertions are independent of the CI machine's speed. The
+    # short-budget fairness contract is tested with a deterministic clock.
+    monkeypatch.setattr(fit, "MAX_SECONDS", 30)
+    result = await fit.proposals(s, PlateFitRequest(around=around, steps=1))
+    assert result["lower"] == result["upper"] == "found"
+    assert [o.quantity for o in result["options"]] == [below, above]
+    for option in result["options"]:
+        assert option == fit.greedy_option(s, option.quantity)[0]
+        assert option.from_kits == stock
+        assert all(p.required == p.free_stock + p.new_printed for p in option.parts)
+    assert s.supply.parts == {1: {1: stock, 2: stock}}
     assert all(m.free_at == 0 for m in s.capacity.machines)
 
 

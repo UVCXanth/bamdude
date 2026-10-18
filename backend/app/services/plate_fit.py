@@ -453,6 +453,10 @@ def solve(
         return None, "limited"
     if edge is not None:
         return edge, "found"
+    if lower == upper:
+        # The canonical cover has already decided this sole quantity. A relaxed
+        # integer solve cannot turn a rejected greedy mix into an accepted one.
+        return None, "none"
     ready = 0
     loose = [0] * len(snapshot.parts)
     if snapshot.supply is not None and snapshot.context is not None:
@@ -578,6 +582,26 @@ def solve(
                 lower = q + 1
             else:
                 upper = q - 1
+            # Loose stock and several coprime plate yields often make almost
+            # every relaxed quantity feasible. Avoid rebuilding HiGHS for each
+            # adjacent rejection: check a small consecutive window with the SAME
+            # canonical cover, in order. Sparse ranges still use the integer
+            # solver to jump; no unchecked quantity can be skipped as infeasible.
+            for _ in range(8):
+                if lower > upper:
+                    break
+                if time.monotonic() >= deadline:
+                    return None, "limited"
+                q = lower if direction == 1 else upper
+                found, truncated = greedy_option(snapshot, q)
+                if truncated:
+                    return None, "limited"
+                if found is not None:
+                    return found, "found"
+                if direction == 1:
+                    lower = q + 1
+                else:
+                    upper = q - 1
 
     return None, "none"
 
@@ -585,25 +609,36 @@ def solve(
 async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
     def run():
         deadline = time.monotonic() + MAX_SECONDS
-        same, same_status = solve(snapshot, request.around, request.around, 1, deadline)
+        same, same_status = solve(snapshot, request.around, request.around, 1, time.monotonic() + MAX_SECONDS / 3)
         options = [same] if same is not None else []
-        statuses = {}
-        for direction, key in ((-1, "lower"), (1, "upper")):
-            cursor = request.around
-            statuses[key] = "none"
-            for step in range(request.steps):
+        statuses = {"lower": "none", "upper": "none"}
+        cursors = {"lower": request.around, "upper": request.around}
+        active = [(-1, "lower"), (1, "upper")]
+        # Nearest below AND nearest above precede any expanded neighbours.
+        # Split each round's remaining budget between its active directions;
+        # a difficult lower search must not consume the upper search's turn.
+        for step in range(request.steps):
+            following = []
+            for index, (direction, key) in enumerate(active):
+                cursor = cursors[key]
                 low, high = (
                     (snapshot.minimum, cursor - 1)
                     if direction == -1
                     else (max(snapshot.minimum, cursor + 1), MAX_QUANTITY)
                 )
-                found, status = solve(snapshot, low, high, direction, deadline)
-                if step == 0:
+                now = time.monotonic()
+                turn_deadline = now + max(0, deadline - now) / (len(active) - index)
+                found, status = solve(snapshot, low, high, direction, turn_deadline)
+                if step == 0 or status == "limited":
                     statuses[key] = status
                 if found is None:
-                    break
+                    continue
                 options.append(found)
-                cursor = found.quantity
+                cursors[key] = found.quantity
+                following.append((direction, key))
+            active = following
+            if not active:
+                break
         return dict(options=sorted(options, key=lambda o: o.quantity), current=same_status, **statuses)
 
     return await disk(run)

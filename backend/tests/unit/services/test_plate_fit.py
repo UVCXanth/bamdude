@@ -121,6 +121,62 @@ async def test_browse_is_sorted_unique_and_stays_near_the_typed_quantity():
     assert [o.quantity for o in result["options"]] == [19968, 19980, 19992, 20004, 20016, 20028]
 
 
+async def test_expanded_search_gets_both_nearest_directions_before_more_neighbours(monkeypatch):
+    s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))])
+    clock = [100.0]
+    turns = []
+
+    def fake_solve(_snapshot, low, high, direction, deadline):
+        turns.append((low, high, direction, deadline))
+        clock[0] += 0.1
+        q = high if direction == -1 else low
+        return fit.option(s, q, [q]), "found"
+
+    monkeypatch.setattr(fit.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fit, "solve", fake_solve)
+    result = await fit.proposals(s, PlateFitRequest(around=1000, steps=3))
+    assert [turn[2] for turn in turns] == [1, -1, 1, -1, 1, -1, 1]
+    assert [o.quantity for o in result["options"]] == [997, 998, 999, 1000, 1001, 1002, 1003]
+    assert turns[1][3] < turns[2][3] <= 106.0
+
+
+async def test_lower_timeout_reserves_upper_time_and_never_claims_lower_absence(monkeypatch):
+    s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))])
+    clock = [100.0]
+    turns = []
+
+    def fake_solve(_snapshot, low, high, direction, deadline):
+        turns.append((low, high, deadline))
+        if low == high:
+            return None, "none"
+        if direction == -1:
+            clock[0] = deadline
+            return None, "limited"
+        assert deadline > clock[0]
+        clock[0] += 0.1
+        return fit.option(s, low, [low]), "found"
+
+    monkeypatch.setattr(fit.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(fit, "solve", fake_solve)
+    result = await fit.proposals(s, PlateFitRequest(around=1000, steps=3))
+    assert result["lower"] == "limited" and result["upper"] == "found"
+    assert [o.quantity for o in result["options"]] == [1001, 1002, 1003]
+    assert turns[1][2] == 103.0 and turns[2][2] == 106.0
+
+
+async def test_limited_extra_search_keeps_nearest_option_and_reports_incomplete_range(monkeypatch):
+    s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))])
+
+    def fake_solve(_snapshot, low, high, direction, deadline):
+        q = high if direction == -1 else low
+        return (fit.option(s, q, [q]), "found") if 999 <= q <= 1001 else (None, "limited")
+
+    monkeypatch.setattr(fit, "solve", fake_solve)
+    result = await fit.proposals(s, PlateFitRequest(around=1000, steps=3))
+    assert [o.quantity for o in result["options"]] == [999, 1000, 1001]
+    assert result["lower"] == result["upper"] == "limited"
+
+
 def test_large_change_needs_a_fresh_acknowledgement_and_stale_basis_is_refused():
     s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))], quantity=1000)
     confirm = SimpleNamespace(

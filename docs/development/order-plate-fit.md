@@ -93,3 +93,23 @@ succeeds but the following plan read fails, retry only the read, never the PATCH
 Late defect entry invalidates an old proposal. A new read accounts for the good
 output and prepares replacement runs or a different product quantity through
 the same two controls; it does not require a third action.
+
+The bounded search reviews the nearest lower and upper quantities before any
+extra neighbours. Each round shares the remaining budget between its active
+directions; a timeout on one side does not consume the other side's turn.
+Incomplete extra neighbours are also reported as limited. In dense ranges,
+eight consecutive quantities are checked by the canonical greedy cover after
+a rejected integer candidate, before another solver jump. Every intervening
+quantity is checked in order, preserving nearestness.
+
+Options reconsidered for this fix: the existing [SciPy milp interface](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html)
+remains the sparse-range filter. Rebuilding it for every adjacent quantity was
+measured to waste the budget. The [native HiGHS Python interface](https://ergo-code.github.io/HiGHS/stable/interfaces/python/example-py/)
+could retain a solver model but adds another dependency and still cannot
+replace the required canonical greedy fleet check. Returning its globally
+optimized plate mix would violate that invariant. No solver or scheduler is
+added. Repeated pure calendar calculations use the standard-library bounded
+[lru_cache](https://docs.python.org/3.12/library/functools.html#functools.lru_cache)
+instead of custom cache storage. Its key includes the immutable operator policy,
+the actual UTC origin (including repeated-hour folds), finish offset and duration;
+no database session, stock or mutable capacity ledger is cached.
