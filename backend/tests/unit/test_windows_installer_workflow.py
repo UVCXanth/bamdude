@@ -29,7 +29,8 @@ def _runs(job: str) -> str:
 
 def test_only_a_pushed_tag_publishes_and_only_after_full_acceptance():
     release = JOBS["release"]
-    assert release["needs"] == "acceptance" or release["needs"] == ["acceptance"]
+    # The accepted installer, and the verified STEP sources of this tag (test_step_preview_sources.py pins that job).
+    assert sorted(release["needs"]) == ["acceptance", "sources"]
     condition = release["if"]
     assert "github.event_name == 'push'" in condition
     assert "startsWith(github.ref, 'refs/tags/v')" in condition

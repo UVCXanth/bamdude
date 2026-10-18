@@ -198,11 +198,40 @@ jobs:
           path: acceptance-logs/
           if-no-files-found: warn
 
-  # Publishes only a pushed tag, only after the FULL acceptance, and only the
-  # very .exe that was built and accepted (no rebuild): the check refuses
-  # another sha256 or any pin but the release one.
+  # The installer carries the STEP component, and its notices say the source
+  # of the component's copyleft parts is an asset of this tag's release
+  # (step-preview-sources.yml attaches it). The installer is attached only
+  # once that bundle is there, published and fully uploaded, and verified for
+  # this checkout's closure. A tag only: a dispatch never publishes.
+  sources:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Wait for this tag's sources and verify them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: python scripts/step_preview_sources.py verify-release --repo "$REPO" --tag "$TAG" --wait 3600
+
+  # Publishes only a pushed tag, only after the FULL acceptance and the
+  # verified sources, and only the very .exe that was built and accepted (no
+  # rebuild): the check refuses another sha256 or any pin but the release one.
   release:
-    needs: acceptance
+    needs: [acceptance, sources]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.acceptance.outputs.full == 'true'
     runs-on: ubuntu-latest
     permissions:

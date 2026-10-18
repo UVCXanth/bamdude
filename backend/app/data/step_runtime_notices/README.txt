@@ -57,11 +57,22 @@ https://github.com/kainpl/bamdude/releases, the asset
   bamdude-step-preview-sources-533f263356f9.tar
 
 with its SHA-256 beside it (the name follows the closure_sha256 of
-../step_runtime_notices.json). Its SOURCES.json names every file with its
-SHA-256, where it was taken from and the components it is the source of: the
-source RPMs as their vendor signed them, the source archives by the SHA-256
-their builds pinned, and Open CASCADE Technology as the tree of its tagged
-commit.
+../step_runtime_notices.json). It holds each component's upstream source and
+what controlled its build:
+
+  - on Linux, the source RPMs as their vendor signed them, each with its spec
+    and patches;
+  - on Windows and macOS, the upstream archives of LibRaw and FreeImage by the
+    SHA-256 their builds pinned, and, for every conda-forge package the wheels
+    were linked against, that package's recipe - meta.yaml or recipe.yaml, the
+    build scripts, every patch they apply and the licences - read out of the
+    exact package by its SHA-256;
+  - Open CASCADE Technology as the tree of its tagged commit, with the
+    build system that patched and compiled it for every platform
+    (ocp-build-system, at the commit that built these wheels).
+
+Its SOURCES.json names every file with its SHA-256, where it was taken from and
+the components it is the source of, and each recipe file with its own SHA-256.
 
 For at least three years after BamDude last distributed a version that carries
 this component, the same source is also available on request, for no more than

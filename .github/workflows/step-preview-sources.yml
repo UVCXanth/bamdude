@@ -40,10 +40,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # 3.14: the conda recipes are read out of their packages with the
+      # standard library's zstd (compression.zstd), nothing to install.
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Collect and verify
         run: python scripts/step_preview_sources.py collect --out dist

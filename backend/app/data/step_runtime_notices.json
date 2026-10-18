@@ -81,7 +81,12 @@
         "commit": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f"
        }
       }
-     ]
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
     },
     {
      "id": "libraw",
@@ -527,7 +532,12 @@
         "name": "conda-forge rapidjson 1.1.0.post20250205"
        }
       }
-     ]
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
     },
     {
      "id": "freeimage",
@@ -1074,7 +1084,12 @@
         "name": "conda-forge rapidjson 1.1.0.post20250205"
        }
       }
-     ]
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
     },
     {
      "id": "freeimage",
