@@ -12,6 +12,7 @@ import asyncio
 import time
 
 from backend.app.services import preview_runtime as r
+from backend.app.services.preview_artifacts import owned
 
 
 def _budget() -> float:
@@ -20,12 +21,21 @@ def _budget() -> float:
 
 
 async def started(runtime):
-    """``runtime.start()``, then wait until it is ready; an AssertionError naming its state otherwise."""
-    await runtime.start()
-    deadline = time.monotonic() + _budget()
-    while runtime.health().state != "ready":
-        starter = runtime.starter
-        if (starter is not None and starter.done()) or time.monotonic() > deadline:
-            raise AssertionError(f"the preview runtime did not start: {runtime.health()}")
-        await asyncio.sleep(0.05)
+    """``runtime.start()``, then wait until it is ready; an AssertionError naming its state otherwise.
+
+    The runtime is this helper's until it answers ready: a caller awaits it before its own try/finally. Any other end
+    — the AssertionError, the wait's cancellation — stops the runtime first, through ``owned`` so a second
+    cancellation cannot cut the stop short, or a background starter would launch a service after the test gave up
+    (Codex B-A-R1)."""
+    try:
+        await runtime.start()
+        deadline = time.monotonic() + _budget()
+        while runtime.health().state != "ready":
+            starter = runtime.starter
+            if (starter is not None and starter.done()) or time.monotonic() > deadline:
+                raise AssertionError(f"the preview runtime did not start: {runtime.health()}")
+            await asyncio.sleep(0.05)
+    except BaseException:
+        await owned(runtime.stop())
+        raise
     return runtime
