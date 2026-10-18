@@ -220,3 +220,116 @@ def test_a_group_the_os_will_not_signal_after_its_leader_was_reaped_is_still_sca
     monkeypatch.setattr(child, "group_members", lambda group: [])  # nothing left in the group
     monkeypatch.setattr(child.signal, "SIGKILL", 9, raising=False)
     assert child._posix_group_gone(424242, timeout=1) is True
+
+
+# --- a named interpreter: the Windows installer's embedded Python owned whole by the build (stage B, Task 1) -----
+
+BASE = getattr(sys, "_base_executable", sys.executable)  # another interpreter than this (Windows) venv's redirector
+ROOT = Path(__file__).resolve().parents[4]
+
+REPORTING_GRANDCHILD = """
+import subprocess, sys, time
+from pathlib import Path
+out = Path(sys.argv[1])
+(out.parent / "executable.txt").write_text(sys.executable, encoding="utf-8")
+g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+out.write_text(str(g.pid))
+time.sleep(120)
+"""
+
+
+def test_a_foreign_interpreter_runs_the_whole_tree_owned(tmp_path):
+    marker = tmp_path / "grandchild.pid"
+    script = _script(tmp_path, REPORTING_GRANDCHILD)
+    with pytest.raises(subprocess.TimeoutExpired):
+        child.run_tree([BASE, str(script), str(marker)], timeout=3, interpreter=BASE)
+    deadline = time.monotonic() + 10
+    while _alive(int(marker.read_text())) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _alive(int(marker.read_text()))  # a plain Popen grandchild: owned by the tree, ended with it
+    assert os.path.samefile((tmp_path / "executable.txt").read_text(encoding="utf-8"), BASE)
+
+
+def test_a_foreign_interpreter_must_be_the_command(tmp_path):
+    marker = tmp_path / "ran"
+    script = _script(tmp_path, f"from pathlib import Path\nPath(r'{marker}').write_text('x')\n")
+    records = tmp_path / "records"
+    records.mkdir()
+    with pytest.raises(ValueError):
+        child.run_tree([sys.executable, str(script)], timeout=30, interpreter=tmp_path / "missing" / "python.exe")
+    with pytest.raises(ValueError):
+        child.run_tree(["python-elsewhere", str(script)], timeout=30, interpreter=BASE, records=records)
+    assert not marker.exists() and list(records.iterdir()) == []  # refused before any launch or spawn
+
+
+@pytest.mark.skipif(not IN_A_WINDOWS_VENV, reason="named skip: only a Windows venv's python.exe is a redirector")
+def test_a_venv_redirector_is_refused_as_a_foreign_interpreter(tmp_path):
+    script = _script(tmp_path, "print('ok')\n")
+    with pytest.raises(ValueError):
+        child.run_tree([sys.executable, str(script)], timeout=30, interpreter=sys.executable)
+
+
+OWNER = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from backend.app.services import step_runtime_child as child
+base, script, marker, records, mode = sys.argv[2:7]
+if mode == "before_spawn":
+    import subprocess, time
+    def held(*args, **kwargs):  # the launch is recorded; the spawn never comes
+        Path(records, "held").write_text("x")
+        time.sleep(120)
+    child.subprocess.Popen = held
+child.run_tree([base, script, marker], timeout=120, interpreter=base, records=Path(records))
+"""
+
+
+def _owner(tmp_path: Path, mode: str):
+    marker, records = tmp_path / "grandchild.pid", tmp_path / "records"
+    records.mkdir()
+    script = _script(tmp_path, REPORTING_GRANDCHILD)
+    owner_py = tmp_path / "owner.py"
+    owner_py.write_text(OWNER, encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, str(owner_py), str(ROOT), BASE, str(script), str(marker), str(records), mode]
+    )
+    return proc, marker, records
+
+
+def _wait_for(path: Path, seconds: float = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert path.exists(), path
+
+
+def test_the_owner_dying_after_the_go_takes_the_foreign_tree(tmp_path):
+    proc, marker, records = _owner(tmp_path, "after_go")
+    try:
+        _wait_for(marker)
+        grandchild = int(marker.read_text())
+        proc.kill()
+        proc.wait(timeout=30)
+        deadline = time.monotonic() + 15
+        while _alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _alive(grandchild)  # the Job (or the session) closed with its owner
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_an_owner_that_dies_before_the_spawn_starts_nothing(tmp_path):
+    proc, marker, records = _owner(tmp_path, "before_spawn")
+    try:
+        _wait_for(records / "held")
+        proc.kill()
+        proc.wait(timeout=30)
+        time.sleep(1.0)
+        assert not marker.exists()  # nothing of the command ran
+        names = {p.name for p in records.iterdir()}
+        assert "installer.launch" in names and "installer.pid" not in names  # a launch that never got its go
+    finally:
+        if proc.poll() is None:
+            proc.kill()

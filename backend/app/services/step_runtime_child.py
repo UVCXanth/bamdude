@@ -125,9 +125,24 @@ def _still_alive(identities: list[list]) -> list[list]:
 def _bootstrapped(cmd: list[str], interpreter: str, token: str) -> list[str]:
     from backend.app.services.part_render_tree import launch_arg
 
-    if len(cmd) < 2 or cmd[0] != sys.executable:
-        raise ValueError("run_tree runs this interpreter's own -m module or script")
     return [interpreter, "-c", BOOT, launch_arg(token), *cmd[1:]]
+
+
+def _named_interpreter(cmd: list[str], interpreter) -> str:
+    """The interpreter a caller names for its own command (the Windows installer's embedded Python, run by the
+    build): a real interpreter that IS ``cmd[0]``. Never a Windows venv's python.exe — a redirector that starts the
+    real interpreter as its own child before the Job is attached. BOOT is plain stdlib, so any CPython runs it."""
+    path = os.fspath(interpreter)
+    try:
+        same = len(cmd) >= 2 and os.path.isfile(path) and os.path.samefile(cmd[0], path)
+    except OSError:
+        same = False
+    if not same:
+        raise ValueError("run_tree runs the named interpreter's own -m module or script")
+    here = Path(path).resolve().parent
+    if os.name == "nt" and any((d / "pyvenv.cfg").exists() for d in (here, here.parent)):
+        raise ValueError("a venv's python.exe is a redirector, not an interpreter a Job can own from its spawn")
+    return path
 
 
 class _Tail:
@@ -255,18 +270,26 @@ def run_tree(
     records: Path | None = None,
     cwd=None,
     env=None,
+    interpreter: str | os.PathLike | None = None,
     capture_output: bool = True,
     text: bool = True,
 ) -> subprocess.CompletedProcess:
-    """Run ``[sys.executable, '-m', module, ...]`` or ``[sys.executable, script, ...]`` as an owned tree. Raises
-    subprocess.TimeoutExpired after ending the tree, TreeUnproven when its end cannot be proven, RecordUnwritable
-    when ``records`` could not hold the bootstrap's record (nothing was released)."""
+    """Run ``[sys.executable, '-m', module, ...]`` or ``[sys.executable, script, ...]`` as an owned tree — or, with
+    ``interpreter``, that interpreter's own ``[interpreter, ...]`` (started itself, with ``env`` as given). Raises
+    ValueError before any launch or spawn for any other command, subprocess.TimeoutExpired after ending the tree,
+    TreeUnproven when its end cannot be proven, RecordUnwritable when ``records`` could not hold the bootstrap's
+    record (nothing was released)."""
     from backend.app.services import part_render_tree as tree
     from backend.app.services.worker_containment import contained_interpreter
 
     del capture_output, text  # always captured as a bounded text tail
     kwargs = {"start_new_session": True} if os.name != "nt" else {}
-    interpreter, env = contained_interpreter(env)  # never a venv redirector the Job could miss
+    if interpreter is not None:
+        interpreter = _named_interpreter(cmd, interpreter)
+    elif len(cmd) < 2 or cmd[0] != sys.executable:
+        raise ValueError("run_tree runs this interpreter's own -m module or script")
+    else:
+        interpreter, env = contained_interpreter(env)  # never a venv redirector the Job could miss
     token = tree.launch(records, _LAUNCH_NAME) if records is not None else uuid.uuid4().hex  # before the spawn
     process = subprocess.Popen(
         _bootstrapped(cmd, interpreter, token),
