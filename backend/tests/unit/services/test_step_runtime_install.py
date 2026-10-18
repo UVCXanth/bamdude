@@ -415,3 +415,145 @@ def test_an_owner_record_that_cannot_be_written_starts_nothing(tmp_path, win, mo
         sr.install(app, data_dir=data, allow_candidate=True, runner=lambda *a, **k: calls.append(a))
     assert failed.value.reason == "record_unwritable" and calls == []
     assert not any((sr.bundle_root(app) / ".staging" / "win-x64-cp312").iterdir())  # nothing ran: nothing kept
+
+
+# --- prune: old CAD after a proven stop (stage B, Task 2) ------------------------------------------------------------
+
+
+def _digest_dir(app: Path, key: str, digest: str) -> Path:
+    path = sr.bundle_root(app) / key / digest / "site"
+    path.mkdir(parents=True)
+    (path / "x.dll").write_bytes(b"x")
+    return path.parent
+
+
+def test_prune_removes_another_digest_of_this_key_and_keeps_the_current(tmp_path, win):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    current = installed(app, data)
+    old = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 1, "kept": {}}
+    assert not old.exists() and current.is_dir()
+    assert sr.locate(app, sr.load_catalog(data, decode_tags=False)).ok
+
+
+def test_prune_without_a_located_bundle_removes_nothing(tmp_path, win, capsys):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    old = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    answer = sr.prune(app, data_dir=data)
+    assert answer["ok"] is False and answer["removed"] == 0 and old.is_dir()
+    assert sr.main(["prune", "--app-dir", str(app)], data_dir=data) == 1
+    assert old.is_dir()
+
+
+def test_prune_other_keys_takes_only_windows_abis(tmp_path, win):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    cp313 = _digest_dir(app, "win-x64-cp313", "e" * 32)
+    linux = _digest_dir(app, "linux-x64-cp312", "f" * 32)
+    unknown = _digest_dir(app, "foo", "a" * 32)
+    assert sr.prune(app, data_dir=data)["removed"] == 0 and cp313.is_dir()
+    assert sr.prune(app, other_keys=True, data_dir=data) == {"ok": True, "removed": 1, "kept": {}}
+    assert not cp313.exists() and linux.is_dir() and unknown.is_dir()
+
+
+def test_prune_keeps_a_busy_key_and_goes_on(tmp_path, win):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    old = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    busy = _digest_dir(app, "win-x64-cp313", "e" * 32)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\nfrom pathlib import Path\nfrom backend.app import step_runtime as sr\n"
+            "with sr._platform_lock(Path(sys.argv[1]), 'win-x64-cp313', 5):\n"
+            "    Path(sys.argv[2]).write_text('1')\n    time.sleep(60)\n",
+            str(sr.bundle_root(app)),
+            str(ready),
+        ],
+        cwd=str(Path(sr.__file__).resolve().parents[2]),
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert holder.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        started = time.monotonic()
+        answer = sr.prune(app, other_keys=True, lock_seconds=0.2, data_dir=data)
+        assert time.monotonic() - started < 3
+        assert answer == {"ok": True, "removed": 1, "kept": {"busy": 1}}
+        assert not old.exists() and busy.is_dir()
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+
+
+def test_prune_keeps_a_digest_it_cannot_set_aside(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    old = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    real = os.replace
+
+    def refuse(src, dst):
+        if Path(src) == old:
+            raise PermissionError(32, "in use by another process")
+        return real(src, dst)
+
+    monkeypatch.setattr(sr.os, "replace", refuse)
+    assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 0, "kept": {"in_use": 1}}
+    assert old.is_dir()
+
+
+def test_a_trash_left_by_a_failed_removal_goes_next_time(tmp_path, win, monkeypatch):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    _digest_dir(app, "win-x64-cp312", "d" * 32)
+    real = shutil.rmtree
+    calls = []
+
+    def once(path, *args, **kwargs):  # shutil is global: only the first removal of a trash fails
+        if Path(path).name.startswith(".trash-") and not calls:
+            calls.append(path)
+            raise OSError(5, "access denied")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(sr.shutil, "rmtree", once)
+    assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 0, "kept": {"remove_failed": 1}}
+    root = sr.bundle_root(app)
+    assert [p.name.startswith(".trash-") for p in root.iterdir() if p.is_dir() and p.name.startswith(".")] == [True]
+    assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 1, "kept": {}}
+    assert not any(p.name.startswith(".trash-") for p in root.iterdir())
+
+
+def test_prune_reclaims_a_dead_runs_staging_and_keeps_a_live_writers(tmp_path, win):
+    from backend.app.services import part_render_tree as tree
+
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    staging = sr.bundle_root(app) / ".staging" / "win-x64-cp312"
+    dead, live = staging / ("a" * 32), staging / ("b" * 32)
+    for path in (dead, live):
+        path.mkdir(parents=True)
+    tree.record(live / sr.OWNER_RECORD, os.getpid())  # this process: a writer that may still live
+    tree.launch(live, sr.INSTALLER)
+    answer = sr.prune(app, data_dir=data)
+    assert answer == {"ok": True, "removed": 1, "kept": {"writer_may_live": 1}}
+    assert not dead.exists() and live.is_dir()
+
+
+def test_prune_answers_without_paths(tmp_path, win, capsys):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    _digest_dir(app, "win-x64-cp312", "d" * 32)
+    assert sr.main(["prune", "--app-dir", str(app), "--other-keys"], data_dir=data) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out) == {"ok": True, "removed": 1, "kept": {}} and str(app) not in out

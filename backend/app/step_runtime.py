@@ -849,10 +849,88 @@ def install(
                 shutil.rmtree(staging, ignore_errors=True)
 
 
+PRUNE_LOCK_SECONDS = 5.0
+_DIGEST_DIR = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def prune(
+    app_dir: Path, *, other_keys: bool = False, lock_seconds: float = PRUNE_LOCK_SECONDS, data_dir: Path = DATA
+) -> dict:
+    """Old CAD bundles out of the way once nothing can render from them (spec stage B R10). The CALLER has already
+    run a full verify of the current bundle and proven that nothing runs from this app dir (a stopped service):
+    ``locate`` alone proves neither. Removes only other digests of the current key and — with ``other_keys``, the
+    Windows installer's choice — bundles of this platform's other Python ABIs; never the current bundle, another
+    platform or a name it does not know. Each key under its own lock, taken in a fixed order with a short budget (a
+    busy key is kept, the rest goes on). A candidate is set aside first (a tree whose DLL is loaded will not move:
+    in_use), then removed; a trash a failed removal left goes on the next prune; ``removed`` counts what is really
+    gone. A staging whose writer may live is kept. Counts and closed reasons only, never a path."""
+    kept: dict[str, int] = {}
+
+    def keep(reason: str, count: int = 1) -> None:
+        if count:
+            kept[reason] = kept.get(reason, 0) + count
+
+    def gone(path: Path) -> bool:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(path)
+        return not path.exists()
+
+    try:
+        catalog = load_catalog(data_dir, decode_tags=False)
+    except CatalogError:
+        return {"ok": False, "removed": 0, "kept": {}, "reason": "catalog_invalid"}
+    found = locate(app_dir, catalog)
+    if not found.ok:
+        return {"ok": False, "removed": 0, "kept": {}, "reason": found.reason}
+    root = bundle_root(app_dir)
+    keys = {found.key}
+    if other_keys:
+        abi = re.compile(re.escape(found.key.rsplit("-", 1)[0]) + r"-cp3\d{1,2}\Z")
+        keys |= {p.name for p in root.iterdir() if p.is_dir() and abi.match(p.name)}
+    removed = 0
+    for key in sorted(keys):
+        candidates = [
+            d
+            for d in (root / key).iterdir()
+            if d.is_dir() and _DIGEST_DIR.match(d.name) and d.resolve() != found.bundle.resolve()
+        ]
+        try:
+            with _platform_lock(root, key, lock_seconds):
+                for trash in root.glob(f".trash-{key}-*"):
+                    if gone(trash):
+                        removed += 1
+                    else:
+                        keep("remove_failed")
+                for digest in candidates:
+                    aside = root / f".trash-{key}-{uuid.uuid4().hex}"
+                    try:
+                        os.replace(digest, aside)
+                    except OSError:
+                        keep("in_use")
+                        continue
+                    if gone(aside):
+                        removed += 1
+                    else:
+                        keep("remove_failed")
+                staging = root / ".staging" / key
+                for path in sorted(staging.iterdir()) if staging.is_dir() else []:
+                    if not path.is_dir():
+                        continue
+                    if _writer_may_live(path):
+                        keep("writer_may_live")
+                    elif gone(path):
+                        removed += 1
+                    else:
+                        keep("remove_failed")
+        except InstallError:  # lock_timeout: another install or prune of this key is running
+            keep("busy", len(candidates))
+    return {"ok": True, "removed": removed, "kept": kept}
+
+
 def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -> int:
     ap = argparse.ArgumentParser(prog="python -m backend.app.step_runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("install", "verify", "select", "requirements"):
+    for name in ("install", "verify", "select", "requirements", "prune"):
         p = sub.add_parser(name)
         p.add_argument("--app-dir", type=Path, default=Path(__file__).resolve().parents[2])
         if name == "install":
@@ -866,6 +944,12 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             )
         if name == "verify":
             p.add_argument("--quick", action="store_true", help="receipt only, no rehash and no smoke")
+        if name == "prune":
+            p.description = (
+                "Remove old CAD bundles. Run only after a full verify of the current bundle and a proven stop of "
+                "everything that renders from this app dir."
+            )
+            p.add_argument("--other-keys", action="store_true", help="also this platform's other Python ABIs")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "install":
@@ -882,6 +966,10 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
                 json.dumps({"ok": True, "bundle": target.relative_to(a.app_dir).as_posix(), "acceptance": acceptance})
             )
             return EXIT_OK
+        if a.cmd == "prune":
+            answer = prune(a.app_dir, other_keys=a.other_keys, data_dir=data_dir)
+            print(json.dumps(answer))
+            return EXIT_OK if answer["ok"] else EXIT_FAILED
         if a.cmd == "verify":
             if a.quick:
                 found = refine_missing(locate(a.app_dir, load_catalog(data_dir, decode_tags=False)))
