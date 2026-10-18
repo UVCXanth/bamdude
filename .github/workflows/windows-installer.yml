@@ -62,6 +62,16 @@ jobs:
       # Inno Setup 6.x is pre-installed on windows-latest runners (under
       # C:\Program Files (x86)\Inno Setup 6\). No install step needed.
 
+      # build.py owns every call of the CAD helper in the embedded Python as one whole
+      # tree through the backend's launcher, which needs psutil on the build host —
+      # the same specifier requirements.txt gives the application.
+      - name: Install the build host's tools
+        shell: pwsh
+        run: |
+          $spec = (Select-String -Path requirements.txt -Pattern '^psutil').Line
+          if (-not $spec) { throw "requirements.txt names no psutil" }
+          python -m pip install $spec
+
       - name: Stage installer artifacts
         working-directory: installers/windows
         run: python build.py

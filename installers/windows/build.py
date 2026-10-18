@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import json
 import os
 import shutil
 import subprocess
@@ -43,6 +44,13 @@ INSTALLER_DIR = Path(__file__).resolve().parent
 BUILD_DIR = INSTALLER_DIR / "build"
 STAGING = BUILD_DIR / "staging"
 DOWNLOADS = BUILD_DIR / "downloads"
+# The STEP-preview CAD bundle is installed into a build root of its own — its lock and staging never reach the
+# payload — and only the bundle `locate` names is exported into staging (spec stage B R5). The records of the
+# helper's whole tree (owner, launch, bootstrap) live beside it, so the next build can prove that tree over (R4).
+CAD_ROOT = BUILD_DIR / "cad-build"
+CAD_OWNER = BUILD_DIR / "cad-owner"
+CAD_INSTALL_SECONDS = 15 * 60 + 300  # step_runtime.INSTALL_SECONDS plus the proof of the tree's end
+CAD_VERIFY_SECONDS = 600  # a full rehash plus the STEP->PNG smoke (two children of up to 120 s each)
 
 # Matches the Dockerfile (python:3.12-slim-trixie) and `requires-python`, so a
 # Windows install runs the same interpreter CI tests. Bump when those bump.
@@ -432,6 +440,195 @@ def stage_render_runtime() -> None:
     log(f"staged render runtime at {target}")
 
 
+def _backend():
+    """step_runtime, part_render_tree and the whole-tree launcher, imported from the checkout (as
+    stage_render_runtime imports render_runtime). The build host needs psutil for them."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from backend.app import step_runtime
+    from backend.app.services import part_render_tree, step_runtime_child
+
+    return step_runtime, part_render_tree, step_runtime_child
+
+
+def cad_candidate_allowed(flag: bool, env) -> bool:
+    """A candidate pin only on an explicit request, and never on a tag: any refs/tags/* ships the release pin,
+    whatever an input or the environment says (spec stage B R6)."""
+    wanted = bool(flag) or env.get("STEP_PREVIEW_CANDIDATE") == "1"
+    if wanted and env.get("GITHUB_REF", "").startswith("refs/tags/"):
+        raise RuntimeError("candidate pin on a tag: a tag build ships the release pin only")
+    return wanted
+
+
+def _drop_owner_records(owner_dir: Path) -> None:
+    for path in owner_dir.iterdir():
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def prior_cad_tree_gone(owner_dir: Path | None = None) -> bool:
+    """True only when no CAD helper of an earlier build may still run (spec stage B R4, Codex B2-R1). Nothing is
+    removed or rewritten until that is proven: a launch without a readable owner record is no proof; an owner
+    that may live (paused between its launch and its spawn, say) keeps everything; only once the owner is proven
+    dead do the bootstrap, its group and the launch token's holders get judged, by the same proof the CAD
+    installer uses for its staging."""
+    step_runtime, tree, _child = _backend()
+    owner_dir = Path(owner_dir or CAD_OWNER)
+    if not owner_dir.is_dir():
+        return True
+    owner = owner_dir / step_runtime.OWNER_RECORD
+    launched = (owner_dir / f"{step_runtime.INSTALLER}.launch").exists()
+    if owner.exists():
+        why = tree.recorded_running(owner)
+        if why:
+            log(f"a CAD helper of an earlier build may still run (its build: {why})")
+            return False
+    elif launched:
+        log("an earlier build launched a CAD helper and left no readable owner record: its end is not proven")
+        return False
+    if launched:
+        why = step_runtime._writer_may_live(owner_dir)
+        if why:
+            log(f"a CAD helper of an earlier build may still run ({why})")
+            return False
+    _drop_owner_records(owner_dir)
+    return True
+
+
+def _helper_reason(stdout: str) -> str:
+    for line in reversed(stdout.strip().splitlines()):
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(answer, dict):
+            return str(answer.get("reason") or answer.get("problems") or "failed")
+    return "failed"
+
+
+def run_helper(
+    python: Path,
+    args: list,
+    *,
+    timeout: float,
+    cwd: Path,
+    helper: tuple[str, ...] = ("-m", "backend.app.step_runtime"),
+) -> subprocess.CompletedProcess:
+    """One call of the CAD helper in the embedded Python, owned as ONE tree from its spawn — install, its pip, the
+    import smoke, the converter and the PNG child alike (spec stage B R4). This build's own record goes first: no
+    owner record, no launch. A proven end (also of a timeout) takes the owner record with the launcher's; an
+    unproven end or an interruption keeps them all for the next build to judge."""
+    step_runtime, tree, child = _backend()
+    CAD_OWNER.mkdir(parents=True, exist_ok=True)
+    owner = CAD_OWNER / step_runtime.OWNER_RECORD
+    try:
+        tree.record(owner, os.getpid())
+    except Exception as exc:
+        raise RuntimeError(f"the CAD helper's owner could not be recorded ({type(exc).__name__})") from exc
+    cmd = [str(python), *helper, *(str(a) for a in args)]
+    try:
+        result = child.run_tree(cmd, interpreter=python, records=CAD_OWNER, timeout=timeout, cwd=str(cwd))
+    except subprocess.TimeoutExpired:
+        owner.unlink(missing_ok=True)  # the launcher proved the tree over before it raised
+        raise RuntimeError(f"the CAD helper ran past {timeout:.0f} s; its tree was ended") from None
+    except child.TreeUnproven as exc:
+        raise RuntimeError("the CAD helper's process tree could not be proven ended; its records stay") from exc
+    owner.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"step_runtime {' '.join(map(str, args[:1]))} failed: {_helper_reason(result.stdout)}")
+    return result
+
+
+def build_cad_bundle(python: Path, *, allow_candidate: bool) -> Path:
+    """The pinned bundle installed by the embedded Python into the build root (download only when the pin there
+    is not already intact) — returns the bundle the helper names."""
+    args = ["install", "--app-dir", CAD_ROOT, *(["--allow-candidate"] if allow_candidate else [])]
+    result = run_helper(python, args, timeout=CAD_INSTALL_SECONDS, cwd=STAGING / "app")
+    answer = json.loads(result.stdout.strip().splitlines()[-1])
+    log(f"CAD bundle ready in the build root ({answer['acceptance']})")
+    return CAD_ROOT / answer["bundle"]
+
+
+def export_cad_bundle(bundle: Path, app: Path) -> Path:
+    """Only the located bundle — <key>/<digest> with its receipt and site — into the payload."""
+    step_runtime, _tree, _child = _backend()
+    target = step_runtime.bundle_root(app) / bundle.relative_to(step_runtime.bundle_root(CAD_ROOT))
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(bundle, target)
+    return target
+
+
+STEP_PAYLOAD_FILES = (
+    "backend/app/step_runtime.py",
+    "backend/app/services/step_runtime_child.py",
+    "backend/app/step_preview_probe.py",
+    "backend/app/services/step_thumbnail.py",
+    "backend/app/preview_render.py",
+    "backend/app/data/step_runtime_manifest.json",
+    "backend/app/data/step_runtime_closure.json",
+    "backend/app/data/step_runtime_notices.json",
+    "backend/app/data/step_runtime_notices",
+    "backend/app/data/step_probe/box_mm.step",
+)
+
+
+def step_payload_problems(app: Path) -> list[str]:
+    """The CAD part of the payload, exactly (spec stage B R5): one bundle of the staged catalog's digest with its
+    receipt and site, nothing else under runtime/step-preview (no lock, no staging, no trash, no other digest or
+    key), and the helper, catalog, notices and probe STEP beside the backend."""
+    step_runtime, _tree, _child = _backend()
+    problems = [f"missing:{rel}" for rel in STEP_PAYLOAD_FILES if not (app / rel).exists()]
+    try:
+        catalog = step_runtime.load_catalog(app / "backend" / "app" / "data", decode_tags=False)
+    except step_runtime.CatalogError as exc:
+        return [*problems, f"catalog_invalid:{exc.reason}"]
+    root = step_runtime.bundle_root(app)
+    entries = sorted(root.iterdir()) if root.is_dir() else []
+    keys = [e for e in entries if e.is_dir() and not e.name.startswith(".")]
+    for entry in entries:
+        if entry.name == ".staging":
+            problems.append("staging")
+        elif entry.name.endswith(".lock"):
+            problems.append(f"lock:{entry.name}")
+        elif entry not in keys:
+            problems.append(f"unexpected:{entry.name}")
+    if len(keys) != 1:
+        return [*problems, f"keys:{len(keys)}"]
+    digests = sorted(keys[0].iterdir())
+    for extra in digests[1:]:
+        problems.append(f"extra_digest:{extra.name}")
+    bundle = digests[0] if digests else None
+    if bundle is None or bundle.name != catalog.digest[:32]:
+        return [*problems, "digest_mismatch"]
+    try:
+        receipt = json.loads((bundle / "receipt.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [*problems, "receipt_missing"]
+    if receipt.get("manifest_digest") != catalog.digest or receipt.get("key") != keys[0].name:
+        problems.append("receipt_mismatch")
+    if not (bundle / "site").is_dir():
+        problems.append("site_missing")
+    return problems
+
+
+def step_max_app_dir_len(catalog=None, key: str = "win-x64-cp312") -> int:
+    """The longest {app} the bundle's deepest library allows under PATH_LIMIT, in UTF-16 units as step_runtime
+    counts them: {app} + this tail + a separator + the deepest library path."""
+    step_runtime, _tree, _child = _backend()
+    catalog = catalog or step_runtime.load_catalog(decode_tags=False)
+    wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == key)
+    deepest = max(len(lib["path"]) for lib in catalog.closure["artifacts"][wheel["filename"]])
+    tail = "\\app\\runtime\\" + step_runtime.PRODUCT_DIR + "\\" + key + "\\" + "0" * 32 + "\\site"
+    return step_runtime.PATH_LIMIT - deepest - 1 - len(tail.encode("utf-16-le")) // 2
+
+
+def _report_sizes(bundle: Path) -> None:
+    size = sum(f.stat().st_size for f in bundle.rglob("*") if f.is_file())
+    log(f"CAD bundle in the payload: {size / 1024**2:.1f} MB ({bundle.parent.name})")
+
+
 def _read_app_version() -> str:
     """Read APP_VERSION from backend/app/core/config.py (the canonical
     source used by every other BamDude surface — FastAPI OpenAPI title,
@@ -486,11 +683,13 @@ def write_version_file() -> None:
 
     # Inno Setup include — bamdude.iss does `#include "build\staging\version.iss"`
     iss_version = STAGING / "version.iss"
-    iss_version.write_text(f'#define MyAppVersion "{version}"\n', encoding="utf-8")
+    iss_version.write_text(
+        f'#define MyAppVersion "{version}"\n#define StepMaxAppDirLen {step_max_app_dir_len()}\n', encoding="utf-8"
+    )
     log(f"staged VERSION = {version}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--skip-frontend",
@@ -510,7 +709,12 @@ def main() -> int:
             "working wine + windows-python toolchain. Not exercised by CI."
         ),
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--allow-candidate-cad",
+        action="store_true",
+        help="development only: stage the candidate STEP-preview pin (refused on a tag; STEP_PREVIEW_CANDIDATE=1)",
+    )
+    args = parser.parse_args(argv)
 
     if sys.platform != "win32" and not args.allow_non_windows:
         log("ERROR: this build script must run on Windows.")
@@ -530,6 +734,12 @@ def main() -> int:
         log("--allow-non-windows. Requires wine + a Windows Python in $PATH")
         log("via wine python.exe — fragile and not exercised by CI.")
         return 1
+
+    # Before anything under build/ is removed: no CAD helper of an earlier build may still be running from it.
+    if not prior_cad_tree_gone():
+        log("ERROR: refusing to rebuild over a CAD helper whose end is not proven; end it (or reboot) and retry.")
+        return 1
+    allow_candidate = cad_candidate_allowed(args.allow_candidate_cad, os.environ)
 
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -555,6 +765,13 @@ def main() -> int:
     stage_nssm()
     stage_ffmpeg()
     stage_render_runtime()
+    python_exe = python_dir / "python.exe"
+    bundle = export_cad_bundle(build_cad_bundle(python_exe, allow_candidate=allow_candidate), STAGING / "app")
+    run_helper(python_exe, ["verify", "--app-dir", STAGING / "app"], timeout=CAD_VERIFY_SECONDS, cwd=STAGING / "app")
+    problems = step_payload_problems(STAGING / "app")
+    if problems:
+        raise RuntimeError(f"the CAD payload is not exact: {', '.join(problems[:10])}")
+    _report_sizes(bundle)
     write_version_file()
 
     log("")
