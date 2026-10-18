@@ -1,0 +1,96 @@
+name: STEP preview sources
+
+# The corresponding source of the STEP-preview component's copyleft parts —
+# Open CASCADE Technology, LibRaw, FreeImage and, on Linux, libgomp — attached
+# to every release, whose Docker image and Windows installer carry the
+# component. The notices that ship with it say where this asset is
+# (backend/app/data/step_runtime_notices/README.txt);
+# scripts/step_preview_sources.py takes each source by the identity the notices
+# pin and refuses any other bytes.
+#
+# A manual dispatch builds the bundle and keeps it as an artifact; only a
+# pushed tag attaches it to its release. Never delete these assets: the notices
+# offer the source for three years after a release.
+#
+# Not behind require-green-ci, like the code graph: the bundle is made from the
+# pins in the notices, not from the code of the commit, and a release must not
+# ship its component without it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: step-preview-sources-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect the sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 3.14: the conda recipes are read out of their packages with the
+      # standard library's zstd (compression.zstd), nothing to install.
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Collect and verify
+        run: python scripts/step_preview_sources.py collect --out dist
+
+      - name: Keep it
+        uses: actions/upload-artifact@v7
+        with:
+          name: step-preview-sources
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attach to the release
+    needs: collect
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: step-preview-sources
+          path: dist
+
+      # The attach step CREATES the release when it does not exist yet, and
+      # without an explicit flag a beta would become the repo's "Latest";
+      # windows-installer.yml and publish-code-graph.yml ask the same question.
+      - name: Classify tag
+        id: tagkind
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)+b[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/bamdude-step-preview-sources-*.tar
+            dist/bamdude-step-preview-sources-*.tar.sha256
+          fail_on_unmatched_files: true
+          prerelease: ${{ steps.tagkind.outputs.prerelease }}

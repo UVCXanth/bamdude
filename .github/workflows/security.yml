@@ -100,8 +100,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The image CI tests: the committed STEP-preview pin whatever its status. The Dockerfile refuses a candidate
+      # pin without this (a release never passes it), and the scan failed on every push while the pin was one.
       - name: Build Docker image
-        run: docker build --pull -t bamdude:security-scan .
+        run: docker build --pull --build-arg STEP_PREVIEW_CANDIDATE=1 -t bamdude:security-scan .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0

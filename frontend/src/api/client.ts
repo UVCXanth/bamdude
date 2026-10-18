@@ -8301,6 +8301,8 @@ export interface UpdateStatus {
   progress: number;
   message: string;
   error: string | null;
+  /** The STEP component's own result of a completed update: `ok`, `skipped` (not enabled) or a closed reason. */
+  step_preview?: string;
 }
 
 // Maintenance types
@@ -11101,10 +11103,16 @@ export const api = {
       headers,
       body: formData,
     });
-    return response.json() as Promise<{
-      success: boolean;
-      message: string;
-    }>;
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // A refusal is {detail: {error, message}} or {detail: "sentence"} — never the success shape.
+      const detail = (body as { detail?: unknown }).detail;
+      const structured = detail && typeof detail === 'object' ? (detail as { error?: unknown; message?: unknown }) : null;
+      const message = structured && typeof structured.message === 'string' ? structured.message : typeof detail === 'string' ? detail : '';
+      const code = structured && typeof structured.error === 'string' ? structured.error : undefined;
+      return { success: false, message, ...(code ? { code } : {}) } as { success: boolean; message: string; code?: string };
+    }
+    return body as { success: boolean; message: string; code?: string };
   },
   optimizeDatabase: () =>
     request<{ success: boolean; message: string; db_size: number; wal_size: number }>('/settings/optimize-db', { method: 'POST' }),
@@ -13929,6 +13937,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(options),
     }),
+  // STEP thumbnails are made in the background: a request gives receipts, never a picture. Exactly one mode —
+  // file ids, or a folder / all-missing selection read as a keyset page (`after_id` → `next_after_id`).
+  createThumbnailJobs: (body: {
+    file_ids?: number[];
+    folder_id?: number;
+    all_missing?: boolean;
+    after_id?: number;
+    limit?: number;
+  }) =>
+    request<ThumbnailJobResponse>('/library/thumbnail-jobs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getThumbnailJobs: (epoch: string, ids: string[]) => {
+    const params = new URLSearchParams({ epoch });
+    for (const id of ids) params.append('ids', id);
+    return request<ThumbnailJobStatus>(`/library/thumbnail-jobs?${params.toString()}`);
+  },
+  cancelThumbnailJob: (receiptId: string, epoch: string) =>
+    request<ThumbnailJobItem>(
+      `/library/thumbnail-jobs/${encodeURIComponent(receiptId)}?${new URLSearchParams({ epoch }).toString()}`,
+      { method: 'DELETE' },
+    ),
   printLibraryFile: (
     fileId: number,
     printerId: number,
@@ -14524,8 +14555,18 @@ export interface PartRenderWorkerHealth {
   last: { outcome: string; elapsed_ms: number } | null;
 }
 
+export interface StepPreviewState {
+  /** The administrator's recorded choice: `enabled` / `disabled` / `none`. */
+  choice: string;
+  /** What the receipt says (`installed`, `missing`, `unsupported`, `unknown` or a closed reason) — never `works`. */
+  bundle: string;
+  /** `native` / `docker` / `windows_installer`: only a native install has the administrator's commands. */
+  install_kind: string;
+}
+
 export interface SystemInfo {
   preview?: PreviewHealth;
+  step_preview?: StepPreviewState;
   analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   library_file_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   part_render_worker?: PartRenderWorkerHealth;
@@ -15075,6 +15116,8 @@ export interface LibraryFileUploadResponse {
   // The name the upload carried, when it differs from the row that was used.
   superseded_name: string | null;
   metadata: Record<string, unknown> | null;
+  // A new STEP file's background picture (additive — older servers send nothing).
+  thumbnail_job?: ThumbnailJobTicket | null;
 }
 
 export interface LibraryStats {
@@ -15091,6 +15134,7 @@ export interface ZipExtractResult {
   filename: string;
   file_id: number;
   folder_id: number | null;
+  thumbnail_job?: ThumbnailJobTicket | null;
 }
 
 export interface ZipExtractError {
@@ -15115,6 +15159,39 @@ export interface BatchThumbnailResult {
   filename: string;
   success: boolean;
   error?: string | null;
+  // Closed reason, additive: an older server sends none (`use_thumbnail_jobs` for a STEP id, `too_small`, …).
+  error_code?: string | null;
+}
+
+// STEP thumbnail jobs — a receipt per file, or the closed reason none was queued. Never another actor's identity.
+export type ThumbnailJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+
+export interface ThumbnailJobItem {
+  file_id: number;
+  receipt_id: string | null;
+  state: ThumbnailJobState | null;
+  error_code: string | null;
+}
+
+export interface ThumbnailJobResponse {
+  jobs_epoch: string;
+  results: ThumbnailJobItem[];
+  next_after_id: number | null;
+}
+
+export interface ThumbnailJobStatus {
+  jobs_epoch: string;
+  receipts: ThumbnailJobItem[];
+  // Unknown and not-yours-to-read look the same on purpose.
+  missing: string[];
+}
+
+// A new STEP file's background picture, on its upload answer (additive).
+export interface ThumbnailJobTicket {
+  jobs_epoch: string | null;
+  receipt_id: string | null;
+  state: ThumbnailJobState | null;
+  error_code: string | null;
 }
 
 export interface BatchThumbnailResponse {

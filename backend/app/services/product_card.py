@@ -1034,7 +1034,7 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
 
 
 async def import_zip(
-    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any
+    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any, authority: Any = None
 ) -> tuple[Product, list[CardNote]]:
     """Rebuild a product from an export. Returns it and every note.
 
@@ -1128,6 +1128,7 @@ async def import_zip(
                             content=data,
                             target_folder=destination,
                             user=user,
+                            authority=authority,
                         )
                     ).file
                 except HTTPException as e:
@@ -1337,7 +1338,9 @@ def _variant_of(raw: Any, option_by_pair: dict[tuple[str, str], int]) -> int | N
     return option_by_pair.get((variant_key(raw[0]), variant_key(raw[1])))
 
 
-async def _ingest_into_library(db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any):
+async def _ingest_into_library(
+    db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any, authority: Any = None
+):
     """The library's own upload path, called with the import's bytes.
 
     The function-local ``store_library_upload`` import is the same concession
@@ -1356,6 +1359,7 @@ async def _ingest_into_library(db: AsyncSession, *, filename: str, content: byte
         content=content,
         target_folder=target_folder,
         created_by_id=getattr(user, "id", None),
+        authority=authority,  # the importer (user or API key) — no privileged import actor
     )
 
 

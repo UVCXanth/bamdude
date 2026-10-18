@@ -1,10 +1,11 @@
 name: Windows Installer
 
-# Build the Windows installer .exe.
+# Build the Windows installer .exe, accept it on a real Windows runner, and
+# (on a tag push only) publish exactly the accepted artifact.
 #
 # Triggers:
 #   - Tag push matching v* (release builds, uploaded as a release asset)
-#   - Manual dispatch (for testing the build pipeline)
+#   - Manual dispatch (testing the pipeline; never publishes)
 #
 # The installer ships unsigned — there is no code-signing certificate for
 # this project. If one ever arrives, a signing step belongs between ISCC
@@ -16,22 +17,38 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      step_preview_candidate:
+        description: "Development only: stage the candidate STEP-preview pin (never on a tag, never published)"
+        type: boolean
+        default: false
+      acceptance_scope:
+        description: "full (the only scope that can open a release) or diagnostic (a subset)"
+        type: choice
+        options:
+          - full
+          - diagnostic
+        default: full
+      skip_ci_gate:
+        description: "Run without a green CI run of this commit (a dispatch only; a tag is always gated, and a dispatch never publishes)"
+        type: boolean
+        default: false
 
-# Least-privilege per CodeQL actions/missing-workflow-permissions.
-# contents: write is required by softprops/action-gh-release to attach
-# the .exe to a tag release; the manual-dispatch path doesn't trigger
-# that step and could run with read-only, but a single workflow-level
-# block keeps the surface auditable in one place.
+# Least-privilege per CodeQL actions/missing-workflow-permissions: read
+# everywhere; only the release job, which attaches the accepted .exe, writes.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ⚠️ The same gate the Docker images pass. Without it the installer was the
   # one release artefact that could be built from a commit whose CI was red —
   # and it is attached to the release, so it would be the copy people actually
-  # download. The manual-dispatch path passes it too: a dispatch on a red
-  # commit is no safer for being deliberate.
+  # download. The manual-dispatch path passes it too, unless the dispatch asks
+  # to skip it (skip_ci_gate, owner's call 2026-10-18: an installer fix is
+  # accepted without a full CI cycle first). A tag push is always gated, and
+  # only a tag push publishes.
   gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_ci_gate != true
     permissions:
       actions: read
       contents: read
@@ -39,8 +56,14 @@ jobs:
 
   build:
     needs: gate
+    # A skipped gate is accepted only for a dispatch that asked to skip it.
+    if: >-
+      !cancelled() && (needs.gate.result == 'success' || (needs.gate.result == 'skipped'
+      && github.event_name == 'workflow_dispatch' && inputs.skip_ci_gate == true))
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -62,16 +85,181 @@ jobs:
       # Inno Setup 6.x is pre-installed on windows-latest runners (under
       # C:\Program Files (x86)\Inno Setup 6\). No install step needed.
 
+      # build.py owns every call of the CAD helper in the embedded Python as one whole
+      # tree through the backend's launcher, which needs psutil on the build host —
+      # the same specifier requirements.txt gives the application.
+      - name: Install the build host's tools
+        shell: pwsh
+        run: |
+          $spec = (Select-String -Path requirements.txt -Pattern '^psutil').Line
+          if (-not $spec) { throw "requirements.txt names no psutil" }
+          python -m pip install $spec
+
+      # A tag ships the release STEP-preview pin only: CANDIDATE is false on any
+      # tag ref whatever the input says, and build.py itself refuses the
+      # candidate when GITHUB_REF is a tag.
       - name: Stage installer artifacts
         working-directory: installers/windows
-        run: python build.py
         shell: pwsh
+        env:
+          CANDIDATE: ${{ github.ref_type != 'tag' && inputs.step_preview_candidate }}
+        run: |
+          $extra = @()
+          if ($env:CANDIDATE -eq 'true') { $extra += '--allow-candidate-cad' }
+          python build.py @extra
 
       - name: Compile installer (ISCC)
         working-directory: installers/windows
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" bamdude.iss
         shell: pwsh
+
+      # What the release gate compares later: this .exe's sha256, the STEP-preview
+      # pin's status in the payload, and the install directory limit compiled in.
+      - name: Describe the payload
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem installers/windows/build/output -Filter "bamdude-*-windows-x64-setup.exe" | Select-Object -First 1
+          if (-not $exe) { throw "no versioned installer .exe found" }
+          python scripts/check_release_payload.py describe --exe $exe.FullName `
+            --app installers/windows/build/staging/app `
+            --version-iss installers/windows/build/staging/version.iss `
+            --out installers/windows/build/output/payload.json
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-windows-installer
+          path: |
+            installers/windows/build/output/*.exe
+            installers/windows/build/output/payload.json
+          if-no-files-found: error
+
+  # The real installer on a disposable Windows runner: fresh install, upgrades,
+  # refusals, a real STEP rendered by the installed service, an uninstall.
+  # It registers and deletes Windows services — runners only, never a desk.
+  acceptance:
+    needs: build
+    # Said explicitly: with the gate skipped further up, the default success()
+    # would skip this job although build succeeded.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.accept.outputs.full }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Download the installer
+        uses: actions/download-artifact@v7
+        with:
+          name: bamdude-windows-installer
+          path: installer
+
+      - name: Accept the real installer
+        id: accept
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCOPE: ${{ inputs.acceptance_scope || 'full' }}
+        run: |
+          $exe = Get-ChildItem installer -Filter "bamdude-*-windows-x64-setup.exe" | Select-Object -First 1
+          if (-not $exe) { throw "no versioned installer .exe in the artifact" }
+          ./scripts/windows_installer_acceptance.ps1 -Installer $exe.FullName -Payload installer/payload.json `
+            -Scope $env:SCOPE -Report installer/acceptance.json
+
+      # The report is an artifact of its own: an upload of several paths is
+      # rooted at their common ancestor, and the release reads the report at
+      # the artifact's root.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-windows-acceptance
+          path: installer/acceptance.json
+          if-no-files-found: warn
+
+      # Setup's and the service's logs of every scenario: the harness copies
+      # them into the workspace before each reset and at the end.
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-windows-acceptance-logs
+          path: acceptance-logs/
+          if-no-files-found: warn
+
+  # The installer carries the STEP component, and its notices say the source
+  # of the component's copyleft parts is an asset of this tag's release
+  # (step-preview-sources.yml attaches it). The installer is attached only
+  # once that bundle is there, published and fully uploaded, and verified for
+  # this checkout's closure. A tag only: a dispatch never publishes.
+  sources:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Wait for this tag's sources and verify them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: python scripts/step_preview_sources.py verify-release --repo "$REPO" --tag "$TAG" --wait 3600
+
+  # Publishes only a pushed tag, only after the FULL acceptance and the
+  # verified sources, and only the very .exe that was built and accepted (no
+  # rebuild): the check refuses another sha256 or any pin but the release one.
+  release:
+    needs: [acceptance, sources]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.acceptance.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the installer
+        uses: actions/download-artifact@v7
+        with:
+          name: bamdude-windows-installer
+          path: installer
+
+      - name: Download the acceptance
+        uses: actions/download-artifact@v7
+        with:
+          name: bamdude-windows-acceptance
+          path: acceptance
+
+      - name: Check the payload is the accepted release build
+        shell: bash
+        run: |
+          exes=(installer/bamdude-*-windows-x64-setup.exe)
+          [ "${#exes[@]}" -eq 1 ] || { echo "expected one versioned installer, found ${#exes[@]}"; exit 1; }
+          python3 scripts/check_release_payload.py check --exe "${exes[0]}" \
+            --payload installer/payload.json --acceptance acceptance/acceptance.json
 
       # Every tag release gets an unversioned copy alongside the versioned
       # filename, so external surfaces (website, wiki, newsletters) can link to
@@ -83,21 +271,12 @@ jobs:
       # to the newest full release. A beta still gets the alias asset attached —
       # harmless, and it keeps this step free of channel logic.
       - name: Create unversioned alias
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        working-directory: installers/windows/build/output
+        shell: bash
         run: |
-          $versioned = Get-ChildItem -Filter "bamdude-*-windows-x64-setup.exe" | Select-Object -First 1
-          if (-not $versioned) { throw "no versioned installer .exe found" }
-          Copy-Item $versioned.FullName "bamdude-windows-x64-setup.exe"
-          Write-Host "alias: bamdude-windows-x64-setup.exe -> $($versioned.Name)"
-
-      - name: Upload installer artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: bamdude-windows-installer
-          path: installers/windows/build/output/*.exe
-          if-no-files-found: error
+          exes=(installer/bamdude-*-windows-x64-setup.exe)
+          versioned="${exes[0]}"
+          cp "$versioned" installer/bamdude-windows-x64-setup.exe
+          echo "alias: bamdude-windows-x64-setup.exe -> $(basename "$versioned")"
 
       # Beta tags are vX.Y.ZbN, stable is vX.Y.Z — and a hotfix line adds a
       # fourth component either way (v0.5.1.3, v0.5.1.3b1), so the shape to
@@ -108,7 +287,6 @@ jobs:
       # Decide the flag from the tag; publish-code-graph.yml asks the same
       # question the same way.
       - name: Classify tag
-        if: startsWith(github.ref, 'refs/tags/v')
         id: tagkind
         shell: bash
         run: |
@@ -119,10 +297,9 @@ jobs:
           fi
 
       - name: Attach installer to release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          files: installers/windows/build/output/*.exe
+          files: installer/*.exe
           fail_on_unmatched_files: true
           # Only meaningful when this step creates the release; editing an
           # existing one keeps whatever flag it already has.

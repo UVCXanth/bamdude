@@ -9,7 +9,31 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+_BASE_EXECUTABLE = getattr(sys, "_base_executable", None) or sys.executable
+
+
+def contained_interpreter(
+    env: Mapping[str, str] | None,
+    *,
+    platform: str = os.name,
+    executable: str = sys.executable,
+    base: str = _BASE_EXECUTABLE,
+) -> tuple[str, dict[str, str] | None]:
+    """The interpreter (and environment) to start for a Python child that is attached to a Job after the spawn.
+
+    In a Windows venv ``sys.executable`` is a redirector that starts the real interpreter as its own child at once:
+    that process — and everything it starts — can run before the attach, outside the Job, while the Job that holds
+    only the redirector "proves" the tree ended. So start the base interpreter itself, told which venv it serves
+    (``__PYVENV_LAUNCHER__``, as multiprocessing does, bpo-35797). Elsewhere nothing changes."""
+    if platform != "nt" or os.path.normcase(executable) == os.path.normcase(base):
+        return executable, (dict(env) if env is not None else None)
+    out = dict(os.environ if env is None else env)
+    out["__PYVENV_LAUNCHER__"] = executable
+    return base, out
 
 
 class WorkerContainmentError(RuntimeError):
@@ -24,7 +48,9 @@ class WorkerContainment:
     _job_handle: int | None = None
 
     @classmethod
-    def attach(cls, pid: int) -> WorkerContainment:
+    def attach(cls, pid: int, *, job_memory_limit: int | None = None) -> WorkerContainment:
+        """``job_memory_limit``: a Job-wide COMMIT backstop (Windows; not RSS) for a crash-prone native child,
+        with DIE_ON_UNHANDLED_EXCEPTION so its fault ends it instead of waiting on error reporting."""
         if os.name != "nt":
             # The supervisor starts the child in a new POSIX session.  It uses
             # this marker for the explicitly tested process-group fallback;
@@ -32,7 +58,7 @@ class WorkerContainment:
             # gate, not an implicit claim here.
             return cls(pid=pid)
         try:
-            return cls(pid=pid, _job_handle=_assign_windows_kill_on_close_job(pid))
+            return cls(pid=pid, _job_handle=_assign_windows_kill_on_close_job(pid, job_memory_limit))
         except WorkerContainmentError:
             raise
         except OSError as exc:
@@ -45,8 +71,34 @@ class WorkerContainment:
             _close_windows_handle(self._job_handle)
             self._job_handle = None
 
+    def end_tree(self, timeout: float) -> bool:
+        """Windows: terminate every process of the job, then wait until the job reports none active — the proof a
+        bare close does not give. True when proven within ``timeout``. (POSIX callers own a process group.)"""
+        if self._job_handle is None:
+            return True
+        import time
 
-def _assign_windows_kill_on_close_job(pid: int) -> int:
+        kernel32 = _windows_kernel32()
+        kernel32.TerminateJobObject(ctypes.c_void_p(self._job_handle), 1)
+        deadline = time.monotonic() + timeout
+        info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+        while True:
+            if not kernel32.QueryInformationJobObject(
+                ctypes.c_void_p(self._job_handle),
+                _JOB_OBJECT_BASIC_ACCOUNTING,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+                None,
+            ):
+                return False
+            if info.ActiveProcesses == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
+def _assign_windows_kill_on_close_job(pid: int, job_memory_limit: int | None = None) -> int:
     """Attach ``pid`` before it receives any worker bootstrap input."""
 
     if os.name != "nt":  # pragma: no cover - protected by attach()
@@ -60,6 +112,9 @@ def _assign_windows_kill_on_close_job(pid: int) -> int:
     try:
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if job_memory_limit:
+            info.BasicLimitInformation.LimitFlags |= _JOB_OBJECT_LIMIT_JOB_MEMORY | _JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED
+            info.JobMemoryLimit = job_memory_limit
         if not kernel32.SetInformationJobObject(
             job,
             _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -116,11 +171,24 @@ def _windows_kernel32() -> ctypes.WinDLL:
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+    )
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
     return kernel32
 
 
+_JOB_OBJECT_BASIC_ACCOUNTING = 1
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+_JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED = 0x00000400
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
 _ULONG_PTR = ctypes.c_size_t
@@ -148,6 +216,19 @@ class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
         ("Affinity", _ULONG_PTR),
         ("PriorityClass", ctypes.c_ulong),
         ("SchedulingClass", ctypes.c_ulong),
+    ]
+
+
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_longlong),
+        ("TotalKernelTime", ctypes.c_longlong),
+        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+        ("TotalPageFaultCount", ctypes.c_ulong),
+        ("TotalProcesses", ctypes.c_ulong),
+        ("ActiveProcesses", ctypes.c_ulong),
+        ("TotalTerminatedProcesses", ctypes.c_ulong),
     ]
 
 

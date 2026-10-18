@@ -231,6 +231,11 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     uses: ./.github/workflows/part-render-smoke.yml
 
+  step-preview-smoke:
+    needs: backend-lint
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    uses: ./.github/workflows/step-preview-smoke.yml
+
   postgres-scenarios:
     name: PostgreSQL Scenarios
     runs-on: ubuntu-latest
@@ -449,12 +454,16 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     # The production build and full integration suite exceeded the old 20-minute cap.
     timeout-minutes: 60
+    env:
+      # The test image carries the committed STEP-preview pin whatever its status; a release
+      # build (docker-publish-tag.yml) passes nothing, so a candidate pin fails it by itself.
+      STEP_PREVIEW_CANDIDATE: "1"
     steps:
       - uses: actions/checkout@v7
 
       # Test 1: Docker Build
       - name: Build production image
-        run: docker build -t bamdude:test .
+        run: docker build --build-arg STEP_PREVIEW_CANDIDATE -t bamdude:test .
 
       - name: Verify backend imports
         run: docker run --rm bamdude:test python -c "import backend.app.main; print('Backend imports OK')"
@@ -465,48 +474,64 @@ jobs:
       - name: Render the fixtures inside the image
         run: docker run --rm bamdude:test python -m backend.app.part_render_probe render
 
-      # Test 2: Integration Tests
-      - name: Build integration container
-        run: docker compose -f docker-compose.test.yml build integration
+      # The entrypoint drops to PUID 1000: both run as the app's user, read-only over the bundle, offline.
+      - name: Verify the STEP-preview bundle inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_runtime verify
 
-      - name: Start integration container
-        run: |
-          docker compose -f docker-compose.test.yml up -d integration
-          echo "Waiting for container to be healthy..."
-          for i in {1..30}; do
-            if docker compose -f docker-compose.test.yml ps integration | grep -q "healthy"; then
-              echo "Container is healthy"
-              break
-            fi
-            sleep 2
-          done
+      - name: Render an STL and a STEP inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_render_probe
 
-      - name: Test health endpoint
-        run: |
-          HEALTH=$(docker compose -f docker-compose.test.yml exec -T integration curl -s http://localhost:8000/health)
-          echo "$HEALTH"
-          echo "$HEALTH" | grep -q "healthy"
+      # backend-tests already includes backend/tests/integration/. Its ASGI fixtures do not
+      # talk to the production server, even when BAMDUDE_TEST_URL is set. Check the shipped
+      # image through real HTTP instead, with a fresh database and no host ports or volumes.
+      - name: Start the production HTTP server
+        run: docker run -d --name bamdude-ci-http --network none bamdude:test
 
-      - name: Test API endpoint
-        run: |
-          docker compose -f docker-compose.test.yml exec -T integration curl -s http://localhost:8000/api/v1/settings
-
-      - name: Test static files served
-        run: |
-          STATUS=$(docker compose -f docker-compose.test.yml exec -T integration curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/)
-          echo "Static files HTTP status: $STATUS"
-          [ "$STATUS" = "200" ]
-
-      # Test 3: Integration Test Suite
-      - name: Build integration test runner
-        run: docker compose -f docker-compose.test.yml build integration-test-runner
-      - name: Run integration test suite
-        run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
+      - name: Exercise the production HTTP API and built assets
+        timeout-minutes: 3
+        run: docker exec -i bamdude-ci-http python - < scripts/docker_http_smoke.py
 
       - name: Show logs on failure
         if: failure()
-        run: docker compose -f docker-compose.test.yml logs
+        run: docker logs bamdude-ci-http
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker-compose.test.yml down -v --remove-orphans
+        run: docker rm -f -v bamdude-ci-http
+
+  # The same image, built and checked natively on arm64 (owner, 2026-10-17): every release publishes both arches,
+  # and before this a release tag was the first arm64 build the image ever had — the STEP bundle's arm64 wheels met
+  # it on the way to users. Only what the image itself must prove runs here (the compose integration suite above is
+  # not per-arch). Nothing is published: no login, no push, no secrets.
+  docker-test-arm64:
+    name: Docker Build (linux/arm64, native)
+    runs-on: ubuntu-24.04-arm
+    needs: [backend-tests, postgres-scenarios, frontend-build]
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    timeout-minutes: 60
+    env:
+      STEP_PREVIEW_CANDIDATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker build --build-arg STEP_PREVIEW_CANDIDATE -t bamdude:test .
+
+      - name: Verify the image is arm64
+        run: test "$(docker image inspect bamdude:test --format '{{.Architecture}}')" = arm64
+
+      - name: Verify backend imports
+        run: docker run --rm bamdude:test python -c "import backend.app.main; print('Backend imports OK')"
+
+      - name: Verify static files exist
+        run: docker run --rm bamdude:test test -d /app/static
+
+      - name: Render the fixtures inside the image
+        run: docker run --rm bamdude:test python -m backend.app.part_render_probe render
+
+      # The entrypoint drops to PUID 1000: both run as the app's user, read-only over the bundle, offline.
+      - name: Verify the STEP-preview bundle inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_runtime verify
+
+      - name: Render an STL and a STEP inside the image
+        run: docker run --rm --network none bamdude:test python -m backend.app.step_render_probe

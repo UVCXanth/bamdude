@@ -1,6 +1,7 @@
 """Update checking and management routes."""
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -579,6 +580,53 @@ async def _provision_render_runtime(app_dir: Path) -> None:
     await render_runtime_child.run_provision(app_dir, trigger="update", timeout=render_runtime_child.PROVISION_SECONDS)
 
 
+def _step_preview_command(app_dir: Path) -> list[str]:
+    return [sys.executable, "-m", "backend.app.step_runtime", "install", "--if-enabled", "--app-dir", str(app_dir)]
+
+
+def _step_preview_code(run) -> str:
+    """The helper's closed answer as one code — its reason, never its ``detail`` (which may name a path)."""
+    if run.outcome not in ("ok", "failed"):
+        return run.outcome  # timeout / unproven / helper_unproven
+    for line in reversed((run.stdout_tail or "").strip().splitlines()):
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(answer, dict):
+            if answer.get("ok") is True:
+                return "skipped" if answer.get("skipped") else "ok"
+            reason = answer.get("reason")
+            return reason if isinstance(reason, str) and reason else "failed"
+    return "ok" if run.outcome == "ok" else "failed"
+
+
+async def _provision_step_preview(app_dir: Path) -> str:
+    """The STEP component, as update.sh keeps it (spec stage C R4): only for an install whose administrator enabled
+    it, with the CHECKED-OUT helper, as an owned tree under the update's budget policy. No system packages (there is
+    no root here) and no prune (the service is live): a new bundle serves the next STEP attempt. Never fails the
+    update — the closed code goes into the final status and the log."""
+    from backend.app import step_runtime
+    from backend.app.services import step_runtime_child
+
+    try:
+        run = await step_runtime_child.run_owned(
+            _step_preview_command(app_dir),
+            owner_root=step_runtime.bundle_root(app_dir) / ".owner",
+            timeout=step_runtime.INSTALL_DEADLINE_SECONDS,
+            cwd=app_dir,
+            label="STEP component update",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("STEP component update could not run (%s)", type(exc).__name__)
+        return "failed"
+    code = _step_preview_code(run)
+    logger.info("STEP component update: %s", code)
+    return code
+
+
 async def _perform_update(target_ref: str):
     """Perform the actual update by checking out a specific git tag.
 
@@ -775,6 +823,14 @@ async def _perform_update(target_ref: str):
         }
         await _provision_render_runtime(app_dir)
 
+        _update_status = {
+            "status": "installing",
+            "progress": 65,
+            "message": "Updating the STEP component...",
+            "error": None,
+        }
+        step_preview = await _provision_step_preview(app_dir)
+
         # Try to build frontend if npm is available (optional - static files are pre-built)
         npm_path = _find_executable("npm")
         frontend_dir = app_dir / "frontend"
@@ -818,6 +874,7 @@ async def _perform_update(target_ref: str):
             "progress": 100,
             "message": "Update complete! Please restart the application.",
             "error": None,
+            "step_preview": step_preview,  # its own field: the message above is overwritten at each step
         }
 
         logger.info("Update completed successfully")

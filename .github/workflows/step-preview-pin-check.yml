@@ -1,0 +1,46 @@
+name: STEP preview pin check
+
+# Weekly: does upstream have news for the pinned STEP-preview CAD component (spec §8)? It only REPORTS — a newer
+# release or a candidate pin now old enough to be pinned as release fails the run (the maintainer is notified by
+# the failure), a new Python ABI or no build yet for the next Python is a warning. It changes no pin and no golden,
+# pushes nothing and opens no PR or issue: a repin is the maintainer's explicit command (scripts/pin_step_runtime.py).
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Ask PyPI
+        run: |
+          # 0 nothing, 2 action, 3 notices; anything else is an error of the check itself
+          set +e
+          python scripts/pin_step_runtime.py --upstream > report.json
+          code=$?
+          set -e
+          cat report.json
+          {
+            echo "### STEP preview pin"
+            echo
+            echo '```json'
+            cat report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$code" in
+            0) ;;
+            3) echo "::warning::STEP preview: notices only — see the summary" ;;
+            2) echo "::error::STEP preview: a repin decision is due — see the summary"; exit 1 ;;
+            *) exit 1 ;;
+          esac

@@ -34,7 +34,7 @@ from backend.app.services.camera_worker_protocol import (
     validate_reply,
     write_control,
 )
-from backend.app.services.worker_containment import WorkerContainment, WorkerContainmentError
+from backend.app.services.worker_containment import WorkerContainment, WorkerContainmentError, contained_interpreter
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
 _STARTUP_TIMEOUT_SECONDS = 20.0
@@ -117,8 +117,11 @@ class CameraWorkerSupervisor:
         # from the process, so the answer does not depend on the caller. On the
         # Windows installer this resolves to the same directory the service
         # already uses as its working directory, so nothing there changes.
+        # The base interpreter in a Windows venv: the redirector's own child could otherwise start before the
+        # Job attach below and leave FFmpeg descendants outside it (contained_interpreter).
+        interpreter, worker_env = contained_interpreter(self._worker_env())
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable,
+            interpreter,
             "-m",
             "backend.app.worker_guardian",
             cwd=str(Path(__file__).resolve().parents[3]),
@@ -127,7 +130,7 @@ class CameraWorkerSupervisor:
             stderr=asyncio.subprocess.PIPE,
             # stderr is a UTF-8 JSON-lines channel, independent of the host's
             # Windows console code page.
-            env=self._worker_env(),
+            env=worker_env,
             **creation_kwargs,
         )
         try:

@@ -1,0 +1,494 @@
+{
+ "asm_instances.step": {
+  "abs_volume_mm3": 21600.0,
+  "bounds_mm": [
+   [
+    -30.0,
+    0.0,
+    0.0
+   ],
+   [
+    140.0,
+    140.0,
+    12.0
+   ]
+  ],
+  "bytes": 11430,
+  "face_occurrences": 24,
+  "instances": 3,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "5f8674bf0a3002a80fea88bcfd870121e2cf5505ade147eda4ec0c933e352026",
+  "solids": 3,
+  "text_checks": {
+   "ADVANCED_FACE(": 8,
+   "ITEM_DEFINED_TRANSFORMATION(": 3,
+   "NEXT_ASSEMBLY_USAGE_OCCURRENCE(": 3
+  },
+  "unit": "mm"
+ },
+ "asm_mirror_axes.step": {
+  "abs_volume_mm3": 14400.0,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    50.0
+   ]
+  ],
+  "bytes": 11660,
+  "face_occurrences": 16,
+  "instances": 2,
+  "kind": "reject",
+  "negative_instances": 1,
+  "sha256": "2d6ce5cc4092e356b8a346da90e2f2a0b6ccdd166ef343758cd4de51d313e5fa",
+  "solids": 2,
+  "text_checks": {
+   "MAPPED_ITEM(": 1,
+   "NEXT_ASSEMBLY_USAGE_OCCURRENCE(": 2
+  },
+  "unit": "mm",
+  "why": "left-handed CTO axes in an assembly"
+ },
+ "asm_mirror_scale.step": {
+  "abs_volume_mm3": 14400.0,
+  "bounds_mm": [
+   [
+    -40.0,
+    -30.0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    50.0
+   ]
+  ],
+  "bytes": 11661,
+  "face_occurrences": 16,
+  "instances": 2,
+  "kind": "ok",
+  "negative_instances": 1,
+  "sha256": "fa62a2c153048c26e4923d7bfbda9225fd1692c56bf3f4cdffe8e0b730f31294",
+  "solids": 2,
+  "text_checks": {
+   "MAPPED_ITEM(": 1,
+   "NEXT_ASSEMBLY_USAGE_OCCURRENCE(": 2
+  },
+  "unit": "mm",
+  "why": null
+ },
+ "box_float32_overflow.step": {
+  "bytes": 7468,
+  "kind": "reject",
+  "sha256": "9430379be2f90419ddbaaa170d15e5b3a0e53783be61201784bf9962bd14f33b",
+  "why": "x extent 5.08e38 mm exceeds float32"
+ },
+ "box_inch.step": {
+  "abs_volume_mm3": 49161.191999999995,
+  "bounds_mm": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    50.8,
+    38.1,
+    25.4
+   ]
+  ],
+  "bytes": 7440,
+  "face_occurrences": 6,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "14a4513062b4db0257ff7559c51f154c7c9af15b0a98e8b1feef94bb1fdd9a72",
+  "solids": 1,
+  "text_checks": {
+   "ADVANCED_FACE(": 6,
+   "CONVERSION_BASED_UNIT('INCH'": 1
+  },
+  "unit": "inch"
+ },
+ "box_mm.step": {
+  "abs_volume_mm3": 49161.191999999995,
+  "bounds_mm": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    50.8,
+    38.1,
+    25.4
+   ]
+  ],
+  "bytes": 6856,
+  "face_occurrences": 6,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "448fcc1be63c71fa023f543287f1eb8d5991686976b6835e0faf92879d3fcb24",
+  "solids": 1,
+  "text_checks": {
+   "ADVANCED_FACE(": 6,
+   "CONVERSION_BASED_UNIT('INCH'": 0
+  },
+  "unit": "mm"
+ },
+ "empty_0bytes.step": {
+  "bytes": 0,
+  "kind": "reject",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "why": "empty file"
+ },
+ "empty_data.step": {
+  "bytes": 265,
+  "kind": "reject",
+  "sha256": "79c16133dc629621bd40b7f17a94b2379d23e84dec19e88632be3d55d8198c67",
+  "why": "header + empty DATA (only contexts) \u2014 no product"
+ },
+ "external-part.stp": {
+  "bounds_mm": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    50.8,
+    38.1,
+    25.4
+   ]
+  ],
+  "bytes": 6873,
+  "kind": "ok-auxiliary",
+  "sha256": "45879735e3392f6d644fa9c9c54aad012555b9ce4753ca7dff0aba1b366e9d18"
+ },
+ "external_only.step": {
+  "bytes": 2738,
+  "kind": "reject",
+  "sha256": "d5c59cc839301007b6d207ea9b6a73bfa6399bcfb89b74b5414a192ddc9c6aac",
+  "why": "root geometry only by external reference"
+ },
+ "face_bspline_bad.step": {
+  "bytes": 15597,
+  "kind": "reject",
+  "sha256": "fc933a6b6856d3014eae5205a8a7f7247e19de2d9a45897afb41a306a96172b4",
+  "text_faces": 14,
+  "why": "one ADVANCED_FACE of root B carries defect bspline_bad"
+ },
+ "face_dangling_bound.step": {
+  "bytes": 15324,
+  "kind": "reject",
+  "sha256": "51b2d7e9a0fa7f70b4b5ad75ac526afa51ac8faf0e499d9b4bd04d74066d923a",
+  "text_faces": 14,
+  "why": "one ADVANCED_FACE of root B carries defect dangling_bound"
+ },
+ "face_edge_zero_dir.step": {
+  "bytes": 15319,
+  "kind": "reject",
+  "sha256": "78b6ab3ded5d260665443c69fefcce0075476bd55bbd03eefa2f80bc44fef89a",
+  "text_faces": 14,
+  "why": "one ADVANCED_FACE of root B carries defect edge_zero_dir"
+ },
+ "face_zero_normal.step": {
+  "bytes": 15316,
+  "kind": "reject",
+  "sha256": "b3eed913266c6752c9023dc86c1d240aeefe3f14073df65186ce766c73a758ec",
+  "text_faces": 14,
+  "why": "one ADVANCED_FACE of root B carries defect zero_normal"
+ },
+ "l_prism.step": {
+  "abs_volume_mm3": 7200.0,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    12.0
+   ]
+  ],
+  "bytes": 9304,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "d56ac2b1b6fb62f3fd6b074ef69a5bb2791fd349360e310a2bd4b586d071bd38",
+  "solids": 1,
+  "text_checks": {
+   "ADVANCED_FACE(": 8
+  },
+  "unit": "mm"
+ },
+ "l_prism_reversed_faces.step": {
+  "abs_volume_mm3": 7200.0,
+  "advanced_faces_same_sense_false": 4,
+  "bounds_mm": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    40.0,
+    30.0,
+    12.0
+   ]
+  ],
+  "bytes": 9987,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "f0356400722e518e90633b0741166617616bdee05a84c33b798f3bd8c36e304c",
+  "solids": 1,
+  "text_checks": {
+   "ADVANCED_FACE(": 8
+  },
+  "unit": "mm"
+ },
+ "mirror_point_scale.step": {
+  "abs_volume_mm3": 7200.0,
+  "bounds_mm": [
+   [
+    -40.0,
+    -30.0,
+    -12.0
+   ],
+   [
+    0.0,
+    0.0,
+    0.0
+   ]
+  ],
+  "bytes": 9843,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 1,
+  "sha256": "8119c7a4f42fe7ad80d4ce85f8b8e91297acf1f79320b07ba756819e0dc2c5ac",
+  "solids": 1,
+  "text_checks": {
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 1,
+   "MAPPED_ITEM(": 1
+  },
+  "unit": "mm",
+  "why": null
+ },
+ "mirror_point_scale_reversed_faces.step": {
+  "abs_volume_mm3": 7200.0,
+  "advanced_faces_same_sense_false": 4,
+  "bounds_mm": [
+   [
+    -40.0,
+    -30.0,
+    -12.0
+   ],
+   [
+    0.0,
+    0.0,
+    0.0
+   ]
+  ],
+  "bytes": 10514,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "ok",
+  "negative_instances": 1,
+  "sha256": "de56c0dba81a63f4dc1df1cd05e7774e6efdeab15d20464fbf124d30711ede73",
+  "solids": 1,
+  "text_checks": {
+   "ADVANCED_FACE(": 8
+  },
+  "unit": "mm"
+ },
+ "mirror_x_axis1.step": {
+  "abs_volume_mm3": 7200.0,
+  "bounds_mm": [
+   [
+    -40.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    30.0,
+    12.0
+   ]
+  ],
+  "bytes": 9831,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "reject",
+  "negative_instances": 1,
+  "sha256": "8198c25b69828a2c85859c5a33f969f9b4719708621d466e4e6a52780c2bf45f",
+  "solids": 1,
+  "text_checks": {
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 1,
+   "MAPPED_ITEM(": 1
+  },
+  "unit": "mm",
+  "why": "left-handed CTO axes: OCCT applies a rotation instead of the mirror"
+ },
+ "mirror_z_axis3.step": {
+  "abs_volume_mm3": 7200.0,
+  "bounds_mm": [
+   [
+    0.0,
+    0.0,
+    -12.0
+   ],
+   [
+    40.0,
+    30.0,
+    0.0
+   ]
+  ],
+  "bytes": 9831,
+  "face_occurrences": 8,
+  "instances": 1,
+  "kind": "reject",
+  "negative_instances": 1,
+  "sha256": "f30b1814d5bf588898ee0c29272a24e56e08c8091cd030ea05dccff5301d9fba",
+  "solids": 1,
+  "text_checks": {
+   "CARTESIAN_TRANSFORMATION_OPERATOR_3D(": 1,
+   "MAPPED_ITEM(": 1
+  },
+  "unit": "mm",
+  "why": "left-handed CTO axes: OCCT applies a rotation instead of the mirror"
+ },
+ "mixed_embedded_external.step": {
+  "bytes": 12628,
+  "embedded_bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    12.0
+   ]
+  ],
+  "kind": "reject",
+  "sha256": "341229ceecb14b699d21978d883dbeae1077af876f1e15b2ac4bfeed621d39a1",
+  "text_checks": {
+   "DOCUMENT_FILE(": 1,
+   "NEXT_ASSEMBLY_USAGE_OCCURRENCE(": 2
+  },
+  "why": "one component's geometry lives in external-part.stp"
+ },
+ "nongeometric.step": {
+  "bytes": 1296,
+  "kind": "reject",
+  "sha256": "fd12fdcc6d33504a19f2a74a1ad9d223886ac7d71431e4ed683a2cdcc85b5996",
+  "why": "product without any shape representation"
+ },
+ "null_root_dangling.step": {
+  "bytes": 15323,
+  "good_root_bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    12.0
+   ]
+  ],
+  "kind": "reject",
+  "sha256": "8201b52aed3aa070462c9558617dc36189303a39d76ed0eb26cb9b998edf1c4b",
+  "why": "root B's shape definition points at a missing entity (#999999)"
+ },
+ "null_root_wrong_type.step": {
+  "bytes": 15364,
+  "good_root_bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    40,
+    30,
+    12.0
+   ]
+  ],
+  "kind": "reject",
+  "sha256": "df59cb7ace2cc35a138dd1b3fe1a856f5b5a202f3e547b6d75b8ad8734feb2aa",
+  "why": "root B's shape definition points at a CARTESIAN_POINT"
+ },
+ "trunc_25.step": {
+  "bytes": 3827,
+  "kind": "reject",
+  "sha256": "5d4c95788685b620ef7ffd2a8e9d43f37f2229f8d498dc43e7b3a094ac224d91",
+  "why": "raw cut at 25%"
+ },
+ "trunc_50.step": {
+  "bytes": 7655,
+  "kind": "reject",
+  "sha256": "3c8a7dc6f6bebeed1d0bc84b3b52c03fbb2d141b0fcd784875dfecee0ea3fac9",
+  "why": "raw cut at 50%"
+ },
+ "trunc_90.step": {
+  "bytes": 13779,
+  "kind": "reject",
+  "sha256": "061b2f4dede754b876aef56637c6c4d50903c8e24c0d524fb5e787cbe2f53de3",
+  "why": "raw cut at 90%"
+ },
+ "trunc_after_root1.step": {
+  "bytes": 9280,
+  "kind": "reject",
+  "sha256": "54aa6b825ad6cf8e3bd7be63a020072fa7e192cbc8a07fcc1fc0bbda02aabab6",
+  "why": "cut after a complete first root, no ENDSEC/trailer"
+ },
+ "trunc_no_end_marker.step": {
+  "bytes": 15293,
+  "kind": "reject",
+  "sha256": "21ecf17c60aa2a677bdfb179c8da1d4afe89049b0add84b8ecb50bb610b1e41a",
+  "why": "missing END-ISO-10303-21 trailer only"
+ },
+ "two_roots.step": {
+  "abs_volume_mm3": 56361.191999999995,
+  "bounds_mm": [
+   [
+    0,
+    0,
+    0.0
+   ],
+   [
+    50.8,
+    38.1,
+    25.4
+   ]
+  ],
+  "bytes": 15311,
+  "face_occurrences": 14,
+  "instances": 2,
+  "kind": "ok",
+  "negative_instances": 0,
+  "sha256": "03b94883fa26b0e88f29c9414f1df506a988eb4550fc6d0193ff6c1380714bd7",
+  "solids": 2,
+  "text_checks": {
+   "ADVANCED_FACE(": 14,
+   "PRODUCT(": 2
+  },
+  "unit": "mm"
+ }
+}

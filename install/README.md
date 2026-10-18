@@ -33,6 +33,7 @@ machine. See [`installers/windows/`](../installers/windows/) to build it yoursel
 | `installers/windows/` `.exe` | Windows 10/11 | Self-contained installer (embedded Python + NSSM service) |
 | `docker-install.sh` | Linux, macOS | Docker |
 | `update.sh` | Linux (systemd) | Native update helper |
+| `step-preview.sh` | Linux, macOS | Enables, repairs and checks the STEP preview component of a native install |
 
 ---
 
@@ -62,6 +63,7 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 --log-level LEVEL  Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
 --no-service       Skip systemd/launchd service setup
 --yes, -y          Non-interactive mode, accept defaults
+--with-step-preview  Install the STEP preview component without asking
 ```
 
 **Examples:**
@@ -96,6 +98,59 @@ Download `bamdude-windows-setup.exe` from the
 
 A Start Menu shortcut opens the web UI in your browser. To build the installer
 yourself, see [`installers/windows/README.md`](../installers/windows/README.md).
+
+### STEP previews on a native install
+
+3D thumbnails of STEP files need an optional component of about 170 MB (an
+OpenCascade build). Docker images and the Windows installer ship it; on a
+native install it is your choice:
+
+- `install.sh` asks *"Install the STEP preview component?"*. The answer
+  defaults to **yes** when this install already has it enabled and to **no**
+  otherwise, so `--yes` keeps an enabled component and leaves a fresh install
+  without one. `--with-step-preview` installs it without asking.
+- It is offered on Debian/Ubuntu and Fedora/RHEL (the script installs the
+  system libraries it needs, as root: `libgl1 libx11-6 libexpat1 zlib1g` or
+  `mesa-libGL libX11 expat zlib`) and on macOS (nothing extra), on x86_64 and
+  arm64. On Arch Linux and openSUSE it is not offered: install libGL, libX11
+  and expat yourself, then run `install/step-preview.sh enable`.
+- Without it STEP files are still kept in the library; they just get no
+  thumbnail (the job ends with `cad_unavailable`).
+
+To enable it later, or repair it, run from the install directory (BamDude may
+keep running; the next STEP thumbnail uses the component):
+
+```bash
+sudo install/step-preview.sh enable    # records the choice, installs the libraries, then the component
+sudo install/step-preview.sh status    # checks that it really renders, and says what to do if not
+```
+
+On macOS run both without `sudo`. `--path DIR` points them at another install.
+They exit `0` when done (or when the component works), `1` on a failure, with
+its reason, and `3` when the component is not available for this machine or
+its Python. `enable` waits at most 15 minutes for another install of the
+component, 15 minutes for the download and 120 seconds for each check of it;
+reading its files and proving its processes ended are not bounded.
+
+What a reason means:
+
+| Reason | What to do |
+|--------|------------|
+| `smoke_failed:system_library:<soname>` | A system library is missing: install the package `status` names, then run `enable` |
+| `permission` | Something under `runtime/` is not writable by the install's owner (often left by an earlier `sudo` run): `sudo chown -R <owner> <install>/runtime`, then `enable` |
+| `lock_timeout` | Another install of the component held its lock for 15 minutes: let it finish, then run `enable` again |
+| `helper_unproven` | An update from Settings could not prove an earlier run of the helper ended: restart BamDude, then update again or run `enable` |
+| `pip_timeout`, `pip_failed` | The download did not complete: check the network, then run `enable` |
+
+Updates keep an enabled component current: `update.sh` and an update from
+Settings refresh it, and `update.sh` removes an older version only when it can
+prove the service stopped (cgroup v2: the unit's group is empty); otherwise it
+keeps it and says so. A failure here never fails the update; an update from
+Settings names the reason under its result. The System page
+shows the component's state — installed or not, never "works", which only
+`status` checks — and, on a native install, these two commands. Choosing
+*no* (or `disabled`) stops updates from touching the component; it does not
+remove one that is already installed.
 
 ---
 
@@ -201,10 +256,15 @@ sudo ./update.sh
 
 The updater performs:
 - Root permission check (fails fast before any work)
+- Runs git, pip and npm as the install's owner, never as root; root keeps systemd. The owner must be the
+  service's user, and nothing of the install outside `data/`, `logs/`, `backups/` and `runtime/` may belong to
+  anyone else (an update run as root before left such files). Either problem stops the update before anything
+  changes and names the repair, e.g. `sudo chown -R bamdude: /opt/bamdude`
 - Optional built-in backup API call (`/api/v1/settings/backup`) before update
 - Keeps only the newest 5 local backup ZIP files
 - Local-change warning + confirmation before `git reset --hard`
-- If remote has no new commits, updater exits early without stopping the service
+- If remote has no new commits, the updater asks whether to run anyway; the default (no) exits without stopping the service
+- Refreshes an enabled STEP preview component (see [STEP previews on a native install](#step-previews-on-a-native-install))
 - Service stop/start with code rollback + service restart attempt if update fails
 
 Useful environment overrides:

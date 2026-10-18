@@ -73,6 +73,7 @@ import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCar
 import { PrinterTagsCard } from '../components/settings/PrinterTagsCard';
 import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
+import { StepPreviewUpdateNote } from '../components/StepPreviewUpdateNote';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 import { invalidateOrderViews, invalidateQueueViews } from '../utils/queryInvalidation';
 import { summarizePlugEnergy } from '../utils/plugEnergySummary';
@@ -2558,9 +2559,12 @@ export function SettingsPage() {
                         </div>
                       </div>
                     ) : updateStatus?.status === 'complete' ? (
-                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
-                        {updateStatus.message}
-                      </div>
+                      <>
+                        <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
+                          {updateStatus.message}
+                        </div>
+                        <StepPreviewUpdateNote code={updateStatus.step_preview} />
+                      </>
                     ) : updateStatus?.status === 'error' ? (
                       <div className="mt-3 p-2 bg-red-100 dark:bg-red-500/20 rounded text-sm text-red-700 dark:text-red-400">
                         {updateStatus.error || updateStatus.message}

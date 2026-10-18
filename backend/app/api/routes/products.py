@@ -1348,7 +1348,11 @@ async def import_product(
         raise HTTPException(status_code=413, detail=f"An import may be at most {import_limit()} bytes")
     # ``file.file`` is seekable, which is all ``zipfile`` asks for — so the
     # archive is read where it already is, member by member.
-    product, warnings = await import_zip(db, file.file, folder_id=folder_id, user=current_user)
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    product, warnings = await import_zip(
+        db, file.file, folder_id=folder_id, user=current_user, authority=await request_authority(request, current_user)
+    )
     return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
 
 

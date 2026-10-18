@@ -28,6 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - STEP_PREVIEW_CANDIDATE
     container_name: bamdude-integration-test
     ports:
       - "8001:8000"

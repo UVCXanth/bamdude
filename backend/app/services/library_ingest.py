@@ -44,6 +44,8 @@ class IngestResult:
     file: LibraryFile
     outcome: IngestOutcome
     superseded_name: str | None = None
+    #: a NEW STEP file's background picture: its receipt, or why none was queued (never a rollback)
+    thumbnail_job: dict | None = None
 
 
 async def _rows_with_hash(db: AsyncSession, content_hash: str) -> list[LibraryFile]:

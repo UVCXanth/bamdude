@@ -12,6 +12,27 @@ def _line(payload: dict) -> bytes:
     return json.dumps(payload).encode() + b"\n"
 
 
+@pytest.mark.parametrize(
+    ("os_name", "child", "exits_with"),
+    [
+        ("nt", 0, 0),
+        ("nt", 1, 1),
+        # an NTSTATUS above 2**31 overflows SystemExit (C long): passed as its signed twin, the OS shows the DWORD
+        ("nt", 0xC0000005, 0xC0000005 - 2**32),
+        ("nt", 0xC0000409, 0xC0000409 - 2**32),
+        ("posix", 0, 0),
+        ("posix", 3, 3),
+        ("posix", -11, 128 + 11),  # killed by SIGSEGV: the shell's 128 + signal, not 256 - 11
+        ("posix", -9, 128 + 9),
+    ],
+)
+def test_the_guardian_exits_with_its_childs_exit_code(monkeypatch, os_name, child, exits_with):
+    import backend.app.worker_guardian as guardian
+
+    monkeypatch.setattr(guardian.os, "name", os_name)
+    assert guardian.exit_status(child) == exits_with
+
+
 def test_preview_wire_stays_newline_json():
     module, frame = _child_bootstrap(_line({"module": "backend.app.preview_render", "root": "cache"}))
     assert module == "backend.app.preview_render"

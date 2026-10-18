@@ -50,12 +50,12 @@ sc stop %PG_SERVICE%
 
 set /a WAITED=0
 :wait_pg
-sc query %PG_SERVICE% | find "STOPPED" >nul
+sc query %PG_SERVICE% | "%SystemRoot%\System32\find.exe" "STOPPED" >nul
 if not errorlevel 1 goto :pg_stopped
 set /a WAITED+=2
 if !WAITED! GEQ 90 goto :pg_force
 REM ping as the sleep: `timeout` needs a console this script does not have.
-ping -n 3 127.0.0.1 >nul
+"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
 goto :wait_pg
 
 :pg_force

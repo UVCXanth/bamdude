@@ -124,13 +124,69 @@ if [[ "$KIND" != "prune-only" ]]; then
   fi
 fi
 
+# The STEP component's source bundle (bamdude-step-preview-sources-<id>.tar)
+# goes with its release, and the notices that shipped with that beta offer the
+# source for three years: a beta release is KEPT when it holds the only copy of
+# a bundle — no release outside the targets carries it. Its Docker Hub tags and
+# GHCR versions are deleted as usual; only the release entry with its assets
+# stays. Another copy counts only when it is PUBLIC and the same bytes: on a
+# published release (a maintainer's listing includes private drafts), fully
+# uploaded, with the same digest — a name alone proves nothing, and an unknown
+# digest keeps the release.
+is_target() {
+  local t
+  for t in "${TARGETS[@]}"; do [[ "$t" == "$1" ]] && return 0; done
+  return 1
+}
+
+# "<tag> <asset> <digest or ->" for every uploaded asset of every published release.
+list_release_assets() {
+  # shellcheck disable=SC2016  # a jq expression, not a shell one
+  gh api --paginate "repos/$OWNER/$REPO/releases?per_page=100" \
+    --jq '.[] | select(.draft | not) | .tag_name as $t | .assets[] | select(.state == "uploaded")
+      | "\($t) \(.name) \(.digest // "-")"'
+}
+
+# The source bundles of release $1 that no other public copy of the same bytes keeps.
+only_copies() {
+  local t name digest t2 n2 d2 kept
+  while read -r t name digest; do
+    [[ "$t" == "$1" && "$name" =~ ^bamdude-step-preview-sources-[0-9a-f]{12}\.tar$ ]] || continue
+    kept=0
+    if [[ "$digest" == sha256:* ]]; then
+      while read -r t2 n2 d2; do
+        if [[ "$n2" == "$name" && "$d2" == "$digest" ]] && ! is_target "$t2"; then
+          kept=1
+          break
+        fi
+      done <<<"$ASSETS_BY_TAG"
+    fi
+    [[ "$kept" -eq 1 ]] || echo "$name"
+  done <<<"$ASSETS_BY_TAG"
+}
+
+ASSETS_BY_TAG=""
+if [[ ${#TARGETS[@]} -gt 0 ]]; then
+  ASSETS_BY_TAG=$(list_release_assets) || {
+    echo "ERROR: cannot list the releases and their assets — nothing is deleted." >&2
+    exit 1
+  }
+fi
+
 echo ""
 if [[ "$KIND" == "prune-only" ]]; then
   echo "Mode: prune untagged GHCR orphans only (no version cleanup)"
 else
   echo "Just released:  $JUST_RELEASED ($KIND)"
   echo "Cleanup targets (${#TARGETS[@]}):"
-  for t in "${TARGETS[@]}"; do echo "  - $t"; done
+  for t in "${TARGETS[@]}"; do
+    only=$(only_copies "$t")
+    if [[ -n "$only" ]]; then
+      echo "  - $t (its GitHub release stays: the only copy of ${only//$'\n'/, })"
+    else
+      echo "  - $t"
+    fi
+  done
   echo "Will delete: GitHub pre-release entries (git tags preserved),"
   echo "             Docker Hub tags, GHCR image versions."
 fi
@@ -200,11 +256,16 @@ for tag in "${TARGETS[@]}"; do
   echo "--- $tag ---"
   docker_tag="${tag#v}"
 
-  echo "  GitHub release: deleting (keeping git tag)..."
-  if gh release delete "$tag" --repo "$OWNER/$REPO" --cleanup-tag=false --yes 2>/dev/null; then
-    echo "    ok"
+  only=$(only_copies "$tag")
+  if [[ -n "$only" ]]; then
+    echo "  GitHub release: kept — it holds the only copy of ${only//$'\n'/, }, offered for three years"
   else
-    echo "    not found / already deleted"
+    echo "  GitHub release: deleting (keeping git tag)..."
+    if gh release delete "$tag" --repo "$OWNER/$REPO" --cleanup-tag=false --yes 2>/dev/null; then
+      echo "    ok"
+    else
+      echo "    not found / already deleted"
+    fi
   fi
 
   if [[ -n "$DOCKERHUB_JWT" ]]; then

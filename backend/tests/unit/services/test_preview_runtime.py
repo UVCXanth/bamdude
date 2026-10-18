@@ -62,7 +62,9 @@ async def test_preview_service_cleanup_failure_preserves_primary_outcome(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_admission(tmp_path, monkeypatch, caplog):
+async def test_main_cleanup_failure_preserves_preview_result_explains_and_quarantines(tmp_path, monkeypatch, caplog):
+    """Spec r5 §4.2 replaced 'a denied cleanup blocks every later admission': the failure is still logged, the
+    proven-dead attempt dir moves to quarantine (counted against the limits), and the next admission proceeds."""
     import trimesh
 
     from backend.app.services import preview_runtime
@@ -88,9 +90,10 @@ async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_a
                 assert result.outcome == "ok" and result.files["preview"].exists()
             assert denied
             assert "staging_cleanup_failed: phase=main_attempt" in caplog.text
+            assert "staging_quarantined: side=main" in caplog.text
             async with runtime.attempt({"mesh": (mesh, "stl")}) as result:
-                assert result.outcome == "resource_limit"
-            assert "staging_residue_blocks_admission" in caplog.text
+                assert result.outcome == "ok"
+            assert "staging_residue_blocks_admission" not in caplog.text
     finally:
         monkeypatch.setattr(preview_runtime, "cleanup_owned", original)
         await runtime.stop()
@@ -141,9 +144,12 @@ async def test_post_retire_filesystem_failure_is_not_ownership_uncertain(tmp_pat
     )
     with caplog.at_level(logging.INFO, logger="backend.app.services.preview_runtime"):
         await runtime._retire()
-    assert runtime.service is None and not runtime.uncertain and attempt.exists()
+    assert runtime.service is None and not runtime.uncertain
     assert "service_residue_after_retire" in caplog.text
     assert "staging_cleanup_failed: phase=service_residue_after_retire" in caplog.text
+    # spec r5 §4.2: the stopped service's residue moves whole into quarantine instead of staying in staging
+    moved = runtime.quarantine / runtime.generation / attempt.name / "service"
+    assert not attempt.exists() and (moved / "mesh.stl").read_bytes() == b"residue"
 
 
 @pytest.fixture
@@ -161,7 +167,7 @@ async def local_runtime(tmp_path):
 async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkeypatch):
     service = PreviewRuntime(tmp_path / "failed readiness")
 
-    async def failed():
+    async def failed(attempt=None):
         raise PreviewError("unavailable")
 
     monkeypatch.setattr(service, "_launch", failed)
@@ -170,6 +176,9 @@ async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkey
     async with service.attempt({"mesh": (b"x", "stl")}) as result:
         assert result.outcome == "unavailable"
     assert not service.slot.locked()
+    # A failed first start is tried again in the background now (its cleanup was proven); the stop ends that,
+    # and what the failed runtime held must not keep a new one on the same root from starting.
+    await service.stop()
     replacement = PreviewRuntime(service.root)
     await replacement.start()
     try:
@@ -496,7 +505,7 @@ async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, 
     entered = asyncio.Event()
     original = module.put
 
-    async def held(*args):
+    async def held(*args, **kwargs):  # put now also takes the attempt's revoke token
         entered.set()
         await asyncio.Event().wait()
 

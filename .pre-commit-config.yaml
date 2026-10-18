@@ -21,11 +21,14 @@ repos:
       # OFL.txt — vendored licence text for the label fonts. It must stay
       # byte-identical to upstream so a re-sync can be diffed against it;
       # normalising a trailing space would show as a diff forever. Same
-      # reasoning as the calib_assets exclusion below.
+      # reasoning as the calib_assets exclusion below. The STEP-preview
+      # fixtures are byte-exact test inputs whose sha256 sits in their
+      # expected.json, and the truncated ones end mid-record on purpose. The
+      # CAD component's licence texts are vendored like OFL.txt.
       - id: trailing-whitespace
-        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$)
+        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$|backend/tests/fixtures/step/|backend/app/data/step_runtime_notices/|backend/app/data/step_probe/)
       - id: end-of-file-fixer
-        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$)
+        exclude: ^(static/|backend/app/data/fonts/OFL\.txt$|backend/tests/fixtures/step/|backend/app/data/step_runtime_notices/|backend/app/data/step_probe/)
       - id: check-yaml
         # ``--unsafe`` allows custom YAML tags through. Kept on so any
         # future YAML using non-standard tags doesn't fail this hook.

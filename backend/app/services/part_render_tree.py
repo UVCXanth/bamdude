@@ -258,6 +258,45 @@ def _not_gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool 
         return f"access denied pid={pid}"
 
 
+def recorded_running(entry: Path) -> str | None:
+    """Without signalling anything: why the process ``entry`` records may still run, for the caller's log; None
+    when it has ended (another boot, another process under its pid now, a zombie, no such process). A record that
+    cannot be read, or a process that cannot be read, is never shown ended. The CAD installer's records use it."""
+    return _not_gone(entry, 0, kill=False)
+
+
+def recorded_this_boot(entry: Path) -> bool | None:
+    """True when the record names this boot, False when it names another, None when either cannot be told."""
+    try:
+        data = json.loads(entry.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    boots = _boots(data)
+    return None if boots is None else boots[0] == boots[1]
+
+
+def recorded_user(entry: Path) -> int | str | None:
+    """The user a record names (``record`` writes it), or None when it cannot be read or names none."""
+    try:
+        data = json.loads(entry.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return None
+    return _user_of(data) if isinstance(data, dict) else None
+
+
+def launch_token(scope: Path, name: str) -> str | None:
+    """The token a launch wrote before its spawn, or None when it cannot be read (no token, no proof)."""
+    return _token(scope, name)
+
+
+def end_launch_holders(token: str, timeout: float, owner: int | str | None) -> bool:
+    """Once a launch's parent is proven dead: end every process of ``owner`` started with its token -- what never
+    got its record cannot have got its input -- and True only when a scan finds none left (``_end_why``)."""
+    return _end_launched(token, timeout, owner)
+
+
 def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
     """Every process of the attempt is gone.
 

@@ -123,6 +123,97 @@ def _classify_generation(root: Path, runtime: str) -> str:
     return "empty_skeleton"
 
 
+_SIDES = ("main", "service")
+
+
+def _hex32(name: str) -> bool:
+    return len(name) == 32 and all(c in "0123456789abcdef" for c in name)
+
+
+def quarantine_owned(path: Path, quarantine_root: Path, generation: str, side: str) -> CleanupResult:
+    """Move ONE proven-dead, caller-owned attempt directory whole into ``<root>/<generation>/<attempt>/<side>``.
+
+    Only a 32-hex attempt directory that is neither a link nor a junction, only onto the same filesystem (one atomic
+    rename, never a copy), only under the normalised quarantine root: anything else is ``refused`` and stays where it
+    was. Nothing renders or publishes from quarantine; its bytes and count stay inside the limits until reclaimed.
+    """
+    if not _hex32(path.name) or not _hex32(generation) or side not in _SIDES:
+        return CleanupResult("refused", path, "invalid_name")
+    try:
+        info = _info(path)
+        if not stat.S_ISDIR(info.st_mode):
+            return CleanupResult("refused", path, "not_directory")
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        if _info(quarantine_root).st_dev != info.st_dev:
+            return CleanupResult("refused", path, "cross_filesystem")
+        parent = quarantine_root / generation / path.name
+        parent.mkdir(parents=True, exist_ok=True)
+        if quarantine_root.resolve() not in parent.resolve().parents:
+            return CleanupResult("refused", path, "outside_root")
+        target = parent / side
+        path.rename(target)  # atomic on one filesystem; refuses an existing target
+        return CleanupResult("quarantined", target)
+    except FileNotFoundError:
+        return CleanupResult("absent", path)
+    except ValueError as exc:  # a link or junction: never followed, never moved
+        return CleanupResult("refused", path, str(exc))
+    except OSError as exc:
+        return CleanupResult(
+            "retained_error", path, type(exc).__name__, getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+        )
+
+
+def _quarantined_attempts(quarantine_root: Path) -> list[Path]:
+    found = []
+    try:
+        generations = _entries(quarantine_root)
+    except FileNotFoundError:
+        return found
+    for generation in generations:
+        if not _hex32(generation.name):
+            continue
+        try:
+            found += [a for a in _entries(generation) if _hex32(a.name)]
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def quarantine_usage(quarantine_root: Path) -> tuple[int, int]:
+    """(bytes, attempts) still held in quarantine — what admission counts against the staging limits."""
+    total, attempts = 0, _quarantined_attempts(quarantine_root)
+    for attempt in attempts:
+        stack = [attempt]
+        while stack:
+            try:
+                for entry in _entries(stack.pop()):
+                    info = entry.lstat()
+                    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                        stack.append(entry)
+                    else:
+                        total += info.st_size
+            except (OSError, ValueError):
+                continue
+    return total, len(attempts)
+
+
+def reclaim_quarantine(quarantine_root: Path, *, deadline: float | None = None) -> list[CleanupResult]:
+    """Bounded retry of every quarantined attempt's removal; empty generation folders go too."""
+    deadline = deadline if deadline is not None else time.monotonic() + 2.0
+    results = []
+    for attempt in _quarantined_attempts(quarantine_root):
+        if time.monotonic() >= deadline:
+            break
+        results.append(cleanup_owned(attempt, deadline=deadline))
+    try:
+        for generation in _entries(quarantine_root):
+            if _hex32(generation.name) and _empty_directory(generation):
+                generation.rmdir()
+    except (OSError, ValueError):
+        pass
+    return results
+
+
 def abandoned_attempts(service_root: Path) -> tuple[list[Path], list[Path]]:
     """List direct attempt directories only after the caller has reaped that service."""
     attempts, unknown = [], []
