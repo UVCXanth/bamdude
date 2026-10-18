@@ -21,3 +21,26 @@ per platform family (linux, windows, macos):
 
 Open CASCADE Technology is distributed under the GNU Lesser General Public
 License version 2.1 with the Open CASCADE exception (upstream/occt/).
+
+Terms BamDude distributes under
+-------------------------------
+
+Where a component's licence offers alternatives, BamDude takes the terms that
+place the least on the AGPL-3.0 application around it:
+
+  - FreeType (2.9.1 on Linux, 2.12.1 on Windows and macOS): the FreeType
+    License, FTL - not the GPL-2.0.
+  - FreeImage (3.17.0 on Linux, 3.18.0 on Windows and macOS): the FreeImage
+    Public License, FreeImage - not the GPL.
+  - LibRaw (0.19.5 on Linux): LGPL-2.1-only - not the CDDL-1.0; the Windows
+    and macOS builds are offered under LGPL-2.1-only alone.
+  - libgomp (Linux), GCC's runtime library:
+    GPL-3.0-or-later WITH GCC-exception-3.1
+
+FreeType credit, as the FTL asks:
+
+  Portions of this software are copyright © 2018 The FreeType Project
+  (www.freetype.org). All rights reserved. (FreeType 2.9.1, Linux)
+
+  Portions of this software are copyright © 2022 The FreeType Project
+  (www.freetype.org). All rights reserved. (FreeType 2.12.1, Windows, macOS)

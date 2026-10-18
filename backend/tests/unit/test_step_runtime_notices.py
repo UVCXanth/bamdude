@@ -123,3 +123,20 @@ def test_a_copyleft_licence_and_its_exception_ship_with_the_component_itself():
             if re.search(licence, terms) and not any(re.search(text, t) for t in c["texts"]):
                 missing.append(f"{family}:{c['id']}:{licence}")
     assert missing == []
+
+
+FREETYPE_YEARS = {"2.9.1": 2018, "2.12.1": 2022}  # the release year of each FreeType version the wheels carry
+
+
+def test_the_readme_names_every_chosen_term_and_credits_freetype():
+    """The owner left the choice among alternatives to us (2026-10-18): the terms lightest under AGPL-3.0 — FTL for
+    FreeType, the FreeImage Public License, LGPL-2.1 for LibRaw — and the README that ships says so. FTL asks for its
+    credit in the documentation, with the year of the version actually used."""
+    readme = (TEXTS / "README.txt").read_text(encoding="utf-8")
+    for family, c in _components():
+        if c.get("terms"):
+            assert c["name"].casefold() in readme.casefold() and c["terms"] in readme, f"{family}:{c['id']}"
+        if c.get("terms") == "FTL":
+            version = c["version"].split("-")[0]
+            credit = f"Portions of this software are copyright © {FREETYPE_YEARS[version]} The FreeType"
+            assert credit in readme, f"{family}:{version}"
