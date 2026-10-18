@@ -51,6 +51,8 @@ CAD_ROOT = BUILD_DIR / "cad-build"
 CAD_OWNER = BUILD_DIR / "cad-owner"
 CAD_INSTALL_SECONDS = 15 * 60 + 300  # step_runtime.INSTALL_SECONDS plus the proof of the tree's end
 CAD_VERIFY_SECONDS = 600  # a full rehash plus the STEP->PNG smoke (two children of up to 120 s each)
+# MAX_PATH less its NUL, as step_runtime.PATH_LIMIT is on Windows: the target's limit, whatever the build host.
+WINDOWS_PATH_LIMIT = 259
 
 # Matches the Dockerfile (python:3.12-slim-trixie) and `requires-python`, so a
 # Windows install runs the same interpreter CI tests. Bump when those bump.
@@ -621,7 +623,17 @@ def step_max_app_dir_len(catalog=None, key: str = "win-x64-cp312") -> int:
     wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == key)
     deepest = max(len(lib["path"]) for lib in catalog.closure["artifacts"][wheel["filename"]])
     tail = "\\app\\runtime\\" + step_runtime.PRODUCT_DIR + "\\" + key + "\\" + "0" * 32 + "\\site"
-    return step_runtime.PATH_LIMIT - deepest - 1 - len(tail.encode("utf-16-le")) // 2
+    return WINDOWS_PATH_LIMIT - deepest - 1 - len(tail.encode("utf-16-le")) // 2
+
+
+def payload_max_app_dir_len(staging: Path) -> int:
+    """The same bound over every file staged for {app} — Python's site-packages, the backend, Node, the tools: a
+    dependency deeper than the CAD bundle's deepest DLL would otherwise be laid down past MAX_PATH."""
+    deepest = max(
+        (len(str(f.relative_to(staging)).encode("utf-16-le")) // 2 for f in staging.rglob("*") if f.is_file()),
+        default=0,
+    )
+    return WINDOWS_PATH_LIMIT - 1 - deepest
 
 
 def _report_sizes(bundle: Path) -> None:
@@ -683,8 +695,11 @@ def write_version_file() -> None:
 
     # Inno Setup include — bamdude.iss does `#include "build\staging\version.iss"`
     iss_version = STAGING / "version.iss"
+    # The longest {app} the whole payload allows: the CAD bundle's deepest DLL (from the catalog) or anything
+    # staged deeper.
+    app_dir_limit = min(step_max_app_dir_len(), payload_max_app_dir_len(STAGING))
     iss_version.write_text(
-        f'#define MyAppVersion "{version}"\n#define StepMaxAppDirLen {step_max_app_dir_len()}\n', encoding="utf-8"
+        f'#define MyAppVersion "{version}"\n#define StepMaxAppDirLen {app_dir_limit}\n', encoding="utf-8"
     )
     log(f"staged VERSION = {version}")
 

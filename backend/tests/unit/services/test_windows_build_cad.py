@@ -397,3 +397,19 @@ def test_the_app_dir_limit_comes_from_the_catalog(build, monkeypatch):
     monkeypatch.setattr(build, "_resolve_installer_version", lambda: "0.0.0")
     build.write_version_file()
     assert "#define StepMaxAppDirLen 109" in (staged / "version.iss").read_text(encoding="utf-8")
+    if sr.PATH_LIMIT is not None:  # where step_runtime applies the limit (Windows), it is the build's own
+        assert build.WINDOWS_PATH_LIMIT == sr.PATH_LIMIT
+
+
+def test_the_limit_covers_the_whole_payload(build, monkeypatch):
+    """Whatever lies deepest under {app} bounds the directory, not only the CAD bundle's deepest DLL: a dependency
+    with a deeper path than the bundle's would otherwise be laid down past MAX_PATH from a directory Setup accepted."""
+    deep = build.STAGING / "python" / "Lib" / "site-packages" / ("d" * 120) / "x.py"
+    deep.parent.mkdir(parents=True)
+    deep.write_text("", encoding="utf-8")
+    rel = len(str(deep.relative_to(build.STAGING)).encode("utf-16-le")) // 2
+    assert build.payload_max_app_dir_len(build.STAGING) == build.WINDOWS_PATH_LIMIT - 1 - rel
+    monkeypatch.setattr(build, "_resolve_installer_version", lambda: "0.0.0")
+    build.write_version_file()
+    limit = min(build.step_max_app_dir_len(), build.WINDOWS_PATH_LIMIT - 1 - rel)
+    assert limit < 109 and f"#define StepMaxAppDirLen {limit}" in (build.STAGING / "version.iss").read_text("utf-8")
