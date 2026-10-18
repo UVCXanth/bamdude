@@ -29,6 +29,10 @@ on:
           - full
           - diagnostic
         default: full
+      skip_ci_gate:
+        description: "Run without a green CI run of this commit (a dispatch only; a tag is always gated, and a dispatch never publishes)"
+        type: boolean
+        default: false
 
 # Least-privilege per CodeQL actions/missing-workflow-permissions: read
 # everywhere; only the release job, which attaches the accepted .exe, writes.
@@ -39,9 +43,12 @@ jobs:
   # ⚠️ The same gate the Docker images pass. Without it the installer was the
   # one release artefact that could be built from a commit whose CI was red —
   # and it is attached to the release, so it would be the copy people actually
-  # download. The manual-dispatch path passes it too: a dispatch on a red
-  # commit is no safer for being deliberate.
+  # download. The manual-dispatch path passes it too, unless the dispatch asks
+  # to skip it (skip_ci_gate, owner's call 2026-10-18: an installer fix is
+  # accepted without a full CI cycle first). A tag push is always gated, and
+  # only a tag push publishes.
   gate:
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_ci_gate != true
     permissions:
       actions: read
       contents: read
@@ -49,6 +56,10 @@ jobs:
 
   build:
     needs: gate
+    # A skipped gate is accepted only for a dispatch that asked to skip it.
+    if: >-
+      !cancelled() && (needs.gate.result == 'success' || (needs.gate.result == 'skipped'
+      && github.event_name == 'workflow_dispatch' && inputs.skip_ci_gate == true))
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -129,6 +140,9 @@ jobs:
   # It registers and deletes Windows services — runners only, never a desk.
   acceptance:
     needs: build
+    # Said explicitly: with the gate skipped further up, the default success()
+    # would skip this job although build succeeded.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 150
     permissions:

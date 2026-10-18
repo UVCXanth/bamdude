@@ -194,3 +194,19 @@ def test_every_digest_count_holds_under_strict_mode_with_one_digest(tmp_path):
     cmd = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     assert p.returncode == 0 and "all held" in p.stdout, (p.stdout, p.stderr)
+
+
+def test_only_a_dispatch_that_asks_for_it_skips_the_ci_gate():
+    """The owner's call (2026-10-18): a dispatched acceptance may run without a green CI run of its SHA, on an
+    explicit input that defaults off. A tag push is gated as before, and the release still needs a pushed tag."""
+    skip = WORKFLOW[True]["workflow_dispatch"]["inputs"]["skip_ci_gate"]  # yaml reads `on` as True
+    assert skip["type"] == "boolean" and skip["default"] is False
+    gate_if = JOBS["gate"]["if"]
+    assert "github.event_name != 'workflow_dispatch'" in gate_if and "inputs.skip_ci_gate" in gate_if
+    build_if = JOBS["build"]["if"]
+    assert "needs.gate.result == 'success'" in build_if
+    assert "needs.gate.result == 'skipped'" in build_if and "github.event_name == 'workflow_dispatch'" in build_if
+    assert "inputs.skip_ci_gate" in build_if and "!cancelled()" in build_if
+    # A skipped gate up the chain would skip every job after build too unless each says what it needs.
+    assert "needs.build.result == 'success'" in JOBS["acceptance"]["if"]
+    assert "github.event_name == 'push'" in JOBS["release"]["if"]
