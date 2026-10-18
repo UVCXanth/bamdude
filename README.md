@@ -1,0 +1,1 @@
+Synthetic BamDude order-quantity calculator UI evidence. No real order, network credential, device identifier, or production database is included. Desktop search screenshots are from source 0646d38c2; mobile and entry-point screenshots capture the preceding layout validation, unchanged by the final backend search fixes. This evidence branch is separate from the pull request code.
