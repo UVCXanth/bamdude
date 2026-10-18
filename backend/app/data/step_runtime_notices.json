@@ -100,7 +100,10 @@
      "source": {
       "kind": "srpm",
       "name": "LibRaw-0.19.5-6.el8_10.src.rpm",
-      "vendor": "AlmaLinux"
+      "vendor": "AlmaLinux",
+      "url": "https://vault.almalinux.org/8.10/AppStream/Source/Packages/LibRaw-0.19.5-6.el8_10.src.rpm",
+      "sha256": "31b9a716f8d401ba9e36a992444d7ad20b5ac72f67e8d125ee03c9e5462826ac",
+      "signed_by": "AlmaLinux OS 8 (key ced7258b)"
      }
     },
     {
@@ -214,7 +217,10 @@
      "source": {
       "kind": "srpm",
       "name": "freeimage-3.17.0-5.el8.src.rpm",
-      "vendor": "Fedora Project"
+      "vendor": "Fedora Project",
+      "url": "https://dl.fedoraproject.org/pub/epel/8/Everything/source/tree/Packages/f/freeimage-3.17.0-5.el8.src.rpm",
+      "sha256": "352df150c5b7c28a389a42a3652d5e258df2029e8b06926ce8e4f130cfc6dd0c",
+      "signed_by": "Fedora EPEL 8 (key 2f86d6a1)"
      }
     },
     {
@@ -308,7 +314,10 @@
      "source": {
       "kind": "srpm",
       "name": "gcc-8.5.0-29.el8_10.alma.1.src.rpm",
-      "vendor": "AlmaLinux"
+      "vendor": "AlmaLinux",
+      "url": "https://vault.almalinux.org/8.10/BaseOS/Source/Packages/gcc-8.5.0-29.el8_10.alma.1.src.rpm",
+      "sha256": "66aa234be56b435ee99420540cff9ee41d89a555e541f6b3e523962e361450fc",
+      "signed_by": "AlmaLinux OS 8 (key ced7258b)"
      }
     },
     {

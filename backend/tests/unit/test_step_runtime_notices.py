@@ -14,12 +14,12 @@ from pathlib import Path
 import pytest
 
 from backend.app import step_runtime as sr
+from scripts.step_preview_sources import COPYLEFT  # one rule: what these notices call copyleft is what gets delivered
 
 DATA = Path(sr.__file__).resolve().parent / "data"
 NOTICES = json.loads((DATA / "step_runtime_notices.json").read_text(encoding="utf-8"))
 TEXTS = DATA / "step_runtime_notices"
 CATALOG = sr.load_catalog()
-COPYLEFT = re.compile(r"\b(L?GPL|MPL|CDDL|FreeImage)\b")
 
 
 def family_of(artifact: dict) -> str:

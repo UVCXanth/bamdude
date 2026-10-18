@@ -44,3 +44,25 @@ FreeType credit, as the FTL asks:
 
   Portions of this software are copyright © 2022 The FreeType Project
   (www.freetype.org). All rights reserved. (FreeType 2.12.1, Windows, macOS)
+
+Corresponding source
+--------------------
+
+The components distributed under a licence that asks for their source - Open
+CASCADE Technology, LibRaw, FreeImage and, on Linux, libgomp - have their exact
+corresponding source published by BamDude itself. Every BamDude release that
+carries this component has, on its page under
+https://github.com/kainpl/bamdude/releases, the asset
+
+  bamdude-step-preview-sources-533f263356f9.tar
+
+with its SHA-256 beside it (the name follows the closure_sha256 of
+../step_runtime_notices.json). Its SOURCES.json names every file with its
+SHA-256, where it was taken from and the components it is the source of: the
+source RPMs as their vendor signed them, the source archives by the SHA-256
+their builds pinned, and Open CASCADE Technology as the tree of its tagged
+commit.
+
+For at least three years after BamDude last distributed a version that carries
+this component, the same source is also available on request, for no more than
+the cost of providing it: open an issue at https://github.com/kainpl/bamdude/issues.
