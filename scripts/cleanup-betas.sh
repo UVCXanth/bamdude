@@ -129,34 +129,48 @@ fi
 # source for three years: a beta release is KEPT when it holds the only copy of
 # a bundle — no release outside the targets carries it. Its Docker Hub tags and
 # GHCR versions are deleted as usual; only the release entry with its assets
-# stays.
+# stays. Another copy counts only when it is PUBLIC and the same bytes: on a
+# published release (a maintainer's listing includes private drafts), fully
+# uploaded, with the same digest — a name alone proves nothing, and an unknown
+# digest keeps the release.
 is_target() {
   local t
   for t in "${TARGETS[@]}"; do [[ "$t" == "$1" ]] && return 0; done
   return 1
 }
 
-# The source bundles of release $1 that no release outside the targets carries.
+# "<tag> <asset> <digest or ->" for every uploaded asset of every published release.
+list_release_assets() {
+  # shellcheck disable=SC2016  # a jq expression, not a shell one
+  gh api --paginate "repos/$OWNER/$REPO/releases?per_page=100" \
+    --jq '.[] | select(.draft | not) | .tag_name as $t | .assets[] | select(.state == "uploaded")
+      | "\($t) \(.name) \(.digest // "-")"'
+}
+
+# The source bundles of release $1 that no other public copy of the same bytes keeps.
 only_copies() {
-  local t name t2 n2 kept
-  while read -r t name; do
+  local t name digest t2 n2 d2 kept
+  while read -r t name digest; do
     [[ "$t" == "$1" && "$name" =~ ^bamdude-step-preview-sources-[0-9a-f]{12}\.tar$ ]] || continue
     kept=0
-    while read -r t2 n2; do
-      if [[ "$n2" == "$name" ]] && ! is_target "$t2"; then
-        kept=1
-        break
-      fi
-    done <<<"$ASSETS_BY_TAG"
+    if [[ "$digest" == sha256:* ]]; then
+      while read -r t2 n2 d2; do
+        if [[ "$n2" == "$name" && "$d2" == "$digest" ]] && ! is_target "$t2"; then
+          kept=1
+          break
+        fi
+      done <<<"$ASSETS_BY_TAG"
+    fi
     [[ "$kept" -eq 1 ]] || echo "$name"
   done <<<"$ASSETS_BY_TAG"
 }
 
 ASSETS_BY_TAG=""
 if [[ ${#TARGETS[@]} -gt 0 ]]; then
-  # shellcheck disable=SC2016  # a jq expression, not a shell one
-  ASSETS_BY_TAG=$(gh api --paginate "repos/$OWNER/$REPO/releases?per_page=100" \
-    --jq '.[] | .tag_name as $t | .assets[] | "\($t) \(.name)"')
+  ASSETS_BY_TAG=$(list_release_assets) || {
+    echo "ERROR: cannot list the releases and their assets — nothing is deleted." >&2
+    exit 1
+  }
 fi
 
 echo ""
