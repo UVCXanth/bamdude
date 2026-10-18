@@ -44,10 +44,10 @@ describe('OrderView composition', () => {
     const write = vi.spyOn(api, 'updateOrderLine');
     const send = vi.spyOn(api, 'enqueueOrderPlan');
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities', exact: true }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities' }));
     expect(await screen.findByRole('dialog', { name: 'Plate quantities' })).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus', exact: true }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus' }));
     expect(await screen.findByRole('dialog', { name: 'Adjust without surplus' })).toBeInTheDocument();
     expect(write).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
   });

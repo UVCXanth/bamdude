@@ -376,7 +376,7 @@ describe('OrdersPage', () => {
       vi.mocked(api.getOrder).mockResolvedValue(makeOrder({ id: 1 }));
       window.history.pushState({}, '', '/projects?order=1');
       render(<OrdersPage />);
-      fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities', exact: true }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities' }));
       expect(await screen.findByRole('dialog', { name: 'Plate quantities' })).toBeInTheDocument();
       expect(await within(screen.getByRole('dialog')).findByRole('spinbutton')).toHaveValue(10);
     });
