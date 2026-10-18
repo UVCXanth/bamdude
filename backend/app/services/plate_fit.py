@@ -312,6 +312,7 @@ def option(
                 queued=p.queued,
                 new_printed=n,
                 free_stock=stock,
+                other_coverage=p.fixed - p.allocated - p.completed - p.printing - p.queued,
             )
             for p, n, stock in zip(snapshot.parts, made, from_free, strict=True)
         ],

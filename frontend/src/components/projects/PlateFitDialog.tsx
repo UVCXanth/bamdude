@@ -16,8 +16,8 @@ export interface PlateFitDoor {
   onApplied: (draft: PlateFitDraft) => void;
 }
 
-/** Mounted only by the page's existing order-action host. No calculation or
- * new work is enqueued. Reviewed pending removals share the line transaction.
+/** Mounted only by the page's existing order-action host. Applying never
+ * enqueues new work. Reviewed pending removals share the line transaction.
  * The returned counts are an ordinary
  * plan-editor draft, with the same lifetime as manually edited counts. */
 export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose: () => void }) {
@@ -171,9 +171,9 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
           </>}
         </div>
         <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-bambu-gray">
-          {['part', 'required', 'allocated', 'completed', 'printing', 'queued', 'freeStock', 'newPrinted'].map(key => <th key={key} className="p-2 font-normal">{t(`plateFit.columns.${key}`)}</th>)}
+          {['part', 'required', 'allocated', 'completed', 'printing', 'queued', 'otherCoverage', 'freeStock', 'newPrinted'].map(key => <th key={key} className="p-2 font-normal">{t(`plateFit.columns.${key}`)}</th>)}
         </tr></thead><tbody>{current.parts.map(p => <tr key={p.part_id} className="border-t border-bambu-dark-tertiary">
-          <td className="p-2">{p.name}</td>{[p.required, p.allocated, p.completed, p.printing, p.queued, p.free_stock ?? 0, p.new_printed].map((n, i) => <td key={i} className="p-2 tabular-nums">{n.toLocaleString()}</td>)}
+          <td className="p-2">{p.name}</td>{[p.required, p.allocated, p.completed, p.printing, p.queued, p.other_coverage ?? 0, p.free_stock ?? 0, p.new_printed].map((n, i) => <td key={i} className="p-2 tabular-nums">{n.toLocaleString()}</td>)}
         </tr>)}</tbody></table></div>
         <details className="text-sm"><summary className="cursor-pointer text-bambu-green">{t('plateFit.files')}</summary><ul className="mt-2 space-y-1">{current.runs.map(r => {
           const plate = data.plates.find(p => p.plate_id === r.plate_id);
@@ -181,6 +181,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
         })}</ul></details>
         {current.runs.some(r => r.count > 999) && <p className="text-amber-700 dark:text-amber-300">{t('plateFit.batchLimit')}</p>}
         <p className="text-xs text-bambu-gray">{t('plateFit.draft')}</p>
+        <p className="text-xs text-bambu-gray">{t('plateFit.coverageHint')}</p>
         {takesStock && <p className="text-sm font-medium text-bambu-green">{t('plateFit.stockTake', { ready: current.from_finished ?? 0, kits: current.from_kits ?? 0, parts: Object.values(current.stock_parts ?? {}).reduce((a, b) => a + b, 0) })}</p>}
         {cannotTakeStock && <p role="alert" className="text-amber-700 dark:text-amber-300">{t('plateFit.stockPermission')}</p>}
       </>}

@@ -326,6 +326,18 @@ async def test_free_finished_kits_and_loose_parts_are_greedily_used_and_reserved
     accepted = await apply(committing_client, shop, data, current)
     assert accepted.status_code == 200, accepted.text
     assert await finished_stock.held_for_line(db_session, shop["line"]) == 2
+    after = await preview(committing_client, shop, plate_ids=ids)
+    assert after.status_code == 200, after.text
+    same = next(o for o in after.json()["options"] if o["quantity"] == 10)
+    assert [p["other_coverage"] for p in same["parts"]] == [6, 2]
+    assert all(
+        p["required"]
+        == sum(
+            p[k]
+            for k in ("allocated", "completed", "printing", "queued", "other_coverage", "free_stock", "new_printed")
+        )
+        for p in same["parts"]
+    )
     assert await part_stock.balances(db_session, shop["a"].product_id) == {shop["a"].id: 0, shop["b"].id: 0}
     assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {
         shop["a"].id: 12,

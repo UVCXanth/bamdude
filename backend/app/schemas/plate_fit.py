@@ -37,6 +37,7 @@ class PlateFitPart(BaseModel):
     completed: int
     printing: int
     queued: int
+    other_coverage: int = 0
     free_stock: int = 0
     new_printed: int
 

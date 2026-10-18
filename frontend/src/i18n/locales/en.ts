@@ -20,9 +20,10 @@ export default {
     saved: 'The quantity is saved. If loading the plan failed, retry only that read.',
     batchLimit: 'A plate exceeds the existing 999-run enqueue limit. Send the work in smaller batches.',
     files: 'Files and whole runs', hidden: 'Restricted file', failed: 'Could not load or calculate this proposal.',
+    coverageHint: 'All columns count individual parts. Other coverage includes ready products, assembly and write-off adjustments.',
     stockTake: 'Applying will reserve free stock: {{ready}} finished products, {{kits}} kits and {{parts}} individual parts.',
     stockPermission: 'Taking the shown free stock requires Stock: move permission.',
-    columns: { part: 'Part', required: 'Required', allocated: 'Allocated stock', completed: 'Good output', printing: 'Printing', queued: 'Queued', freeStock: 'From free stock', newPrinted: 'New output' },
+    columns: { part: 'Part', required: 'Required', allocated: 'Allocated stock', completed: 'Good output', printing: 'Printing', queued: 'Queued', otherCoverage: 'Other coverage', freeStock: 'From free stock', newPrinted: 'New output' },
     errors: {
       banked_output: 'Some output was already transferred to free stock or returned. Resolve its allocation before using the exact-quantity calculator.',
       queue_change: 'Confirm removal of the listed unassigned Auto Queue jobs.',
