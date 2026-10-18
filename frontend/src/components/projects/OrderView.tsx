@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +33,7 @@ import { WorkshopTabPanel, WorkshopTabs } from '../workshop/WorkshopTabs';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
+import type { PlateFitDraft } from './PlateFitDialog';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -72,6 +73,14 @@ export function OrderView({
   const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  const [fitDraft, setFitDraft] = useState<PlateFitDraft | null>(null);
+  const plateSelection = useRef<Record<number, number[]>>({});
+  const rememberPlates = useCallback((selected: Record<number, number[]>) => { plateSelection.current = selected; }, []);
+  const canFit = (['orders:read', 'orders:update', 'products:read', 'stock:read'] as const).every(p => hasPermission(p));
+  const openFit = (mode: 'nearest' | 'browse', lineId?: number) => {
+    if (!canFit) return;
+    actions.plateFit?.({ orderId: id, lineId, mode, selectedPlates: plateSelection.current, onApplied: setFitDraft });
+  };
   const [queueRequest, setQueueRequest] = useState<{
     orderId: number; lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean;
   } | null>(null);
@@ -255,6 +264,9 @@ export function OrderView({
           )}
           <PlanBlock
             order={order}
+            fitDraft={fitDraft?.orderId === id ? fitDraft : null}
+            onPlateSelection={rememberPlates}
+            onPlateFit={canFit && actions.plateFit ? () => openFit('nearest') : undefined}
             // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
             canEdit={canFileFuturePrint(hasPermission)}
             onDraftChanged={setPlanDraftChanged}
@@ -325,6 +337,7 @@ export function OrderView({
             <OrderFigures figures={order.figures} forecast={forecastNow} />
 
             <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2}
+              onPlateFit={canFit && actions.plateFit ? (lineId) => openFit('browse', lineId) : undefined}
               onQueuePlan={order.status === 'active' && canFileFuturePrint(hasPermission) && hasPermission('queue:create')
                 ? reviewQueuePlan : undefined} />
 

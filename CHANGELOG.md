@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Order quantities can be fitted to whole plate runs without counted-part surplus.** Browse exact quantities beside a product line or find the nearest lower/higher quantity beside the whole-plan queue action. Existing allocated stock, good output, running and queued yields and BOM extras are included; changes above 10% require explicit acknowledgement. Applying rechecks the proposal, saves only the line quantity and fills the current browser's plan draft, without changing existing jobs or taking free stock.
+
 - **Print-file analysis recovers from a brief startup communication failure.** Preparing its local storage retries within a bounded startup budget, including when a timed-out request already created that storage. Shutdown waits for an unfinished startup to release its client and worker; diagnostics preserve the original failure and identify the phase that failed.
 
 - **A proven completed auto-eject run does not add manual plate-service time to the forecast.** Independent waits such as filament drying and the service allowance for later ordinary prints remain in the estimate.

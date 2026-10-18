@@ -21,6 +21,7 @@ import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInv
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import type { PlateFitDraft } from './PlateFitDialog';
 
 /**
  * What to print next for this order, per line.
@@ -57,6 +58,9 @@ export function PlanBlock({
   onQueueRequestClose,
   queueOrderReady = true,
   onQueueRequestRetry,
+  fitDraft,
+  onPlateSelection,
+  onPlateFit,
 }: {
   order: Order;
   canEdit: boolean;
@@ -73,6 +77,9 @@ export function PlanBlock({
   /** The view owns order captions and must finish its fresh detail read too. */
   queueOrderReady?: boolean;
   onQueueRequestRetry?: () => void;
+  fitDraft?: PlateFitDraft | null;
+  onPlateSelection?: (selected: Record<number, number[]>) => void;
+  onPlateFit?: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -342,6 +349,31 @@ export function PlanBlock({
   );
 
   const items = useMemo(() => lines.flatMap((line) => itemsFor(line)), [lines, itemsFor]);
+
+  useEffect(() => {
+    const selected: Record<number, number[]> = {};
+    for (const item of items) selected[item.line_id] = [...new Set([...(selected[item.line_id] ?? []), item.plate_id])];
+    onPlateSelection?.(selected);
+  }, [items, onPlateSelection]);
+
+  const appliedFit = useRef<PlateFitDraft | null>(null);
+  useEffect(() => {
+    if (!fitDraft || fitDraft === appliedFit.current || fitDraft.orderId !== order.id || !plan) return;
+    if (order.lines.find(l => l.id === fitDraft.lineId)?.quantity !== fitDraft.quantity) return;
+    const baseline = plan.lines.find(l => l.line_id === fitDraft.lineId);
+    if (!baseline) return;
+    appliedFit.current = fitDraft;
+    if (JSON.stringify(baseline) !== fitDraft.planSignature) {
+      showToast(t('plateFit.errors.stale'), 'warning');
+      return;
+    }
+    const nextCounts = Object.fromEntries(baseline.rows.map(row => [row.plate_id, 0]));
+    for (const row of fitDraft.rows) nextCounts[row.plate_id] = row.count;
+    setCounts(prev => ({ ...prev, [fitDraft.lineId]: nextCounts }));
+    setAdded(prev => ({ ...prev, [fitDraft.lineId]: fitDraft.rows.filter(row => !baseline.rows.some(b => b.plate_id === row.plate_id)) }));
+    setChosen(prev => ({ ...prev, [fitDraft.lineId]: {} }));
+    setSplit(prev => ({ ...prev, [fitDraft.lineId]: {} }));
+  }, [fitDraft, order.id, order.lines, plan, showToast, t]);
 
   // A forecast belongs to the exact server plan. Compare effective enqueue
   // items rather than the editor's state maps: setting a count back to its
@@ -632,6 +664,11 @@ export function PlanBlock({
               )}
             </p>
 
+            {onPlateFit && order.lines.some(l => l.mode !== 'parts') && (
+              <Button size="sm" variant="secondary" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
+                {t('plateFit.nearest')}
+              </Button>
+            )}
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"

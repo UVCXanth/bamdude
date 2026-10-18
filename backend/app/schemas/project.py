@@ -9,6 +9,7 @@ from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 from backend.app.schemas.part_image import PartImageRef
+from backend.app.schemas.plate_fit import PlateFitConfirmation
 
 #: The most one request may put on a line or move on a shelf. Far above any
 #: shelf, far below the INTEGER a PostgreSQL column overflows at — a typo is
@@ -158,6 +159,7 @@ class LineConfigurationOut(BaseModel):
 
 
 class ProjectLineUpdate(BaseModel):
+    plate_fit: PlateFitConfirmation | None = None
     quantity: int | None = Field(default=None, ge=1)
     material: str | None = Field(default=None, max_length=50)
     color: str | None = Field(default=None, max_length=64)

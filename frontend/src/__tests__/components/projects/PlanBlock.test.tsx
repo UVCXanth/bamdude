@@ -364,6 +364,24 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
   });
 
+  it('puts nearest quantity adjustment beside whole-plan enqueue without sending work', async () => {
+    const open = vi.fn();
+    const enqueue = vi.spyOn(api, 'enqueueOrderPlan');
+    render(<PlanBlock order={order} canEdit onPlateFit={open} />);
+    const button = await screen.findByRole('button', { name: 'Adjust without surplus' });
+    expect(screen.getByTestId('plan-total')).toContainElement(button);
+    fireEvent.click(button);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('applies exact run counts to the existing editor and keeps them on an identical refresh', async () => {
+    render(<PlanBlock order={order} canEdit fitDraft={{ orderId: order.id, lineId: 10, quantity: 12, rows: [{ ...plan.lines[0].rows[0], count: 0 }, { ...plan.lines[0].rows[1], count: 2 }].filter(r => r.count > 0), revision: 1, planSignature: JSON.stringify(plan.lines[0]) }} />);
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(0));
+    expect(screen.getByTestId('plan-row-10-200-count')).toHaveValue(2);
+    expect(screen.getByTestId('plan-totals-prints')).toHaveTextContent('2');
+  });
+
   it('renders the recommended plates of every line', async () => {
     render(<PlanBlock order={order} canEdit />);
 
