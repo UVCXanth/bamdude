@@ -526,10 +526,32 @@ def test_a_trash_left_by_a_failed_removal_goes_next_time(tmp_path, win, monkeypa
 
     monkeypatch.setattr(sr.shutil, "rmtree", once)
     assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 0, "kept": {"remove_failed": 1}}
-    root = sr.bundle_root(app)
-    assert [p.name.startswith(".trash-") for p in root.iterdir() if p.is_dir() and p.name.startswith(".")] == [True]
+    key_dir = sr.bundle_root(app) / "win-x64-cp312"
+    assert [p.name.startswith(".trash-") for p in key_dir.iterdir() if p.name.startswith(".")] == [True]
     assert sr.prune(app, data_dir=data) == {"ok": True, "removed": 1, "kept": {}}
-    assert not any(p.name.startswith(".trash-") for p in root.iterdir())
+    assert not any(p.name.startswith(".trash-") for p in key_dir.iterdir())
+
+
+def test_the_trash_is_never_deeper_than_the_bundle(tmp_path, win, monkeypatch):
+    """A set-aside bundle is still removed by paths no longer than its own: StepMaxAppDirLen leaves the deepest DLL
+    exactly at MAX_PATH, and a longer trash name would put it past the limit (final review I1)."""
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    old = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    cp313 = _digest_dir(app, "win-x64-cp313", "e" * 32)
+    moves = []
+    real = os.replace
+
+    def note(src, dst):
+        moves.append((Path(src), Path(dst)))
+        return real(src, dst)
+
+    monkeypatch.setattr(sr.os, "replace", note)
+    assert sr.prune(app, other_keys=True, data_dir=data)["removed"] == 2
+    units = lambda p: len(str(p).encode("utf-16-le")) // 2  # noqa: E731
+    assert {src for src, _ in moves} == {old, cp313}
+    assert all(units(dst) <= units(src) for src, dst in moves), moves
 
 
 def test_prune_reclaims_a_dead_runs_staging_and_keeps_a_live_writers(tmp_path, win):

@@ -896,13 +896,15 @@ def prune(
         ]
         try:
             with _platform_lock(root, key, lock_seconds):
-                for trash in root.glob(f".trash-{key}-*"):
+                for trash in (root / key).glob(".trash-*"):
                     if gone(trash):
                         removed += 1
                     else:
                         keep("remove_failed")
                 for digest in candidates:
-                    aside = root / f".trash-{key}-{uuid.uuid4().hex}"
+                    # Beside the digest it replaces, never deeper: <key>/.trash-<8 hex> is shorter than
+                    # <key>/<32 hex>, and StepMaxAppDirLen leaves the deepest DLL exactly at MAX_PATH.
+                    aside = root / key / f".trash-{uuid.uuid4().hex[:8]}"
                     try:
                         os.replace(digest, aside)
                     except OSError:
