@@ -308,8 +308,9 @@ async def cad_runtime(tmp_path):
     from backend.tests.cad_lane import cad_app_dir
 
     rt = PreviewRuntime(tmp_path / "preview", app_dir=cad_app_dir())
-    await rt.start()
-    assert rt.ready
+    from backend.tests.preview_support import started
+
+    await started(rt)
     try:
         await _warm(rt)
         yield rt

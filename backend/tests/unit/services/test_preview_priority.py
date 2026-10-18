@@ -46,8 +46,9 @@ async def _identity(runtime):
 @pytest.fixture
 async def runtime(tmp_path):
     rt = PreviewRuntime(tmp_path / "preview")
-    await rt.start()
-    assert rt.ready
+    from backend.tests.preview_support import started
+
+    await started(rt)
     try:
         yield rt
     finally:
@@ -147,9 +148,10 @@ async def test_after_hand_off_a_sliced_arrival_waits_for_the_publication(runtime
 @pytest.fixture
 async def cad_runtime(tmp_path):
     from backend.tests.cad_lane import cad_app_dir
+    from backend.tests.preview_support import started
 
     rt = PreviewRuntime(tmp_path / "preview", app_dir=cad_app_dir())
-    await rt.start()
+    await started(rt)
     try:
         yield rt
     finally:

@@ -78,8 +78,10 @@ async def test_a_stat_returning_after_the_first_wait_never_admits_the_job(tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_bundle_lookup_slower_than_the_wait_takes_no_slot(tmp_path):
+    from backend.tests.preview_support import started
+
     runtime = r.PreviewRuntime(tmp_path / "runtime", app_dir=tmp_path / "app")
-    await runtime.start()
+    await started(runtime)
     try:
 
         async def slow_descriptor():

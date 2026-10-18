@@ -253,8 +253,9 @@ async def runtime(tmp_path):
     from backend.app.services.preview_runtime import PreviewRuntime
 
     rt = PreviewRuntime(tmp_path / "preview")
-    await rt.start()
-    assert rt.ready
+    from backend.tests.preview_support import started
+
+    await started(rt)
     try:
         yield rt
     finally:
@@ -690,8 +691,9 @@ async def test_a_restore_answers_in_budget_while_the_real_runtime_is_stuck_in_a_
     from backend.app.services import library_preview_jobs as jobs_module, preview_runtime as r
 
     runtime = r.PreviewRuntime(tmp_path / "runtime", app_dir=tmp_path / "app")
-    await runtime.start()
-    assert runtime.ready
+    from backend.tests.preview_support import started
+
+    await started(runtime)
     start, release = threading.Event(), threading.Event()
     real_snapshot = r.snapshot
 

@@ -116,8 +116,9 @@ async def runtime(tmp_path):
     from backend.app.services.preview_runtime import PreviewRuntime
 
     rt = PreviewRuntime(tmp_path / ".cache" / "preview-service")
-    await rt.start()
-    assert rt.ready
+    from backend.tests.preview_support import started
+
+    await started(rt)
     try:
         yield rt
     finally:

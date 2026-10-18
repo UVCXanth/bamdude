@@ -47,8 +47,9 @@ def _stl_box() -> bytes:
 @pytest.fixture
 async def runtime_without_cad(tmp_path):
     runtime = PreviewRuntime(tmp_path / "preview", app_dir=tmp_path / "app-without-cad")
-    await runtime.start()
-    assert runtime.ready
+    from backend.tests.preview_support import started
+
+    await started(runtime)
     try:
         yield runtime
     finally:
@@ -102,8 +103,9 @@ async def cad_runtime(tmp_path):
     from backend.tests.cad_lane import cad_app_dir
 
     runtime = PreviewRuntime(tmp_path / "preview", app_dir=cad_app_dir())
-    await runtime.start()
-    assert runtime.ready
+    from backend.tests.preview_support import started
+
+    await started(runtime)
     try:
         yield runtime
     finally:

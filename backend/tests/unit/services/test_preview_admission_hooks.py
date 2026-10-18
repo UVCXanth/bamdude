@@ -28,8 +28,9 @@ def _heavy(path):
 @pytest.fixture
 async def runtime(tmp_path):
     rt = PreviewRuntime(tmp_path / "preview")
-    await rt.start()
-    assert rt.ready
+    from backend.tests.preview_support import started
+
+    await started(rt)
     try:
         yield rt
     finally:

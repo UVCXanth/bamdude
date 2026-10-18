@@ -28,8 +28,9 @@ async def chain(tmp_path, monkeypatch):
     from backend.tests.cad_lane import cad_app_dir
 
     runtime = PreviewRuntime(tmp_path / "preview", app_dir=cad_app_dir())
-    await runtime.start()
-    assert runtime.ready
+    from backend.tests.preview_support import started
+
+    await started(runtime)
     monkeypatch.setattr(preview_runtime_module, "runtime", runtime)
     jobs = jobs_module.start_library_preview_jobs()  # the real attempt and the real read-only checks
     try:

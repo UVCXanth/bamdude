@@ -270,7 +270,9 @@ async def test_a_healthy_step_converted_during_a_long_backup_is_deferred_not_fai
     from backend.tests.unit.services.test_preview_step_ownership import _warm
 
     rt = r.PreviewRuntime(tmp_path / "runtime", app_dir=cad_app_dir())
-    await rt.start()
+    from backend.tests.preview_support import started
+
+    await started(rt)
     await _warm(rt)  # the shortened budget is the STEP's, not a fresh runtime's one-time font cache (macOS: >20 s)
     monkeypatch.setattr(r, "runtime", rt)
     monkeypatch.setattr(r, "_stopping", None)
