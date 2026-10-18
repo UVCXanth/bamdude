@@ -13,6 +13,9 @@ from backend.app.services import plate_detection as pd
 from backend.app.services.camera_runtime import CameraCaptureRequest
 from backend.app.services.external_camera import format_mjpeg_frame
 
+# A frame's wait: a loaded CI runner delivered the first one at 1.96 s (CI 39126040756), past the 1 s it had.
+FRAME_WAIT_SECONDS = 2.5
+
 
 @pytest_asyncio.fixture
 async def live(monkeypatch):
@@ -48,7 +51,7 @@ async def live(monkeypatch):
             runtime=Runtime(),
             builtin=not external,
         )
-        assert old in await asyncio.wait_for(anext(response.body_iterator), 1)
+        assert old in await asyncio.wait_for(anext(response.body_iterator), FRAME_WAIT_SECONDS)
         return response
 
     capture = AsyncMock()
@@ -70,7 +73,7 @@ async def test_next_published_frame_required_despite_wallclock_jumps(live, monke
     assert not task.done(), "a pre-check live frame must not pass freshness"
     new = b"\xff\xd8next-frame\xff\xd9"
     observer[0](new)
-    assert (await asyncio.wait_for(task, 1))[0] == new
+    assert (await asyncio.wait_for(task, FRAME_WAIT_SECONDS))[0] == new
     assert camera._last_frame_times[pid] == wallclock
     assert len(calls) == 1
     capture.assert_not_awaited()
@@ -126,7 +129,7 @@ async def test_matching_external_next_frame_reuses_actual_producer(live):
     )
     await asyncio.sleep(0.02)
     observer[0](b"new-external-frame")
-    assert (await asyncio.wait_for(task, 1))[0] == b"new-external-frame"
+    assert (await asyncio.wait_for(task, FRAME_WAIT_SECONDS))[0] == b"new-external-frame"
     capture.assert_not_awaited()
     assert len(calls) == 1
 
