@@ -127,6 +127,8 @@ function Install-Ok([string] $Exe, [string] $Dir, [string] $Name) {
 
 function Bundle-Root([string] $Dir) { Join-Path $Dir 'app\runtime\step-preview' }
 
+# The digests of the key, counted as @(Digests $Dir).Count: a function's one-element answer is unrolled to a
+# string, and strict mode refuses .Count on it (S2/S3 of run 39131019056 failed on exactly that).
 function Digests([string] $Dir) {
     @(Get-ChildItem -LiteralPath (Join-Path (Bundle-Root $Dir) $Key) -Directory | ForEach-Object Name)
 }
@@ -225,7 +227,7 @@ function S1 {  # a fresh install exactly at the directory limit, Cyrillic, with 
 
 function S2 {  # a reinstall over the running service
     Install-Ok $Installer $AppDir 'S2'
-    Assert ((Digests $AppDir).Count -eq 1) 'more than one CAD digest after a reinstall'
+    Assert (@(Digests $AppDir).Count -eq 1) 'more than one CAD digest after a reinstall'
 }
 
 function S3 {  # old CAD (same key, another Windows ABI) and a stale Node file go with a good reinstall
@@ -239,7 +241,7 @@ function S3 {  # old CAD (same key, another Windows ABI) and a stale Node file g
     Assert (-not (Test-Path -LiteralPath $old)) 'the old digest of this key was not pruned'
     Assert (-not (Test-Path -LiteralPath (Split-Path -Parent $abi))) 'the other Windows ABI was not pruned'
     Assert (-not (Test-Path -LiteralPath $stale)) 'the Node runtime was not replaced whole'
-    Assert ((Digests $AppDir).Count -eq 1) 'not exactly one CAD digest'
+    Assert (@(Digests $AppDir).Count -eq 1) 'not exactly one CAD digest'
 }
 
 function S4 {  # a service that never finishes stopping: Setup refuses before touching the payload

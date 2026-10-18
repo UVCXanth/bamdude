@@ -7,10 +7,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -169,3 +171,26 @@ def test_the_build_describes_the_installer_size(tmp_path):
     assert subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
     answer = json.loads(out.read_text(encoding="utf-8"))
     assert answer["size_bytes"] == 200 and answer["receipt_status"] == "candidate" and answer["app_dir_limit"] == 109
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or shutil.which("pwsh") is None, reason="named skip: the harness runs in pwsh on Windows"
+)
+def test_every_digest_count_holds_under_strict_mode_with_one_digest(tmp_path):
+    """Run 39131019056: S2 and S3 passed their installs and failed on their own last check — the script's strict mode
+    refuses .Count on a function's one-element answer, which PowerShell unrolls to a string. Every assertion that
+    counts digests, run as the script runs it, on a tree with exactly one digest."""
+    functions = [
+        re.search(r"^function Bundle-Root\b.*$", ACCEPT, re.M).group(0),
+        re.search(r"^function Digests\b.*?^\}", ACCEPT, re.M | re.S).group(0),
+    ]
+    checks = re.findall(r"Assert \((.*Digests.*)\) '", ACCEPT)
+    assert len(checks) >= 2, checks
+    (tmp_path / "app" / "runtime" / "step-preview" / "k" / ("a" * 32)).mkdir(parents=True)
+    head = ["$ErrorActionPreference = 'Stop'", "Set-StrictMode -Version 3", "$Key = 'k'", f"$AppDir = '{tmp_path}'"]
+    body = [f"if (-not ({check})) {{ throw 'check {i} is false' }}" for i, check in enumerate(checks)]
+    script = tmp_path / "probe.ps1"
+    script.write_text("\n".join([*head, *functions, *body, "'all held'"]), encoding="utf-8")
+    cmd = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0 and "all held" in p.stdout, (p.stdout, p.stderr)
