@@ -34,7 +34,12 @@ def describe(exe: Path, app: Path, version_iss: Path) -> dict:
     limit = re.search(r"#define StepMaxAppDirLen (\d+)", version_iss.read_text(encoding="utf-8"))
     if limit is None:
         raise SystemExit("describe: version.iss names no StepMaxAppDirLen")
-    return {"sha256": sha256(exe), "receipt_status": status, "app_dir_limit": int(limit.group(1))}
+    return {
+        "sha256": sha256(exe),
+        "size_bytes": exe.stat().st_size,
+        "receipt_status": status,
+        "app_dir_limit": int(limit.group(1)),
+    }
 
 
 def problems(exe: Path, payload: dict, acceptance: dict) -> list[str]:

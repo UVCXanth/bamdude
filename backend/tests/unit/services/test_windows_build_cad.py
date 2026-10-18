@@ -89,6 +89,7 @@ def test_cad_is_built_exported_and_verified_after_the_backend_also_with_skip_pip
         "build_cad_bundle": build.CAD_ROOT / "b",
         "export_cad_bundle": build.STAGING / "app" / "b",
         "run_helper": None,
+        "drop_bytecode": None,
         "write_version_file": None,
     }.items():
         monkeypatch.setattr(build, name, note(name, value))
@@ -105,6 +106,7 @@ def test_cad_is_built_exported_and_verified_after_the_backend_also_with_skip_pip
         "build_cad_bundle",
         "export_cad_bundle",
         "run_helper:verify",
+        "drop_bytecode",
         "step_payload_problems",
         "write_version_file",
     ]
@@ -413,3 +415,17 @@ def test_the_limit_covers_the_whole_payload(build, monkeypatch):
     build.write_version_file()
     limit = min(build.step_max_app_dir_len(), build.WINDOWS_PATH_LIMIT - 1 - rel)
     assert limit < 109 and f"#define StepMaxAppDirLen {limit}" in (build.STAGING / "version.iss").read_text("utf-8")
+
+
+def test_the_payload_ships_no_bytecode_the_verify_wrote(build):
+    """The final verify imports the staged backend in the helper AND in the probe it starts with an allowlist
+    environment (no PYTHONDONTWRITEBYTECODE reaches it: a real build left three caches). stage_backend leaves
+    caches out on purpose, so they go again after the verify, the sources stay (final review M8)."""
+    package = build.STAGING / "app" / "backend" / "app"
+    (package / "__pycache__").mkdir(parents=True)
+    (package / "__pycache__" / "preview_render.cpython-312.pyc").write_bytes(b"\x00")
+    (package / "services" / "__pycache__").mkdir(parents=True)
+    (package / "preview_render.py").write_text("", encoding="utf-8")
+    build.drop_bytecode(build.STAGING / "app" / "backend")
+    assert not list((build.STAGING / "app" / "backend").rglob("__pycache__"))
+    assert (package / "preview_render.py").is_file()

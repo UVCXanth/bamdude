@@ -106,3 +106,66 @@ def test_the_acceptance_holds_no_secrets():
     for job in ("build", "acceptance"):
         assert JOBS[job]["permissions"] == {"contents": "read"}, job
     assert JOBS["release"]["permissions"] == {"contents": "write"}
+
+
+def _step(job: str, predicate):
+    return next(step for step in JOBS[job]["steps"] if predicate(step))
+
+
+def test_the_release_reads_the_acceptance_report_where_the_acceptance_puts_it():
+    """A multi-path upload roots the artifact at the paths' common ancestor (two drives here: the workspace, the
+    runner's temp and ProgramData), so the report is its own single-file artifact and lands at its root (final review C2)."""
+    report = _step(
+        "acceptance", lambda s: "upload-artifact" in str(s.get("uses")) and "acceptance.json" in str(s["with"]["path"])
+    )
+    assert report["with"]["path"].strip() == "installer/acceptance.json"
+    name = report["with"]["name"]
+    logs = _step("acceptance", lambda s: "upload-artifact" in str(s.get("uses")) and s["with"]["name"] != name)
+    assert "acceptance.json" not in str(logs["with"]["path"])
+    download = _step("release", lambda s: "download-artifact" in str(s.get("uses")) and s["with"]["name"] == name)
+    folder = download["with"]["path"]
+    check = _step("release", lambda s: "check_release_payload.py check" in str(s.get("run", "")))
+    assert f"--acceptance {folder}/acceptance.json" in check["run"]
+
+
+def test_the_release_publishes_exactly_one_versioned_installer():
+    check = _step("release", lambda s: "check_release_payload.py check" in str(s.get("run", "")))
+    assert '"${#exes[@]}" -eq 1' in check["run"]
+
+
+def test_the_acceptance_keeps_every_log_and_never_waits_unbounded():
+    reset = re.search(r"^function Reset-Machine \{.*?^\}", ACCEPT, re.M | re.S).group(0)
+    assert reset.index("Save-Logs") < reset.index("Remove-Item")  # S1..S8's logs survive S0's reset
+    uninstall = re.search(r"^function Invoke-Uninstall\(.*?^\}", ACCEPT, re.M | re.S).group(0)
+    assert "taskkill" in uninstall or "Stop-Process" in uninstall  # its deadline ends the uninstaller too
+    assert "could not be opened (error 5)" in re.search(r"^function S4b \{.*?^\}", ACCEPT, re.M | re.S).group(0)
+    assert not re.search(r"\(Svc [A-Za-z]+\)\.Status", ACCEPT)  # strict mode: a missing service says so itself
+    logs = _step("acceptance", lambda s: "upload-artifact" in str(s.get("uses")) and "logs" in str(s["with"]["path"]))
+    assert "acceptance-logs" in str(logs["with"]["path"])
+
+
+def test_the_build_describes_the_installer_size(tmp_path):
+    exe = tmp_path / "setup.exe"
+    exe.write_bytes(b"MZ" * 100)
+    receipt = tmp_path / "app" / "runtime" / "step-preview" / "win-x64-cp312" / ("a" * 32) / "receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"status": "candidate"}), encoding="utf-8")
+    version = tmp_path / "version.iss"
+    version.write_text('#define MyAppVersion "0"\n#define StepMaxAppDirLen 109\n', encoding="utf-8")
+    out = tmp_path / "payload.json"
+    cmd = [
+        sys.executable,
+        str(CHECK),
+        "describe",
+        "--exe",
+        str(exe),
+        "--app",
+        str(tmp_path / "app"),
+        "--version-iss",
+        str(version),
+        "--out",
+        str(out),
+    ]
+    assert subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
+    answer = json.loads(out.read_text(encoding="utf-8"))
+    assert answer["size_bytes"] == 200 and answer["receipt_status"] == "candidate" and answer["app_dir_limit"] == 109

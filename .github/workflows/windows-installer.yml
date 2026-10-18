@@ -163,15 +163,25 @@ jobs:
           ./scripts/windows_installer_acceptance.ps1 -Installer $exe.FullName -Payload installer/payload.json `
             -Scope $env:SCOPE -Report installer/acceptance.json
 
-      - name: Keep the logs
+      # The report is an artifact of its own: an upload of several paths is
+      # rooted at their common ancestor, and the release reads the report at
+      # the artifact's root.
+      - name: Keep the report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: bamdude-windows-acceptance
-          path: |
-            installer/acceptance.json
-            ${{ runner.temp }}/bamdude-acceptance/*.log
-            C:/ProgramData/BamDude/logs/*.log
+          path: installer/acceptance.json
+          if-no-files-found: warn
+
+      # Setup's and the service's logs of every scenario: the harness copies
+      # them into the workspace before each reset and at the end.
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-windows-acceptance-logs
+          path: acceptance-logs/
           if-no-files-found: warn
 
   # Publishes only a pushed tag, only after the FULL acceptance, and only the
@@ -204,6 +214,7 @@ jobs:
         shell: bash
         run: |
           exes=(installer/bamdude-*-windows-x64-setup.exe)
+          [ "${#exes[@]}" -eq 1 ] || { echo "expected one versioned installer, found ${#exes[@]}"; exit 1; }
           python3 scripts/check_release_payload.py check --exe "${exes[0]}" \
             --payload installer/payload.json --acceptance acceptance/acceptance.json
 

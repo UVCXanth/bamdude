@@ -44,6 +44,8 @@ $Stub = Join-Path $Work 'stubborn.exe'
 $DefaultSddl = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)'
 $Results = [ordered]@{}
 $script:InstalledStatus = $null
+$Logs = Join-Path $env:GITHUB_WORKSPACE 'acceptance-logs'
+$script:Resets = 0
 
 function Assert([bool] $Condition, [string] $Message) { if (-not $Condition) { throw $Message } }
 
@@ -80,16 +82,32 @@ function Invoke-ServiceScript([string] $Name) {
     return $p.ExitCode
 }
 
+function Svc([string] $Name) { Get-Service -Name $Name -ErrorAction SilentlyContinue }
+
+# 'Absent' for a service that is not there: under strict mode, reading Status off a missing one fails with a
+# message about a property, not about the service.
+function Svc-Status([string] $Name) {
+    $service = Svc $Name
+    if ($service) { return [string] $service.Status } else { return 'Absent' }
+}
+
 function Invoke-Uninstall([string] $Dir) {
     $uninstaller = Join-Path $Dir 'unins000.exe'
     Assert (Test-Path -LiteralPath $uninstaller) "no uninstaller in $Dir"
     $p = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
     $null = $p.Handle
-    # The uninstaller hands over to a copy of itself in TEMP and returns at once: wait for its work instead.
-    Wait-Until { -not (Test-Path -LiteralPath $uninstaller) -and -not (Get-Service BamDude -ErrorAction SilentlyContinue) } 600 'the uninstall did not finish'
+    # The uninstaller hands over to a copy of itself in TEMP (_iu*.tmp) and returns at once: wait for its work
+    # instead, and at the deadline end both, so nothing is left behind waiting.
+    $deadline = (Get-Date).AddSeconds(600)
+    while ((Test-Path -LiteralPath $uninstaller) -or (Svc BamDude)) {
+        if ((Get-Date) -gt $deadline) {
+            if (-not $p.HasExited) { & taskkill.exe /F /T /PID $p.Id | Out-Null }
+            Get-Process -Name '_iu*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            throw 'the uninstall did not finish within 600s; the uninstaller was ended'
+        }
+        Start-Sleep -Seconds 2
+    }
 }
-
-function Svc([string] $Name) { Get-Service -Name $Name -ErrorAction SilentlyContinue }
 
 function Invoke-Http([string] $Mode) {
     & python (Join-Path $Repo 'scripts\windows_installer_http.py') $Mode --state $State
@@ -97,7 +115,7 @@ function Invoke-Http([string] $Mode) {
 }
 
 function Wait-Running([int] $Seconds = 240) {
-    Wait-Until { (Svc BamDude) -and (Svc BamDude).Status -eq 'Running' } $Seconds 'BamDude was not RUNNING'
+    Wait-Until { (Svc-Status BamDude) -eq 'Running' } $Seconds 'BamDude was not RUNNING'
     Invoke-Http 'health'
 }
 
@@ -131,7 +149,7 @@ function Tree-Hash([string] $Dir) {
 function Stop-RealService {
     if (-not (Svc BamDude)) { return }
     & sc.exe stop BamDude | Out-Null
-    Wait-Until { (Svc BamDude).Status -eq 'Stopped' } 180 'BamDude did not stop'
+    Wait-Until { (Svc-Status BamDude) -eq 'Stopped' } 180 'BamDude did not stop'
 }
 
 function Remove-Service([string] $Name) {
@@ -167,7 +185,23 @@ function Service-LogMark {
     if (Test-Path -LiteralPath $log) { return (Get-Item -LiteralPath $log).Length } else { return 0 }
 }
 
+# Setup's logs and the service's, copied into the workspace for the logs artifact: a reset deletes both. Never
+# throws — a log that could not be kept is a warning, not a failed acceptance.
+function Save-Logs([string] $Label) {
+    try {
+        $target = Join-Path $Logs $Label
+        New-Item -ItemType Directory -Force $target | Out-Null
+        Get-ChildItem -LiteralPath $Work -Filter '*.log' -File | Copy-Item -Destination $target -Force
+        $service = Join-Path $Data 'logs'
+        if (Test-Path -LiteralPath $service) { Get-ChildItem -LiteralPath $service -File | Copy-Item -Destination $target -Force }
+    } catch {
+        Write-Host "::warning::the logs ($Label) were not kept: $($_.Exception.Message)"
+    }
+}
+
 function Reset-Machine {
+    $script:Resets += 1
+    Save-Logs "before-reset-$($script:Resets)"
     foreach ($dir in @($AppDir, $OldDir)) {
         if (Test-Path -LiteralPath (Join-Path $dir 'unins000.exe')) { Invoke-Uninstall $dir }
     }
@@ -214,7 +248,7 @@ function S4 {  # a service that never finishes stopping: Setup refuses before to
     New-Stub $null
     try {
         & sc.exe start BamDude | Out-Null
-        Wait-Until { (Svc BamDude).Status -eq 'Running' } 60 'the stub service did not start'
+        Wait-Until { (Svc-Status BamDude) -eq 'Running' } 60 'the stub service did not start'
         $old = Plant-OldDigest
         $before = Tree-Hash $AppDir
         $code = Invoke-Setup $Installer $AppDir 'S4'
@@ -240,6 +274,8 @@ function S4b {  # a state that cannot be read is no stop, for the installer and 
         $code = Invoke-Setup $Installer $AppDir 'S4b'
         Assert ($code -eq 7) "Setup exited $code, not 7"
         Assert ((Tree-Hash $AppDir) -eq $before) 'the installed payload changed'
+        $setupLog = Get-Content -LiteralPath (Join-Path $Work 'S4b.log') -Raw
+        Assert ($setupLog.Contains('BamDude could not be opened (error 5)')) 'the Setup log does not say the state was unreadable'
         $mark = Service-LogMark
         $rc = Invoke-ServiceScript 'S4b-script'
         Assert ($rc -eq 5) "install-service.bat exited $rc, not 5"
@@ -261,7 +297,7 @@ function S5 {  # the verify fails: the service stays down on demand start, regis
     $mark = Service-LogMark
     $code = Invoke-Setup $Installer $AppDir 'S5'
     Assert ($code -eq 42) "Setup exited $code, not 42"
-    Assert ((Svc BamDude).Status -eq 'Stopped') 'BamDude is not stopped'
+    Assert ((Svc-Status BamDude) -eq 'Stopped') 'BamDude is not stopped'
     Assert ((Get-CimInstance Win32_Service -Filter "Name='BamDude'").StartMode -eq 'Manual') 'BamDude is not on demand start'
     $params = 'HKLM:\SYSTEM\CurrentControlSet\Services\BamDude\Parameters'
     Assert ($null -ne (Get-ItemProperty -LiteralPath $params -Name AppEnvironmentExtra -ErrorAction SilentlyContinue)) 'the registration lost its settings'
@@ -278,7 +314,7 @@ function S5 {  # the verify fails: the service stays down on demand start, regis
 }
 
 function S8 {  # a library the CAD needs vanishes while BamDude runs: STEP says cad_unavailable, STL still works
-    Assert ((Svc BamDude).Status -eq 'Running') 'BamDude is not running'
+    Assert ((Svc-Status BamDude) -eq 'Running') 'BamDude is not running'
     $dll = Get-ChildItem -LiteralPath (Bundle-Root $AppDir) -Recurse -Filter 'TKernel*.dll' | Select-Object -First 1
     Assert ($null -ne $dll) 'no TKernel library in the bundle'
     Remove-Item -LiteralPath $dll.FullName -Force
@@ -293,7 +329,7 @@ function S6 {  # one unit past the limit: refused before anything is stopped or 
     $code = Invoke-Setup $Installer $TooLong 'S6'
     Assert ($code -eq 7) "Setup exited $code, not 7"
     Assert (-not (Test-Path -LiteralPath $TooLong)) 'Setup created the too-long directory'
-    Assert ((Svc BamDude).Status -eq 'Running') 'a refused install stopped the service'
+    Assert ((Svc-Status BamDude) -eq 'Running') 'a refused install stopped the service'
 }
 
 function S7 {  # a silent uninstall keeps the data and opens no window
@@ -339,6 +375,7 @@ foreach ($name in $Run) {
     if ($name -eq 'S1' -and $Results[$name] -ne 'passed') { break }  # nothing after it has an install to work on
 }
 
+Save-Logs 'final'
 $passed = @($Results.Values | Where-Object { $_ -ne 'passed' }).Count -eq 0 -and $Results.Count -eq $Run.Count
 $answer = [ordered]@{
     scope                    = $Scope

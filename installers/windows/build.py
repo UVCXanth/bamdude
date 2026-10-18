@@ -636,6 +636,14 @@ def payload_max_app_dir_len(staging: Path) -> int:
     return WINDOWS_PATH_LIMIT - 1 - deepest
 
 
+def drop_bytecode(root: Path) -> None:
+    """The final verify imports the staged backend — in the helper and in the probe it starts with an allowlist
+    environment, which no PYTHONDONTWRITEBYTECODE reaches — so its caches go again after it: stage_backend leaves
+    them out on purpose."""
+    for cache in sorted(root.rglob("__pycache__"), reverse=True):
+        shutil.rmtree(cache)
+
+
 def _report_sizes(bundle: Path) -> None:
     size = sum(f.stat().st_size for f in bundle.rglob("*") if f.is_file())
     log(f"CAD bundle in the payload: {size / 1024**2:.1f} MB ({bundle.parent.name})")
@@ -783,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
     python_exe = python_dir / "python.exe"
     bundle = export_cad_bundle(build_cad_bundle(python_exe, allow_candidate=allow_candidate), STAGING / "app")
     run_helper(python_exe, ["verify", "--app-dir", STAGING / "app"], timeout=CAD_VERIFY_SECONDS, cwd=STAGING / "app")
+    drop_bytecode(STAGING / "app" / "backend")
     problems = step_payload_problems(STAGING / "app")
     if problems:
         raise RuntimeError(f"the CAD payload is not exact: {', '.join(problems[:10])}")
