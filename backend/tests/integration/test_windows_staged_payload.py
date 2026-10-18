@@ -40,10 +40,23 @@ def _answer(p: subprocess.CompletedProcess) -> dict:
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 
+def _app_dir_limit() -> int:
+    import re
+
+    text = (STAGING / "version.iss").read_text(encoding="utf-8")
+    return int(re.search(r"#define StepMaxAppDirLen (\d+)", text).group(1))
+
+
 @pytest.fixture(scope="module")
 def cyrillic_tree():
+    """The staged tree in a Cyrillic install directory with a space, EXACTLY at StepMaxAppDirLen — as the installer
+    acceptance's S1 lays it down: a limit one unit too generous fails there and nowhere shorter."""
     root = Path(tempfile.mkdtemp(prefix="bd"))  # short, like a real install root
-    tree = root / "Програми BamDude тест"
+    head = str(root / "Програми BamDude ")
+    room = _app_dir_limit() - len(head)
+    assert room >= 1, (len(head), _app_dir_limit())
+    tree = Path(head + "я" * room)
+    assert len(str(tree)) == _app_dir_limit()
     try:
         shutil.copytree(STAGING / "python", tree / "python")
         shutil.copytree(STAGING / "app", tree / "app")
@@ -76,6 +89,21 @@ def test_the_staged_tree_renders_a_step_from_a_cyrillic_directory(cyrillic_tree)
     assert probe.returncode == 0, probe.stdout[-2000:]
     report = _answer(probe)
     assert report["ok"] is True and report["step"]["outcome"] == "ok" and report["step"]["png"] is True
+
+
+def test_one_unit_past_the_limit_the_bundle_does_not_load(cyrillic_tree):
+    """The limit is the loader's, and tight: the same tree one unit longer no longer imports its bundle (a DLL past
+    250 units, ERROR_FILENAME_EXCED_RANGE). Should this pass, the limit is stricter than it must be."""
+    longer = cyrillic_tree.with_name(cyrillic_tree.name + "я")
+    os.rename(cyrillic_tree, longer)
+    try:
+        python, app = longer / "python" / "python.exe", longer / "app"
+        verify = _helper(
+            python, "backend.app.step_runtime", "verify", "--app-dir", str(app), env=_env(longer / "t"), cwd=app
+        )
+        assert verify.returncode == 1 and "smoke_failed:import" in _answer(verify)["problems"], verify.stdout[-2000:]
+    finally:
+        os.rename(longer, cyrillic_tree)
 
 
 def test_a_missing_dll_fails_verify_without_a_window(tmp_path):

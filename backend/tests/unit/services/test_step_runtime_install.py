@@ -230,7 +230,11 @@ def test_a_cyrillic_app_dir_is_counted_in_windows_units(tmp_path, win, monkeypat
 
 
 def test_only_windows_has_the_dll_path_limit():
-    expected = 259 if sys.platform == "win32" else None
+    """The loader's own limit, not MAX_PATH - 1: measured 2026-10-18 (installer acceptance S1), a native library at
+    250 UTF-16 units loads and at 251 fails with ERROR_FILENAME_EXCED_RANGE, LongPathsEnabled on or off, whatever
+    the interpreter or working directory — and a DLL whose dependency lies past it fails too. 259 let a bundle
+    through the install's own check only to fail its smoke as `import`."""
+    expected = 250 if sys.platform == "win32" else None
     assert expected == sr.PATH_LIMIT
 
 

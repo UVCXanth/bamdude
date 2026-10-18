@@ -388,25 +388,27 @@ def test_a_previous_builds_unproven_tree_blocks_the_next_build(build, tmp_path):
 
 
 def test_the_app_dir_limit_comes_from_the_catalog(build, monkeypatch):
-    assert build.step_max_app_dir_len() == 109  # a snapshot of the current pin, not a constant
+    # A snapshot of the current pin, not a constant: its deepest DLL at the loader's 250 (installer acceptance S1
+    # refused 109 — the library at 259 did not load).
+    assert build.step_max_app_dir_len() == 100
     catalog = sr.load_catalog(decode_tags=False)
     wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == "win-x64-cp312")
     closure = {"artifacts": {wheel["filename"]: [{"path": "x" * 100}]}}
     longer = SimpleNamespace(manifest=catalog.manifest, closure=closure)
-    assert build.step_max_app_dir_len(longer) == 109 - (100 - 72)
+    assert build.step_max_app_dir_len(longer) == 100 - (100 - 72)
     staged = build.STAGING
     staged.mkdir(parents=True)
     monkeypatch.setattr(build, "_resolve_installer_version", lambda: "0.0.0")
     build.write_version_file()
-    assert "#define StepMaxAppDirLen 109" in (staged / "version.iss").read_text(encoding="utf-8")
+    assert "#define StepMaxAppDirLen 100" in (staged / "version.iss").read_text(encoding="utf-8")
     if sr.PATH_LIMIT is not None:  # where step_runtime applies the limit (Windows), it is the build's own
-        assert build.WINDOWS_PATH_LIMIT == sr.PATH_LIMIT
+        assert build.WINDOWS_LIBRARY_PATH_LIMIT == sr.PATH_LIMIT
 
 
 def test_the_limit_covers_the_whole_payload(build, monkeypatch):
     """Whatever lies deepest under {app} bounds the directory, not only the CAD bundle's deepest DLL: a dependency
     with a deeper path than the bundle's would otherwise be laid down past MAX_PATH from a directory Setup accepted."""
-    deep = build.STAGING / "python" / "Lib" / "site-packages" / ("d" * 120) / "x.py"
+    deep = build.STAGING / "python" / "Lib" / "site-packages" / ("d" * 130) / "x.py"
     deep.parent.mkdir(parents=True)
     deep.write_text("", encoding="utf-8")
     rel = len(str(deep.relative_to(build.STAGING)).encode("utf-16-le")) // 2
@@ -414,7 +416,22 @@ def test_the_limit_covers_the_whole_payload(build, monkeypatch):
     monkeypatch.setattr(build, "_resolve_installer_version", lambda: "0.0.0")
     build.write_version_file()
     limit = min(build.step_max_app_dir_len(), build.WINDOWS_PATH_LIMIT - 1 - rel)
-    assert limit < 109 and f"#define StepMaxAppDirLen {limit}" in (build.STAGING / "version.iss").read_text("utf-8")
+    assert limit < 100 and f"#define StepMaxAppDirLen {limit}" in (build.STAGING / "version.iss").read_text("utf-8")
+
+
+@pytest.mark.parametrize("suffix", [".dll", ".pyd", ".exe"])
+def test_a_native_module_in_the_payload_is_bounded_by_the_loaders_limit(build, suffix):
+    """Python's own extension modules, PostgreSQL's and Node's libraries load by the same loader as the CAD bundle's:
+    a native module anywhere under {app} is held to 250, any other file to MAX_PATH - 1 (installer acceptance S1)."""
+    native = build.STAGING / "python" / "Lib" / "site-packages" / ("n" * 100) / f"m{suffix}"
+    other = build.STAGING / "app" / "static" / ("t" * 114) / "page.js"
+    for path in (native, other):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"")
+    units = lambda p: len(str(p.relative_to(build.STAGING)).encode("utf-16-le")) // 2  # noqa: E731
+    assert units(other) > units(native)  # the deeper file is not the one that binds
+    assert build.payload_max_app_dir_len(build.STAGING) == build.WINDOWS_LIBRARY_PATH_LIMIT - 1 - units(native)
+    assert build.WINDOWS_LIBRARY_PATH_LIMIT - 1 - units(native) < build.WINDOWS_PATH_LIMIT - 1 - units(other)
 
 
 def test_the_payload_ships_no_bytecode_the_verify_wrote(build):

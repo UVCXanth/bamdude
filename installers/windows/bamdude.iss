@@ -27,8 +27,9 @@
   #define MyAppVersion "0.0.0+dev"
 #endif
 
-; The longest install directory the STEP-preview bundle allows (its deepest DLL under MAX_PATH), derived by
-; build.py from the pinned catalog. Never a number of this script's own: without build.py there is no installer.
+; The longest install directory the payload allows (its deepest DLL under the loader's limit, any other file
+; under MAX_PATH), derived by build.py from the pinned catalog and the staged payload. Never a number of this
+; script's own: without build.py there is no installer.
 #ifndef StepMaxAppDirLen
   #error StepMaxAppDirLen comes from build\staging\version.iss: run build.py before ISCC
 #endif

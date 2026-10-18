@@ -60,8 +60,9 @@ The CAD bundle is installed into a build root of its own (`build\cad-build`, reu
 same) and only the verified bundle is exported into the payload, where it is verified again — a real STEP
 turned into a PNG by the embedded Python. While the STEP-preview pin is a candidate (before its release
 repin) a development build needs `python build.py --allow-candidate-cad`; a build of a tag refuses it.
-`version.iss` carries `StepMaxAppDirLen`, the longest install directory the payload allows (its deepest
-file under MAX_PATH); `bamdude.iss` does not compile without it.
+`version.iss` carries `StepMaxAppDirLen`, the longest install directory the payload allows: every native
+module (DLL, `.pyd`, `.exe`) under the Windows loader's own limit of 250 characters, which is lower than
+MAX_PATH, and every other file under MAX_PATH; `bamdude.iss` does not compile without it.
 
 ## What Setup does on the target machine
 

@@ -51,8 +51,12 @@ CAD_ROOT = BUILD_DIR / "cad-build"
 CAD_OWNER = BUILD_DIR / "cad-owner"
 CAD_INSTALL_SECONDS = 15 * 60 + 300  # step_runtime.INSTALL_SECONDS plus the proof of the tree's end
 CAD_VERIFY_SECONDS = 600  # a full rehash plus the STEP->PNG smoke (two children of up to 120 s each)
-# MAX_PATH less its NUL, as step_runtime.PATH_LIMIT is on Windows: the target's limit, whatever the build host.
+# The target's limits, whatever the build host: any file under MAX_PATH less its NUL, and a native module under the
+# loader's own limit, which is lower — step_runtime.PATH_LIMIT on Windows (measured 2026-10-18 in the installer
+# acceptance: a DLL at 259 did not load, at 250 it does, at 251 it does not).
 WINDOWS_PATH_LIMIT = 259
+WINDOWS_LIBRARY_PATH_LIMIT = 250
+NATIVE_SUFFIXES = (".dll", ".pyd", ".exe")
 
 # Matches the Dockerfile (python:3.12-slim-trixie) and `requires-python`, so a
 # Windows install runs the same interpreter CI tests. Bump when those bump.
@@ -616,24 +620,29 @@ def step_payload_problems(app: Path) -> list[str]:
 
 
 def step_max_app_dir_len(catalog=None, key: str = "win-x64-cp312") -> int:
-    """The longest {app} the bundle's deepest library allows under PATH_LIMIT, in UTF-16 units as step_runtime
-    counts them: {app} + this tail + a separator + the deepest library path."""
+    """The longest {app} the bundle's deepest library allows under the loader's limit, in UTF-16 units as
+    step_runtime counts them: {app} + this tail + a separator + the deepest library path."""
     step_runtime, _tree, _child = _backend()
     catalog = catalog or step_runtime.load_catalog(decode_tags=False)
     wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == key)
     deepest = max(len(lib["path"]) for lib in catalog.closure["artifacts"][wheel["filename"]])
     tail = "\\app\\runtime\\" + step_runtime.PRODUCT_DIR + "\\" + key + "\\" + "0" * 32 + "\\site"
-    return WINDOWS_PATH_LIMIT - deepest - 1 - len(tail.encode("utf-16-le")) // 2
+    return WINDOWS_LIBRARY_PATH_LIMIT - deepest - 1 - len(tail.encode("utf-16-le")) // 2
 
 
 def payload_max_app_dir_len(staging: Path) -> int:
     """The same bound over every file staged for {app} — Python's site-packages, the backend, Node, the tools: a
-    dependency deeper than the CAD bundle's deepest DLL would otherwise be laid down past MAX_PATH."""
-    deepest = max(
-        (len(str(f.relative_to(staging)).encode("utf-16-le")) // 2 for f in staging.rglob("*") if f.is_file()),
-        default=0,
-    )
-    return WINDOWS_PATH_LIMIT - 1 - deepest
+    native module (Python's extensions, PostgreSQL's and Node's libraries) under the loader's limit, any other file
+    under MAX_PATH. A dependency deeper than the CAD bundle's deepest DLL would otherwise be laid down where it
+    cannot be read or loaded."""
+    bounds = [
+        (WINDOWS_LIBRARY_PATH_LIMIT if f.suffix.lower() in NATIVE_SUFFIXES else WINDOWS_PATH_LIMIT)
+        - 1
+        - len(str(f.relative_to(staging)).encode("utf-16-le")) // 2
+        for f in staging.rglob("*")
+        if f.is_file()
+    ]
+    return min(bounds, default=WINDOWS_PATH_LIMIT - 1)
 
 
 def drop_bytecode(root: Path) -> None:

@@ -626,9 +626,11 @@ def _pip_command(staging: Path, req: Path, wheels: Path | None) -> list[str]:
     return cmd
 
 
-# The Windows loader opens a native library by a path of at most MAX_PATH - 1 UTF-16 units, LongPathsEnabled or not
-# (measured 2026-10-16: an install whose deepest library lay at 271 failed its smoke as `import`, at 203 it passed).
-PATH_LIMIT = 259 if sys.platform == "win32" else None
+# The Windows loader opens a native library by a path of at most 250 UTF-16 units — lower than MAX_PATH - 1, and
+# LongPathsEnabled or not; a library whose dependency lies past it fails too (measured 2026-10-18 after the installer
+# acceptance refused a bundle whose deepest DLL lay at 259: 250 loads, 251 fails with ERROR_FILENAME_EXCED_RANGE,
+# whatever the interpreter or working directory; 2026-10-16 had only bracketed it between 203 and 271).
+PATH_LIMIT = 250 if sys.platform == "win32" else None
 
 
 def _deepest_library(staging_site: Path, closure: list[dict]) -> int:
@@ -903,7 +905,7 @@ def prune(
                         keep("remove_failed")
                 for digest in candidates:
                     # Beside the digest it replaces, never deeper: <key>/.trash-<8 hex> is shorter than
-                    # <key>/<32 hex>, and StepMaxAppDirLen leaves the deepest DLL exactly at MAX_PATH.
+                    # <key>/<32 hex>, and StepMaxAppDirLen leaves the deepest DLL exactly at the loader's limit.
                     aside = root / key / f".trash-{uuid.uuid4().hex[:8]}"
                     try:
                         os.replace(digest, aside)

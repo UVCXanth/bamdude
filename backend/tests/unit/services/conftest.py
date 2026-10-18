@@ -182,9 +182,9 @@ def distinct_surface_tones():
 def install_tmp_path():
     """A temp root as short as a real install root, for tests that install a STEP-preview bundle under it.
 
-    On Windows the installer refuses a bundle whose deepest library would pass MAX_PATH (``step_runtime.PATH_LIMIT``)
+    On Windows the installer refuses a bundle whose deepest library would pass the loader's limit (``PATH_LIMIT``)
     — rightly. pytest's ``tmp_path`` under a default %TEMP% (the user's AppData Local Temp, then pytest-of-<name>,
-    pytest-N, popen-gwN and the test's name) leaves no room for it (a GitHub runner: 271 > 259), while a developer
+    pytest-N, popen-gwN and the test's name) leaves no room for it (a GitHub runner: 271 > 250), while a developer
     whose %TEMP% happens to be short never sees it. A fresh directory right under the system temp is what a real
     install root is like, whatever ``--basetemp`` says. Modules that install override ``tmp_path`` with it."""
     root = Path(tempfile.mkdtemp(prefix="bd"))
