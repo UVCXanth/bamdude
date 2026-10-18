@@ -47,15 +47,18 @@ require_cmd() {
 # met "dubious ownership" in the service user's tree on every fresh install, and
 # root-run writes left files the service could not change later (the in-app
 # update runs as the service user). The owner must be the service's user.
+# A read that failed is never taken for an empty answer: only a successful
+# query of a unit without User= means root.
 INSTALL_OWNER=""
 resolve_install_owner() {
   local owner service_user
-  owner="$(stat -c %U "$INSTALL_DIR" 2>/dev/null || true)"
-  service_user="$(systemctl show "$SERVICE_NAME" -p User --value 2>/dev/null || true)"
-  [ -n "$service_user" ] || service_user=root # a unit without User= runs as root
-  if [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
+  if ! owner="$(stat -c %U "$INSTALL_DIR" 2>/dev/null)" || [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
     die "Cannot tell which user owns $INSTALL_DIR. Nothing was changed."
   fi
+  if ! service_user="$(systemctl show "$SERVICE_NAME" -p User --value 2>/dev/null)"; then
+    die "Cannot read which user $SERVICE_NAME runs as (systemctl show failed). Nothing was changed."
+  fi
+  [ -n "$service_user" ] || service_user=root # a unit without User= runs as root
   if [ "$owner" != "$service_user" ]; then
     die "$INSTALL_DIR belongs to $owner, but $SERVICE_NAME runs as $service_user. The update changes the install's files as their owner, who must be the service's user. Nothing was changed. Give the install to $service_user (sudo chown -R $service_user: $INSTALL_DIR) or correct the unit's User=, then run the update again."
   fi
@@ -72,14 +75,17 @@ as_owner() {
 # would break the update half way, with the service stopped. Data, logs,
 # backups and the runtimes are not theirs to write and are left out. Found, the
 # update stops before anything changes, with the repair to run — never a
-# hidden chown.
+# hidden chown. A scan that did not finish proves nothing, whatever it printed.
 check_owner_can_write() {
-  local stray
+  local stray scanned=0
   stray="$(find "$INSTALL_DIR" -xdev \( -path "$INSTALL_DIR/data" -o -path "$INSTALL_DIR/logs" \
     -o -path "$BACKUP_DIR" -o -path "$INSTALL_DIR/runtime" \) -prune -o ! -user "$INSTALL_OWNER" -print -quit \
-    2>/dev/null || true)"
+    2>/dev/null)" || scanned=$?
   if [ -n "$stray" ]; then
     die "Part of $INSTALL_DIR does not belong to $INSTALL_OWNER (first: ${stray#"$INSTALL_DIR"/}), likely left by an earlier update run as root. Nothing was changed. Give it back with: sudo chown -R $INSTALL_OWNER: $INSTALL_DIR — then run the update again."
+  fi
+  if [ "$scanned" -ne 0 ]; then
+    die "Could not check who owns the files of $INSTALL_DIR (find exited $scanned). Nothing was changed."
   fi
 }
 

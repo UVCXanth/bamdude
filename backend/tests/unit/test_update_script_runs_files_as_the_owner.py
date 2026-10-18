@@ -76,6 +76,47 @@ def test_the_owner_must_be_the_services_user(tmp_path, owner, unit_user, ok, exp
         assert "Nothing was changed" in result.stderr, result.stderr
 
 
+@pytest.mark.parametrize(("failing", "says"), [("systemctl", "runs as"), ("stat", "owns")])
+def test_an_identity_that_cannot_be_read_stops_the_update(tmp_path, failing, says):
+    """Codex C-I2-R1: a failed read is not an empty answer. `systemctl show` failing with nothing on stdout was read
+    as "a unit without User=", that is root — on a root-owned tree, a match nobody proved."""
+    stubs = {"stat": "stat() { echo root; }", "systemctl": 'systemctl() { echo ""; }'}
+    stubs[failing] = f"{failing}() {{ return 1; }}"
+    body = "\n".join(
+        [
+            *stubs.values(),
+            "sudo() { :; }",
+            'INSTALL_DIR=/opt/bamdude SERVICE_NAME=bamdude INSTALL_OWNER=""',
+            _lifted("resolve_install_owner"),
+            'resolve_install_owner; echo "OWNER=$INSTALL_OWNER"',
+        ]
+    )
+    result = _run(tmp_path, body)
+    assert result.returncode == 1 and "OWNER=" not in result.stdout, result.stdout
+    assert says in result.stderr and "Nothing was changed" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("code", "stray", "accepted"), [(0, "", True), (1, "", False), (1, "/opt/bamdude/venv/x", False)]
+)
+def test_a_scan_that_did_not_finish_is_no_proof_of_a_clean_tree(tmp_path, code, stray, accepted):
+    """An empty list from a scan that failed proves nothing; only a finished one may say "nobody else's"."""
+    body = "\n".join(
+        [
+            f"find() {{ [ -n '{stray}' ] && echo '{stray}'; return {code}; }}",
+            "INSTALL_DIR=/opt/bamdude BACKUP_DIR=/opt/bamdude/backups INSTALL_OWNER=bamdude",
+            _lifted("check_owner_can_write"),
+            "check_owner_can_write",
+        ]
+    )
+    result = _run(tmp_path, body)
+    if accepted:
+        assert "RC=0" in result.stdout, result.stderr
+    else:
+        assert result.returncode == 1 and "Nothing was changed" in result.stderr, result.stderr
+        assert ("venv/x" in result.stderr) == bool(stray), result.stderr
+
+
 @pytest.mark.parametrize(("owner", "expected"), [("bamdude", "sudo -H -u bamdude git status"), ("root", "git status")])
 def test_a_file_operation_runs_as_the_owner(tmp_path, owner, expected):
     calls = tmp_path / "calls.txt"
