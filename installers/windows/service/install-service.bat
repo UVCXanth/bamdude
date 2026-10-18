@@ -185,11 +185,13 @@ sc delete %PG_SERVICE% 2>nul
 REM Locate the PostgreSQL binaries inside the embedded Python's wheel. Written
 REM through a temp file rather than a for/f backtick block, whose nested quoting
 REM around an interpreter path with spaces is a known way to get an empty result.
+REM TEMP and the file are read as !VAR!, never %VAR%: with delayed expansion on, a `!` in a %-expanded value
+REM (a user named Bob!) is stripped from the line, while a !-expanded value is kept as it is.
 set "PGBIN="
-set "PGBIN_TMP=%TEMP%\bamdude_pgbin.txt"
-"%PYTHON%" -c "from embedded_postgres._commands import POSTGRES_BIN_PATH; print(POSTGRES_BIN_PATH)" > "%PGBIN_TMP%"
-if exist "%PGBIN_TMP%" set /p PGBIN=<"%PGBIN_TMP%"
-del "%PGBIN_TMP%" 2>nul
+set "PGBIN_TMP=!TEMP!\bamdude_pgbin.txt"
+"%PYTHON%" -c "from embedded_postgres._commands import POSTGRES_BIN_PATH; print(POSTGRES_BIN_PATH)" > "!PGBIN_TMP!"
+if exist "!PGBIN_TMP!" set /p PGBIN=<"!PGBIN_TMP!"
+del "!PGBIN_TMP!" 2>nul
 if not defined PGBIN (
     echo [install-service] could not locate the embedded PostgreSQL binaries
     exit /b 1

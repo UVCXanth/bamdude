@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -186,6 +187,55 @@ def test_a_temp_dir_with_an_exclamation_mark_still_reads_the_state(tmp_path):
     env = {**os.environ, "TEMP": str(temp), "TMP": str(temp)}
     p = subprocess.run(["cmd", "/c", str(SERVICE / "service-state.bat"), name, "2"], capture_output=True, env=env)
     assert p.returncode == 0, p.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="named skip: sc.exe is Windows'")
+@pytest.mark.parametrize("caller", ["enabledelayedexpansion", "disabledelayedexpansion"])
+def test_a_bang_in_temp_survives_the_callers_delayed_expansion(tmp_path, caller):
+    """install-service.bat CALLs the helper with delayed expansion already on, and a plain setlocal inherits it: the
+    `!` went from the query path again (Codex B-I-R1). Through a real CALL either way, the caller's own state —
+    its variables and its expansion mode — is what it was, and nothing of the helper's leaks into it."""
+    temp = tmp_path / "Bob!"
+    temp.mkdir()
+    name = f"BamDudeNoSuch{uuid.uuid4().hex[:12]}"
+    wrapper = tmp_path / "caller.cmd"
+    wrapper.write_text(
+        "@echo off\r\n"
+        f"setlocal {caller}\r\n"
+        'set "MARK=kept"\r\n'
+        f'call "{SERVICE / "service-state.bat"}" {name} 0\r\n'
+        "set RC=%errorlevel%\r\n"
+        "echo mark=%MARK% delayed=!MARK!\r\n"
+        "if defined QUERY echo leaked\r\n"
+        "exit /b %RC%\r\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp)}
+    p = subprocess.run(["cmd", "/d", "/c", str(wrapper)], capture_output=True, text=True, env=env, timeout=60)
+    assert p.returncode == 0, (p.stdout, p.stderr)
+    expected = "delayed=kept" if caller == "enabledelayedexpansion" else "delayed=!MARK!"
+    assert "mark=kept" in p.stdout and expected in p.stdout and "leaked" not in p.stdout, p.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="named skip: cmd is Windows'")
+def test_the_postgres_binaries_are_found_with_a_bang_in_temp(tmp_path):
+    """The same TEMP, read by install-service.bat itself under its own delayed expansion: the embedded-PostgreSQL
+    service setup found no binaries for a user named `Bob!`. The script's own lines, run as the script runs them."""
+    pytest.importorskip("embedded_postgres", reason="named skip: embedded_postgres not in this interpreter")
+    from embedded_postgres._commands import POSTGRES_BIN_PATH
+
+    lines = (SERVICE / "install-service.bat").read_text(encoding="utf-8").splitlines()
+    start = lines.index('set "PGBIN="')
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith("del ") and "PGBIN_TMP" in lines[i])
+    temp = tmp_path / "Bob!"
+    temp.mkdir()
+    wrapper = tmp_path / "pgbin.cmd"
+    body = ["@echo off", "setlocal enabledelayedexpansion", f'set "PYTHON={sys.executable}"', *lines[start : end + 1]]
+    wrapper.write_text("\r\n".join([*body, "echo PGBIN=!PGBIN!", ""]), encoding="utf-8")
+    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp)}
+    p = subprocess.run(["cmd", "/d", "/c", str(wrapper)], capture_output=True, text=True, env=env, timeout=120)
+    assert f"PGBIN={POSTGRES_BIN_PATH}" in p.stdout, (p.stdout, p.stderr)
+    assert not list(temp.iterdir())  # the scratch file went again
 
 
 def test_no_service_script_trusts_path_for_find_or_ping():

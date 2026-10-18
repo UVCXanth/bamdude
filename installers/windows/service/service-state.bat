@@ -13,10 +13,11 @@ REM ⚠️ sc stop, never `net stop`: `net stop` asks whether to also stop the s
 REM this runs hidden with no console input, so that question would hang the installer with the service still up.
 REM ⚠️ sc returns as soon as the control code is delivered, NOT when the service has stopped: the poll is the point.
 
-REM The query file's path is built BEFORE delayed expansion is on: a `!` in TEMP (a user named Bob!) would be
-REM stripped from any line parsed with it on, and the state would read as UNKNOWN. Expanded later as
-REM !QUERY!, its value is kept as it is.
-setlocal
+REM The query file's path is built with delayed expansion OFF: a `!` in TEMP (a user named Bob!) would be
+REM stripped from any line parsed with it on, and the state would read as UNKNOWN. OFF explicitly: a plain
+REM setlocal inherits the caller's mode, and install-service.bat CALLs this with it on (Codex B-I-R1).
+REM Expanded later as !QUERY!, its value is kept as it is.
+setlocal disabledelayedexpansion
 set "QUERY=%TEMP%\bamdude_service_state_%RANDOM%%RANDOM%.txt"
 setlocal enabledelayedexpansion
 REM Every tool by its System32 path: with Git's Unix tools first on PATH, `find` is GNU find, which reads
