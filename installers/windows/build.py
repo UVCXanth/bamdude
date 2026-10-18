@@ -466,39 +466,11 @@ def cad_candidate_allowed(flag: bool, env) -> bool:
     return wanted
 
 
-def _drop_owner_records(owner_dir: Path) -> None:
-    for path in owner_dir.iterdir():
-        if path.is_file():
-            path.unlink(missing_ok=True)
-
-
 def prior_cad_tree_gone(owner_dir: Path | None = None) -> bool:
-    """True only when no CAD helper of an earlier build may still run (spec stage B R4, Codex B2-R1). Nothing is
-    removed or rewritten until that is proven: a launch without a readable owner record is no proof; an owner
-    that may live (paused between its launch and its spawn, say) keeps everything; only once the owner is proven
-    dead do the bootstrap, its group and the launch token's holders get judged, by the same proof the CAD
-    installer uses for its staging."""
-    step_runtime, tree, _child = _backend()
-    owner_dir = Path(owner_dir or CAD_OWNER)
-    if not owner_dir.is_dir():
-        return True
-    owner = owner_dir / step_runtime.OWNER_RECORD
-    launched = (owner_dir / f"{step_runtime.INSTALLER}.launch").exists()
-    if owner.exists():
-        why = tree.recorded_running(owner)
-        if why:
-            log(f"a CAD helper of an earlier build may still run (its build: {why})")
-            return False
-    elif launched:
-        log("an earlier build launched a CAD helper and left no readable owner record: its end is not proven")
-        return False
-    if launched:
-        why = step_runtime._writer_may_live(owner_dir)
-        if why:
-            log(f"a CAD helper of an earlier build may still run ({why})")
-            return False
-    _drop_owner_records(owner_dir)
-    return True
+    """True only when no CAD helper of an earlier build may still run (spec stage B R4, Codex B2-R1): the same
+    proof the app gives an earlier in-app run (``step_runtime_child.prior_tree_gone``)."""
+    _step_runtime, _tree, child = _backend()
+    return child.prior_tree_gone(Path(owner_dir or CAD_OWNER), log=log)
 
 
 def _helper_reason(stdout: str) -> str:

@@ -18,7 +18,10 @@ Runs in the calling thread with plain Popen and reader threads (no asyncio subpr
 
 from __future__ import annotations
 
+import asyncio
 import collections
+import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -26,7 +29,11 @@ import sys
 import threading
 import time
 import uuid
+import weakref
+from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TAIL_BYTES = 64 * 1024
 PROOF_SECONDS = 30.0
@@ -63,6 +70,16 @@ BOOT = (
 
 class RecordUnwritable(RuntimeError):
     """The bootstrap's record could not be made durable: it was never released, and its end is proven."""
+
+
+class TreeStopped(RuntimeError):
+    """The run was stopped by its owner (spec stage C R6). ``started`` False: the command never ran — stopped before
+    the launch, or before its bootstrap was released (its end proven); True: it ran and its whole tree was ended,
+    the end proven."""
+
+    def __init__(self, started: bool):
+        super().__init__("stopped after its start" if started else "stopped before it ran")
+        self.started = started
 
 
 class TreeUnproven(RuntimeError):
@@ -273,12 +290,14 @@ def run_tree(
     interpreter: str | os.PathLike | None = None,
     capture_output: bool = True,
     text: bool = True,
+    stop: threading.Event | None = None,
 ) -> subprocess.CompletedProcess:
     """Run ``[sys.executable, '-m', module, ...]`` or ``[sys.executable, script, ...]`` as an owned tree — or, with
     ``interpreter``, that interpreter's own ``[interpreter, ...]`` (started itself, with ``env`` as given). Raises
     ValueError before any launch or spawn for any other command, subprocess.TimeoutExpired after ending the tree,
     TreeUnproven when its end cannot be proven, RecordUnwritable when ``records`` could not hold the bootstrap's
-    record (nothing was released)."""
+    record (nothing was released), TreeStopped when ``stop`` was set: before the launch nothing is started; later
+    the tree is ended exactly as on a timeout, its end proven."""
     from backend.app.services import part_render_tree as tree
     from backend.app.services.worker_containment import contained_interpreter
 
@@ -290,6 +309,8 @@ def run_tree(
         raise ValueError("run_tree runs this interpreter's own -m module or script")
     else:
         interpreter, env = contained_interpreter(env)  # never a venv redirector the Job could miss
+    if stop is not None and stop.is_set():
+        raise TreeStopped(started=False)  # not even a launch record
     token = tree.launch(records, _LAUNCH_NAME) if records is not None else uuid.uuid4().hex  # before the spawn
     process = subprocess.Popen(
         _bootstrapped(cmd, interpreter, token),
@@ -317,14 +338,29 @@ def run_tree(
                 raise TreeUnproven("an unreleased bootstrap could not be proven ended") from exc
             _drop_records(records)
             raise RecordUnwritable(type(exc).__name__) from exc
-    timed_out = False
+    if stop is not None and stop.is_set():  # stopped inside the spawn: never released, it ends unrun
+        process.stdin.close()
+        if not (_tree_gone(owner, PROOF_SECONDS) and _reaped(process)):
+            raise TreeUnproven("an unreleased bootstrap could not be proven ended")
+        if records is not None:
+            _drop_records(records)
+        raise TreeStopped(started=False)
+    timed_out = stopped = False
     try:
         process.stdin.write(GO)  # released: from here every process it starts is owned
         process.stdin.flush()  # the pipe stays open: the bootstrap's watch on its owner
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                process.wait(timeout=max(0.0, min(0.1, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if stop is not None and stop.is_set():
+                    stopped = True
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
     finally:
         members = _members(process, owner)
         proven = _tree_gone(owner, PROOF_SECONDS) and _reaped(process)
@@ -339,6 +375,148 @@ def run_tree(
         raise TreeUnproven("the installer's process tree could not be proven ended", survivors)
     if records is not None:
         _drop_records(records)
+    if stopped:
+        raise TreeStopped(started=True)
     if timed_out:
         raise subprocess.TimeoutExpired(cmd, timeout, output=out.text(), stderr=err.text())
     return subprocess.CompletedProcess(cmd, process.returncode, out.text(), err.text())
+
+
+# --- an earlier run's end, and the app's owned run (spec stage C R6) ---------------------------------------------
+
+
+def drop_owner_records(owner_dir: Path) -> None:
+    for path in owner_dir.iterdir():
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def prior_tree_gone(owner_dir: Path, *, log=None) -> bool:
+    """True only when no CAD helper of an earlier run may still run (spec stage B R4, Codex B2-R1; stage C R6).
+    Nothing is removed or rewritten until that is proven: a launch without a readable owner record is no proof; an
+    owner that may live (paused between its launch and its spawn, say) keeps everything; only once the owner is
+    proven dead do the bootstrap, its group and the launch token's holders get judged, by the same proof the CAD
+    installer uses for its staging. Shared by the Windows build and the app."""
+    from backend.app import step_runtime
+    from backend.app.services import part_render_tree as tree
+
+    say = log or logger.warning
+    owner_dir = Path(owner_dir)
+    if not owner_dir.is_dir():
+        return True
+    owner = owner_dir / step_runtime.OWNER_RECORD
+    launched = (owner_dir / f"{step_runtime.INSTALLER}.launch").exists()
+    if owner.exists():
+        why = tree.recorded_running(owner)
+        if why:
+            say(f"a CAD helper of an earlier run may still run (its owner: {why})")
+            return False
+    elif launched:
+        say("an earlier run launched a CAD helper and left no readable owner record: its end is not proven")
+        return False
+    if launched:
+        why = step_runtime._writer_may_live(owner_dir)
+        if why:
+            say(f"a CAD helper of an earlier run may still run ({why})")
+            return False
+    drop_owner_records(owner_dir)
+    return True
+
+
+@dataclass(frozen=True)
+class OwnedRun:
+    """One owned run's end: ``ok`` / ``failed`` (with its code) / ``timeout`` / ``unproven`` (records kept) /
+    ``helper_unproven`` (an earlier run's end not proven: nothing started). A cancelled run raises instead."""
+
+    outcome: str
+    returncode: int | None = None
+    stdout_tail: str = ""
+
+
+_RUN_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _run_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _RUN_LOCKS.get(loop)
+    if lock is None:
+        lock = _RUN_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
+def _drop_run(records: Path) -> None:
+    with contextlib.suppress(OSError):
+        drop_owner_records(records)
+        records.rmdir()
+
+
+def _settled(task: asyncio.Future, records: Path) -> tuple[str, int | None, str]:
+    """The finished thread task's outcome; the run's records go only with a proven end."""
+    exc = task.exception()
+    if isinstance(exc, TreeUnproven):
+        return "unproven", None, ""
+    if exc is not None and not isinstance(exc, (subprocess.TimeoutExpired, TreeStopped, RecordUnwritable)):
+        _drop_run(records)  # raised before any launch (a refused command)
+        raise exc
+    _drop_run(records)
+    if exc is None:
+        result = task.result()
+        return ("ok" if result.returncode == 0 else "failed"), result.returncode, result.stdout or ""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout", None, ""
+    if isinstance(exc, TreeStopped):
+        return "stopped", None, ""
+    return "failed", None, ""
+
+
+async def run_owned(cmd: list[str], *, owner_root: Path, timeout: float, cwd=None, env=None, label: str) -> OwnedRun:
+    """``run_tree`` for the app (spec stage C R6): one at a time in this process, its own records under
+    ``owner_root/<run_id>/`` written before its launch, never while an earlier run's end is unproven; a
+    cancellation stops the tree and returns only once its end is proven (a second one cannot cut that short). The
+    parent log has its start and its end with the outcome and the time, never a path or the child's text."""
+    async with _run_lock():
+        return await _run_owned(cmd, Path(owner_root), timeout, cwd, env, label)
+
+
+async def _run_owned(cmd, owner_root: Path, timeout: float, cwd, env, label: str) -> OwnedRun:
+    from backend.app import step_runtime
+    from backend.app.services import part_render_tree as tree
+    from backend.app.services.preview_artifacts import owned
+
+    run_id = uuid.uuid4().hex[:12]
+    begun = time.monotonic()
+    logger.info("%s run=%s start", label, run_id)
+
+    def ended(outcome: str, returncode: int | None = None, tail: str = "") -> OwnedRun:
+        elapsed = (time.monotonic() - begun) * 1000
+        logger.info("%s run=%s outcome=%s rc=%s elapsed_ms=%d", label, run_id, outcome, returncode, elapsed)
+        return OwnedRun(outcome, returncode, tail)
+
+    earlier = sorted(p for p in owner_root.iterdir() if p.is_dir()) if owner_root.is_dir() else []
+    for prior in earlier:
+        if not prior_tree_gone(prior):
+            return ended("helper_unproven")
+        with contextlib.suppress(OSError):
+            prior.rmdir()
+    records = owner_root / run_id
+    try:
+        records.mkdir(parents=True)
+        tree.record(records / step_runtime.OWNER_RECORD, os.getpid())  # before the launch
+    except Exception:
+        _drop_run(records)
+        return ended("failed")
+    stop = threading.Event()
+    task = asyncio.ensure_future(
+        asyncio.to_thread(run_tree, cmd, timeout=timeout, records=records, cwd=cwd, env=env, stop=stop)
+    )  # created before the first await: no cancellation can leave the thread unwatched
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        stop.set()
+        with contextlib.suppress(BaseException):  # a second cancellation, or the task's own end: it is over
+            await owned(task)
+        ended(_settled(task, records)[0])
+        raise
+    except Exception:
+        pass  # the task's own exception: settled below
+    return ended(*_settled(task, records))
