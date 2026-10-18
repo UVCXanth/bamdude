@@ -8,7 +8,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
-from backend.app.services import finished_stock, part_stock
+from backend.app.services import farm_forecast, finished_stock, part_stock, plan_engine
 from backend.tests.integration.test_workshop_stock_plan_regressions import archive, shop  # noqa: F401
 
 
@@ -32,6 +32,66 @@ async def apply(client, s, response, option, ack=False):
             },
         },
     )
+
+
+@pytest.mark.parametrize("change", [None, "membership", "occupancy"])
+async def test_fleet_snapshot_drives_preview_and_apply_without_printing(
+    committing_client,
+    db_session,
+    shop,
+    monkeypatch,
+    change,
+):
+    original = dict(shop["file"].file_metadata)
+    shop["file"].file_metadata = {**original, "sliced_for_model": "A1MINI"}
+    second = LibraryFile(
+        filename="Product A-P1S.gcode.3mf",
+        file_path=shop["file"].file_path,
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            **original,
+            "sliced_for_model": "P1S",
+            "plates": [
+                {**original["plates"][0], "print_time_seconds": 200},
+            ],
+        },
+    )
+    db_session.add(second)
+    await db_session.flush()
+    plate = ProductPlate(product_id=shop["a"].product_id, library_file_id=second.id, plate_index=0)
+    db_session.add(plate)
+    await db_session.commit()
+    fleet = plan_engine.FleetCapacity(
+        [
+            plan_engine.FleetMachine(1, "A1 Mini"),
+            plan_engine.FleetMachine(2, "P1S"),
+        ]
+    )
+
+    async def current(_db, **_kwargs):
+        return fleet.copy()
+
+    monkeypatch.setattr(plan_engine, "_current_fleet_capacity", current)
+    response = await preview(committing_client, shop, plate_ids=[shop["plate"].id, plate.id])
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert {o["quantity"] for o in data["options"]} == {9, 10, 11}
+    assert all({r["plate_id"] for r in o["runs"]} == {shop["plate"].id, plate.id} for o in data["options"])
+    chosen = next(o for o in data["options"] if o["quantity"] == 10)
+    if change == "membership":
+        fleet.machines.pop()
+    elif change == "occupancy":
+        fleet.machines[0].free_at = 1_000_000
+    result = await apply(committing_client, shop, data, chosen)
+    assert result.status_code == (409 if change else 200), result.text
+    if change:
+        assert result.json()["detail"]["error"] in ("plate_fit_stale", "plate_fit_invalid_plan")
+    for model in (AutoQueueItem, PrintQueueItem):
+        assert (
+            await db_session.scalar(select(func.count()).select_from(model).where(model.project_id == shop["order"]))
+            == 0
+        )
 
 
 async def test_preview_and_apply_create_no_jobs_or_stock_movements(committing_client, db_session, shop):
@@ -224,6 +284,17 @@ async def test_reviewed_auto_removal_is_atomic_with_quantity_and_preserves_prote
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["removable_auto_ids"] == [removable_id]
+    # Reviewed jobs are removed from virtual lane occupancy as well as output.
+    # Protected staged/scheduled jobs still occupy the forecast; preview does
+    # not actually delete any row to achieve this.
+    before_farm = await farm_forecast.load_snapshot(db_session, datetime.utcnow())
+    without_reviewed = await farm_forecast.load_snapshot(
+        db_session,
+        datetime.utcnow(),
+        exclude_auto_ids=(removable_id,),
+    )
+    assert len(before_farm.staged) == 3 and len(without_reviewed.staged) == 2
+    assert await db_session.get(AutoQueueItem, removable_id) is not None
     target = next(o for o in data["options"] if o["quantity"] == 10)
     assert target["runs"][0]["count"] == 8
     payload = {

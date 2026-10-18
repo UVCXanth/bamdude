@@ -40,6 +40,20 @@ continues under the shared time budget. Nearest is reported only after
 optimality and greedy verification; an unfinished search says **unfinished**.
 The existing cover iteration guard remains a limit, not proof of no solution.
 
+Every direction and browsing step uses the normal fleet snapshot, including
+eligible printer models/counts, occupancy, operator policy and auto-eject mode.
+Earlier lines reserve their work through the existing `plan_lines` pass before
+this line is covered. Each candidate receives a new capacity copy. Reviewed
+Auto Queue removals are omitted from virtual occupancy only; preview never
+deletes jobs. Stable fleet topology/policy enters the review fingerprint;
+applying rechecks the exact reviewed runs against fresh occupancy.
+
+The same `cover` can leave equal-yield model variants unmerged for this exact
+run list. Ordinary callers keep their compact rows and alternatives unchanged.
+Applying maps the explicit runs into the existing split editor, and untouched
+row alternatives stay available to the calculator. Explicit file/split choices
+and zeroed rows still restrict its candidate set.
+
 Required output includes `per * quantity + ceil(extra * quantity)`. Good output,
 received coverage, existing allocations and running/queued output count once;
 rejects do not. Free stock is proposed before new printing, and the shared-shelf

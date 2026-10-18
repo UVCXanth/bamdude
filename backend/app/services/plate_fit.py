@@ -77,6 +77,8 @@ class Snapshot:
     context: order_metrics.OrderContext | None = None
     queued: dict[int, dict[int, int]] = field(default_factory=dict)
     supply: stock_offers.Supply | None = None
+    capacity: plan_engine.FleetCapacity | None = None
+    recipes: dict[int, list[plan_engine.Candidate]] = field(default_factory=dict)
 
 
 async def load(
@@ -169,9 +171,10 @@ async def load(
                 bucket = queued.setdefault(line_id, {})
                 bucket[p.id] = max(0, bucket.get(p.id, 0) - recipe.yield_by_part.get(p.id, 0))
     supply = await stock_offers.load_supply(db, ctx)
+    capacity = await plan_engine._current_fleet_capacity(db, exclude_auto_ids=tuple(item.id for item in removable))
     all_candidates = recipes.get(line.product_id, [])
     if plate_ids is None:
-        plan = await plan_engine.plan_for_order(db, order_id)
+        plan = await plan_engine.plan_for_order(db, order_id, capacity=capacity.copy())
         plate_ids = [row.plate_id for item in plan.lines if item.line_id == line_id for row in item.rows]
         if not plate_ids:
             # A fully covered line has no outstanding plan. Its linked, sliced
@@ -270,10 +273,43 @@ async def load(
         "supply": asdict(supply),
         "shared_claims": {lid: asdict(f) for lid, f in figures.items()},
         "shared_queued": queued,
+        # Topology and policy changes invalidate the review. Relative free_at
+        # and the operator clock move naturally between preview/apply; confirm
+        # instead re-runs the same fleet cover with fresh occupancy and requires
+        # exactly the reviewed runs, without making every ticking clock stale.
+        "fleet": {
+            "machines": [
+                [m.printer_id, m.model, m.prep_seconds, m.gap_seconds, m.requires_operator]
+                for m in sorted(capacity.machines, key=lambda m: m.printer_id)
+            ],
+            "allow_compatible": capacity.allow_compatible,
+            "auto_eject": bool(ctx.project.auto_eject_enabled),
+            "operator_hours": [
+                capacity.operator_hours.start.isoformat(),
+                capacity.operator_hours.end.isoformat(),
+                str(capacity.operator_hours.zone),
+            ]
+            if capacity.operator_hours
+            else None,
+        },
         "removable": [{c.name: getattr(item, c.name) for c in AutoQueueItem.__table__.columns} for item in removable],
     }
     basis = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
-    return Snapshot(line_id, line.quantity, minimum, parts, plates, basis, candidates, removable, ctx, queued, supply)
+    return Snapshot(
+        line_id,
+        line.quantity,
+        minimum,
+        parts,
+        plates,
+        basis,
+        candidates,
+        removable,
+        ctx,
+        queued,
+        supply,
+        capacity,
+        recipes,
+    )
 
 
 def option(
@@ -328,6 +364,9 @@ def option(
 def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | None, bool]:
     """Accept only the existing greedy cover after the existing greedy shelf offer."""
     offer = stock_offers.Offer(snapshot.line_id, "", 0, 0)
+    # cover mutates capacity. Each what-if starts from the same snapshot; neither
+    # browsing direction nor earlier candidates may consume the next one's lanes.
+    capacity = snapshot.capacity.copy() if snapshot.capacity is not None else None
     if snapshot.context is not None and snapshot.supply is not None:
         # Plain value objects: changing an ORM line even in a rolled-back preview
         # would mark the live session dirty and could autoflush it on a later read.
@@ -338,6 +377,21 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
         next(line for line in lines if line.id == snapshot.line_id).quantity = quantity
         ctx = replace(snapshot.context, lines=lines)
         figures, _ = order_metrics.attribute(ctx)
+        if capacity is not None:
+            # Reuse the normal order pass to reserve earlier lines, with their
+            # existing stock/output/queues. Only THIS line's free-stock offer is
+            # taken by apply, so do not virtually take offers for other lines.
+            index = next(i for i, row in enumerate(ctx.lines) if row.id == snapshot.line_id)
+            preceding = plan_engine.plan_lines(
+                replace(ctx, lines=ctx.lines[:index]),
+                figures,
+                snapshot.recipes,
+                snapshot.queued,
+                None,
+                capacity,
+            )
+            if preceding.truncated:
+                return None, True
         offer = next(
             (
                 o
@@ -352,7 +406,14 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
     }
     if any(n < 0 for n in need.values()):
         return None, False
-    rows, surplus, truncated = plan_engine.cover(need, snapshot.candidates, set(need), None)
+    rows, surplus, truncated = plan_engine.cover(
+        need,
+        snapshot.candidates,
+        set(need),
+        None,
+        capacity,
+        compact_equivalent=False,
+    )
     if truncated:
         return None, True
     if surplus:

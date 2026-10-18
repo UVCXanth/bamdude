@@ -352,9 +352,25 @@ export function PlanBlock({
 
   useEffect(() => {
     const selected: Record<number, number[]> = {};
-    for (const item of items) selected[item.line_id] = [...new Set([...(selected[item.line_id] ?? []), item.plate_id])];
+    for (const line of lines) {
+      const ids = new Set<number>();
+      for (const row of line.rows) {
+        const count = Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count));
+        if (!count) continue;
+        const picked = chosen[line.line_id]?.[row.plate_id];
+        const distribution = split[line.line_id]?.[row.plate_id];
+        // An untouched grouped row offers ALL equivalent files to the fleet.
+        // Explicit file/split choices still narrow that set; zero rows stay out.
+        if (picked == null && distribution == null) {
+          [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)].forEach(id => ids.add(id));
+        } else {
+          rowDistribution(row, count, picked, distribution).forEach(item => ids.add(item.plate_id));
+        }
+      }
+      if (ids.size) selected[line.line_id] = [...ids];
+    }
     onPlateSelection?.(selected);
-  }, [items, onPlateSelection]);
+  }, [lines, counts, chosen, split, onPlateSelection]);
 
   const appliedFit = useRef<PlateFitDraft | null>(null);
   useEffect(() => {
@@ -367,12 +383,27 @@ export function PlanBlock({
       showToast(t('plateFit.errors.stale'), 'warning');
       return;
     }
-    const nextCounts = Object.fromEntries(baseline.rows.map(row => [row.plate_id, 0]));
-    for (const row of fitDraft.rows) nextCounts[row.plate_id] = row.count;
+    const byPlate = new Map(fitDraft.rows.map(row => [row.plate_id, row.count]));
+    const represented = new Set<number>();
+    const nextCounts: Record<number, number> = {};
+    const nextSplit: SplitByRow = {};
+    for (const row of baseline.rows) {
+      const ids = [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)];
+      ids.forEach(id => represented.add(id));
+      nextCounts[row.plate_id] = ids.reduce((sum, id) => sum + (byPlate.get(id) ?? 0), 0);
+      // The fleet may use equal-yield files on several models. Preserve those
+      // exact runs in the existing split editor, rather than merging everything
+      // onto the first file or adding a duplicate row for an alternative.
+      if (ids.slice(1).some(id => (byPlate.get(id) ?? 0) > 0)) {
+        nextSplit[row.plate_id] = Object.fromEntries(ids.map(id => [id, byPlate.get(id) ?? 0]));
+      }
+    }
+    const extraRows = fitDraft.rows.filter(row => !represented.has(row.plate_id));
+    for (const row of extraRows) nextCounts[row.plate_id] = row.count;
     setCounts(prev => ({ ...prev, [fitDraft.lineId]: nextCounts }));
-    setAdded(prev => ({ ...prev, [fitDraft.lineId]: fitDraft.rows.filter(row => !baseline.rows.some(b => b.plate_id === row.plate_id)) }));
+    setAdded(prev => ({ ...prev, [fitDraft.lineId]: extraRows }));
     setChosen(prev => ({ ...prev, [fitDraft.lineId]: {} }));
-    setSplit(prev => ({ ...prev, [fitDraft.lineId]: {} }));
+    setSplit(prev => ({ ...prev, [fitDraft.lineId]: nextSplit }));
   }, [fitDraft, order.id, order.lines, plan, showToast, t]);
 
   // A forecast belongs to the exact server plan. Compare effective enqueue

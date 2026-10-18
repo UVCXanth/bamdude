@@ -393,6 +393,38 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-totals-prints')).toHaveTextContent('2');
   });
 
+  it('preserves the fleet split across equal-yield model variants without adding duplicate rows', async () => {
+    const base = { ...planWithAlternative, lines: [{ ...planWithAlternative.lines[0], rows: [
+      { ...planWithAlternative.lines[0].rows[0], count: 10 },
+    ] }] };
+    vi.mocked(api.getOrderPlan).mockResolvedValue(base);
+    const main = base.lines[0].rows[0];
+    const enqueue = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+    render(<PlanBlock order={order} canEdit fitDraft={{ orderId: order.id, lineId: 10, quantity: 12,
+      rows: [{ ...main, count: 6 }, { ...main, ...otherModel, count: 4, alternatives: [] }],
+      revision: 1, planSignature: JSON.stringify(base.lines[0]) }} />);
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(10));
+    expect(screen.queryByTestId('plan-row-10-400')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('plan-row-10-100-split'));
+    expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(6);
+    expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(4);
+    fireEvent.click(screen.getByTestId('plan-enqueue-all'));
+    await waitFor(() => expect(enqueue).toHaveBeenCalledWith(1, { items: [
+      { line_id: 10, plate_id: 100, count: 6 }, { line_id: 10, plate_id: 400, count: 4 },
+    ], target: { kind: 'auto' } }));
+  });
+
+  it('offers untouched equivalent files to the calculator while respecting an explicit file choice', async () => {
+    vi.mocked(api.getOrderPlan).mockResolvedValue(planWithAlternative);
+    const selection = vi.fn();
+    render(<PlanBlock order={order} canEdit onPlateSelection={selection} />);
+    await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ 10: [100, 400, 200] }));
+    fireEvent.change(screen.getByTestId('plan-row-10-100-file'), { target: { value: '400' } });
+    await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ 10: [400, 200] }));
+    fireEvent.change(screen.getByTestId('plan-row-10-200-count'), { target: { value: '0' } });
+    await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ 10: [400] }));
+  });
+
   it('renders the recommended plates of every line', async () => {
     render(<PlanBlock order={order} canEdit />);
 

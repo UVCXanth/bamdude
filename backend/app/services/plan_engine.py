@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +62,7 @@ MAX_ITERATIONS = 10_000
 Candidate = tuple[ProductPlate, LibraryFile, PlateRecipe]
 
 
+@lru_cache(maxsize=256)
 def _model_key(model: str | None) -> str | None:
     """The same normalized model key the auto queue and forecast route on."""
     normalised = normalize_model_name(model) if model else None
@@ -448,6 +450,8 @@ def cover(
     counted: set[int],
     price_per_gram: float | None,
     capacity: FleetCapacity | None = None,
+    *,
+    compact_equivalent: bool = True,
 ) -> tuple[list[PlanRow], dict[int, int], bool]:
     """Greedy covering (spec decision 4): plates for one line, until nothing helps.
 
@@ -587,7 +591,7 @@ def cover(
                 recipes = {plate.id: recipe for plate, _file, recipe in candidates}
                 for plate_id in reversed(retained):
                     capacity.reserve(recipes[plate_id])
-    if fleet_can_choose:
+    if fleet_can_choose and compact_equivalent:
         # Scheduling can deliberately reserve equal-yield variants on different
         # model lanes.  The plan surface already represents that as one row
         # plus alternatives, and the forecast carries the proposed split.  Do
@@ -918,7 +922,7 @@ async def queued_yield_by_line(
     return out
 
 
-async def _current_fleet_capacity(db: AsyncSession) -> FleetCapacity:
+async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = ()) -> FleetCapacity:
     """Read the forecast-owned farm snapshot through its narrow planning adapter.
 
     The pure covering functions above accept only :class:`FleetCapacity`; they
@@ -933,7 +937,7 @@ async def _current_fleet_capacity(db: AsyncSession) -> FleetCapacity:
     # asks its snapshot loader for a capacity-only view.
     from backend.app.services.farm_forecast import capacity_from_snapshot, load_snapshot
 
-    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow()))
+    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow(), exclude_auto_ids=exclude_auto_ids))
 
 
 async def plan_for_orders(
