@@ -226,6 +226,48 @@ refresh_render_runtime() {
   provision_render_runtime
 }
 
+# The unit's cgroup, recorded BEFORE the stop whatever its state (spec stage C
+# R4a, consilium C2-R1): a unit that is already failed or inactive may still
+# have live descendants, so its group is checked like any other.
+SERVICE_CGROUP=""
+record_service_cgroup() {
+  SERVICE_CGROUP="$(systemctl show "$SERVICE_NAME" -p ControlGroup --value 2>/dev/null || true)"
+}
+
+# 0 only on a PROOF that nothing of the service runs: a successful query of a
+# loaded unit that is inactive or failed, a cgroup v2 hierarchy, and the
+# recorded group either gone from that readable hierarchy or `populated 0`
+# (the flag covers every descendant group). Unknown, unreadable, cgroup v1 or
+# hybrid, or no group recorded: no proof. The unit's state alone never is one.
+service_proven_stopped() {
+  local load active events root="${CGROUP_ROOT:-/sys/fs/cgroup}"
+  load="$(systemctl show "$SERVICE_NAME" -p LoadState --value 2>/dev/null)" || return 1
+  active="$(systemctl show "$SERVICE_NAME" -p ActiveState --value 2>/dev/null)" || return 1
+  [ "$load" = "loaded" ] || return 1
+  [ "$active" = "inactive" ] || [ "$active" = "failed" ] || return 1
+  [ "$(stat -fc %T "$root" 2>/dev/null || true)" = "cgroup2fs" ] || return 1
+  [ -n "$SERVICE_CGROUP" ] || return 1
+  if [ ! -e "$root$SERVICE_CGROUP" ]; then
+    [ -r "$root/cgroup.controllers" ] || return 1  # the hierarchy itself is there and readable
+    return 0
+  fi
+  events="$(cat "$root$SERVICE_CGROUP/cgroup.events" 2>/dev/null)" || return 1
+  printf '%s\n' "$events" | grep -qx 'populated 0'
+}
+
+# The STEP preview component (spec stage C R4): only an install whose
+# administrator enabled it, and an old bundle pruned only on a proven stop.
+# A subshell, like the render runtime: install.sh's globals stay out of here.
+refresh_step_preview() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -c %U "$INSTALL_DIR")"
+  step_preview_may_prune() { service_proven_stopped; }
+  refresh_enabled_step_preview
+}
+
 create_backup() {
   local ts backup_file
   local -a auth_args=()
@@ -362,6 +404,7 @@ fi
 
 create_backup
 
+record_service_cgroup  # before the stop: what the prune of an old STEP component must prove empty
 log "Stopping service: $SERVICE_NAME"
 systemctl stop "$SERVICE_NAME"
 SERVICE_STOPPED=1
@@ -386,6 +429,15 @@ if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
   fi
 else
   warn "Skipping the render runtime (install/install.sh or the venv python missing)."
+fi
+
+# Never fails the update either: only an install whose administrator enabled
+# the STEP preview component gets it, and its old bundle goes only on a proven stop.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  log "Updating the STEP preview component (if enabled)"
+  if ! (refresh_step_preview); then
+    warn "STEP preview update failed; run install/step-preview.sh status to see why."
+  fi
 fi
 
 if [ -f "$FRONTEND_DIR/package.json" ]; then

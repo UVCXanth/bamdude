@@ -642,6 +642,39 @@ provision_step_preview() {
     return 0
 }
 
+# Whether an old bundle may go: only a caller that PROVES the service stopped
+# says so (update.sh defines it from its cgroup proof); by default, never.
+step_preview_may_prune() {
+    return 1
+}
+
+# For update.sh, with the service stopped (spec stage C R4, R4a): an ENABLED
+# component gets its libraries and the new pin; an old bundle goes only when
+# the stop is proven both before the install and again just before the prune.
+# Anything else is left as it is. Always 0.
+refresh_enabled_step_preview() {
+    local answer rc=0 stopped=no
+    answer=$(step_preview_helper status 2>/dev/null) || true
+    [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
+    if step_preview_may_prune; then
+        stopped=yes
+    fi
+    if ! install_step_preview_libraries; then
+        log_warn "The system libraries for STEP previews could not be installed; trying the component anyway"
+    fi
+    STEP_PREVIEW_ANSWER=$(step_preview_helper install --if-enabled) || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log_warn "The STEP preview component was not updated: $(step_preview_hint "$STEP_PREVIEW_ANSWER")"
+        return 0
+    fi
+    if [[ "$stopped" == "yes" ]] && step_preview_may_prune; then
+        step_preview_helper prune >/dev/null || log_warn "Old STEP preview components could not be removed"
+    else
+        log_warn "The old STEP preview component was kept: the service's stop could not be proven"
+    fi
+    return 0
+}
+
 # macOS attributes Local Network permission (TCC) to a process's code
 # signature, and judges a launchd-spawned process on its own rather than
 # letting it inherit the grant of the Terminal that started it. Homebrew's
