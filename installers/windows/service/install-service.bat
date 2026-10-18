@@ -68,6 +68,46 @@ REM ===========================================================================
 :main
 
 REM ---------------------------------------------------------------------------
+REM  Before anything is touched: BamDude proven stopped, then its CAD verified
+REM ---------------------------------------------------------------------------
+REM Upgrade an existing service's grace BEFORE the first stop as well (it writes
+REM only NSSM's registry). Then a PROVEN stop: absent (1060) or stopped. Anything
+REM else - still running after the wait, or a state that cannot be read - ends
+REM here with nothing changed: no PostgreSQL setup, no verify, no service change.
+"%NSSM%" set BamDude AppStopMethodConsole 90000 2>nul
+call "%~dp0service-state.bat" BamDude 100 stop
+if errorlevel 1 (
+    echo [install-service] BamDude is not proven stopped - nothing was changed
+    exit /b 5
+)
+
+REM The STEP-preview CAD bundle must pass its full verify (rehash + a real
+REM STEP->PNG) before the service may start with it. A failure keeps the
+REM service down - registered, with its database settings, but on demand start
+REM so a reboot does not bring it up - and Setup reports it (exit code 42).
+"%PYTHON%" -m backend.app.step_runtime verify --app-dir "%APP_DIR%"
+set "VERIFY_RC=!errorlevel!"
+if not "!VERIFY_RC!"=="0" (
+    echo [install-service] the CAD runtime failed its verification ^(exit !VERIFY_RC!^) - the service is not started
+    "%SystemRoot%\System32\sc.exe" config BamDude start= demand >nul 2>&1
+    set "CFG_RC=!errorlevel!"
+    if "!CFG_RC!"=="0" (
+        echo [install-service] BamDude stays stopped, set to demand start
+    ) else if "!CFG_RC!"=="1060" (
+        echo [install-service] BamDude is not registered: nothing to keep from starting
+    ) else (
+        echo [install-service] could not set BamDude to demand start ^(sc !CFG_RC!^)
+    )
+    exit /b 4
+)
+
+REM Old CAD bundles go only now: the new one verified, BamDude proven stopped.
+REM Best effort - whatever it has to keep (in use, busy) is no reason to keep
+REM BamDude down.
+"%PYTHON%" -m backend.app.step_runtime prune --app-dir "%APP_DIR%" --other-keys
+if errorlevel 1 echo [install-service] CAD prune could not run - old bundles stay
+
+REM ---------------------------------------------------------------------------
 REM  embedded-service: initialise the cluster and register it as its own service
 REM ---------------------------------------------------------------------------
 if /I "%DB_MODE%"=="embedded-service" (
@@ -77,8 +117,6 @@ if /I "%DB_MODE%"=="embedded-service" (
 REM ---------------------------------------------------------------------------
 REM  BamDude service (NSSM-wrapped uvicorn)
 REM ---------------------------------------------------------------------------
-REM Upgrade an existing service's grace BEFORE the first stop as well.
-"%NSSM%" set BamDude AppStopMethodConsole 90000 2>nul
 "%NSSM%" stop BamDude 2>nul
 "%NSSM%" remove BamDude confirm 2>nul
 
@@ -224,7 +262,7 @@ echo [install-service] stopping %~1
 sc stop %~1 >nul 2>&1
 set /a SVC_WAITED=0
 :stop_service_wait
-sc query %~1 | find "STOPPED" >nul
+sc query %~1 | "%SystemRoot%\System32\find.exe" "STOPPED" >nul
 if not errorlevel 1 exit /b 0
 set /a SVC_WAITED+=2
 if !SVC_WAITED! GEQ %~2 (
@@ -232,7 +270,7 @@ if !SVC_WAITED! GEQ %~2 (
     exit /b 1
 )
 REM ping as the sleep: `timeout` needs a console this script does not have.
-ping -n 3 127.0.0.1 >nul
+"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
 goto :stop_service_wait
 
 :pg_ctl
