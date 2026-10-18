@@ -73,7 +73,9 @@ async def test_fleet_snapshot_drives_preview_and_apply_without_printing(
         return fleet.copy()
 
     monkeypatch.setattr(plan_engine, "_current_fleet_capacity", current)
-    response = await preview(committing_client, shop, plate_ids=[shop["plate"].id, plate.id])
+    # The normal plan compacts equivalent files; its default calculator scope
+    # must retain the alternatives even without a browser-selected list.
+    response = await preview(committing_client, shop, plate_ids=None)
     assert response.status_code == 200, response.text
     data = response.json()
     assert {o["quantity"] for o in data["options"]} == {9, 10, 11}

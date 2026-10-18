@@ -175,7 +175,15 @@ async def load(
     all_candidates = recipes.get(line.product_id, [])
     if plate_ids is None:
         plan = await plan_engine.plan_for_order(db, order_id, capacity=capacity.copy())
-        plate_ids = [row.plate_id for item in plan.lines if item.line_id == line_id for row in item.rows]
+        plate_ids = list(
+            dict.fromkeys(
+                plate_id
+                for item in plan.lines
+                if item.line_id == line_id
+                for row in item.rows
+                for plate_id in [row.plate_id, *(alt.plate_id for alt in row.alternatives)]
+            )
+        )
         if not plate_ids:
             # A fully covered line has no outstanding plan. Its linked, sliced
             # plates still make sense for exploring a larger order quantity.
