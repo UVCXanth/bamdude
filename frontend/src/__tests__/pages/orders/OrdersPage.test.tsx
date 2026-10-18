@@ -14,6 +14,7 @@ import type { FarmNeeds, OrderBoard } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
 import { SEARCH_DEBOUNCE_MS } from '../../../hooks/useSearchBox';
 import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
+import { makeOrder } from '../../fixtures/orderDetail';
 
 const rowA = { ...ORDER_ROW_DEFAULTS, id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, covered_units: 1, remaining: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] };
 const rowB = { ...ORDER_ROW_DEFAULTS, id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, covered_units: 1, remaining: 0, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] };
@@ -370,6 +371,14 @@ describe('OrdersPage', () => {
       vi.spyOn(api, 'getOrder').mockImplementation(async (id: number) => ({ ...orderDetail, id, name: id === 3 ? 'C' : 'A' }) as never);
       vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }, rowC]));
+    });
+    it('keeps the whole-plate calculator connected through the real workspace page host', async () => {
+      vi.mocked(api.getOrder).mockResolvedValue(makeOrder({ id: 1 }));
+      window.history.pushState({}, '', '/projects?order=1');
+      render(<OrdersPage />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities', exact: true }));
+      expect(await screen.findByRole('dialog', { name: 'Plate quantities' })).toBeInTheDocument();
+      expect(within(screen.getByRole('dialog')).getByRole('spinbutton')).toHaveValue(10);
     });
     // V02 (Codex r1), through the real router: history moves to a page whose answer is held. The
     // previous rows stand in, the order shown stays on its tab, the first stand-in row is never
