@@ -82,6 +82,23 @@ def test_prepare_refuses_unless_bamdude_is_absent_or_stopped():
     assert re.search(r"\(CurPageID = wpSelectDir\) and \(not WizardSilent\) and", nxt)
 
 
+def test_a_bang_in_the_install_directory_is_refused_before_anything_is_stopped():
+    """install-service.bat assigns its arguments under delayed expansion, so a `!` in {app} would be stripped from
+    every path it builds and nothing would be registered (Codex, 2026-10-18; the owner: refuse such a directory)."""
+    prepare = _routine("PrepareToInstall")
+    bang = prepare.index("Pos('!', ExpandConstant('{app}')) > 0")
+    assert bang < prepare.index("set BamDude AppStopMethodConsole 90000")
+    assert re.search(
+        r"Pos\('!', ExpandConstant\('\{app\}'\)\) > 0 then\s+begin\s+Result := CustomMessage\('AppDirHasBang'\);"
+        r"\s+Exit;",
+        prepare,
+    )
+    nxt = _routine("NextButtonClick")
+    assert re.search(
+        r"\(CurPageID = wpSelectDir\) and \(not WizardSilent\) and \(Pos\('!', WizardDirValue\) > 0\)", nxt
+    )
+
+
 def test_no_stale_comment_names_a_parameter_the_routine_lacks():
     state = _routine("ServiceState")
     assert "``Access``" not in _section("Code").split("function ServiceState", 1)[0][-600:] + state
@@ -111,7 +128,8 @@ def test_every_installer_message_exists_in_both_languages():
         lang, _, rest = line.partition(".")
         keys.setdefault(lang, set()).add(rest.split("=", 1)[0])
     assert keys["english"] == keys["ukrainian"]
-    assert {"ServiceStillRunning", "ServiceStateUnknown", "AppDirTooLong", "ServiceNotRunning"} <= keys["english"]
+    expected = {"ServiceStillRunning", "ServiceStateUnknown", "AppDirTooLong", "AppDirHasBang", "ServiceNotRunning"}
+    assert expected <= keys["english"]
 
 
 # --- install-service.bat: a proven stop, then the CAD verify, before PG or the service (plan Task 5) -------------

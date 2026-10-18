@@ -117,6 +117,7 @@ english.UninstallDataDeleteDetail=Removes that folder for good: the database, ev
 english.UninstallDataContinue=Continue
 english.ServiceStillRunning=The BamDude service did not stop within 100 seconds, so nothing was changed.%n%nStop it in Services (or restart Windows), then run this installer again.
 english.ServiceStateUnknown=Setup could not read the state of the BamDude service, so nothing was changed.%n%nRun this installer again as an administrator; if it keeps failing, the setup log says why.
+english.AppDirHasBang=The folder path must not contain an exclamation mark (!): BamDude's service setup cannot use such a path. Please choose another folder.
 english.AppDirTooLong=This folder path is too long for BamDude's 3D preview component: at most %1 characters are possible. Please choose a shorter folder.
 english.ServiceNotRunning=BamDude was installed, but its Windows service is not running, so nothing serves the dashboard yet.%n%nThe setup log is at:%n%1%n%nOpen it to see why, then re-run this installer.
 english.ServiceSetupFailed=BamDude was installed, but its Windows service could not be registered, so nothing is running yet.%n%nThe setup log is at:%n%1%n%nOpen it to see what failed, then re-run this installer.
@@ -152,6 +153,7 @@ ukrainian.UninstallDataDeleteDetail=Ця тека зникає остаточн�
 ukrainian.UninstallDataContinue=Продовжити
 ukrainian.ServiceStillRunning=Служба BamDude не зупинилася за 100 секунд, тож нічого не змінено.%n%nЗупиніть її у «Службах» (або перезавантажте Windows) і запустіть інсталятор ще раз.
 ukrainian.ServiceStateUnknown=Не вдалося прочитати стан служби BamDude, тож нічого не змінено.%n%nЗапустіть інсталятор ще раз від імені адміністратора; якщо не допоможе — причину видно в журналі встановлення.
+ukrainian.AppDirHasBang=Шлях до теки не може містити знак оклику (!): налаштування служби BamDude не працює з таким шляхом. Оберіть іншу теку.
 ukrainian.AppDirTooLong=Шлях до цієї теки задовгий для компонента 3D-прев'ю BamDude: можна щонайбільше %1 символів. Оберіть коротшу теку.
 ukrainian.ServiceNotRunning=BamDude встановлено, але служба Windows не працює, тож панель поки недоступна.%n%nЖурнал встановлення:%n%1%n%nВідкрийте його, щоб побачити причину, потім запустіть інсталятор ще раз.
 ukrainian.ServiceSetupFailed=BamDude встановлено, але службу Windows зареєструвати не вдалося, тож зараз нічого не запущено.%n%nЖурнал встановлення:%n%1%n%nВідкрийте його, щоб побачити причину, потім запустіть інсталятор ще раз.
@@ -320,6 +322,11 @@ begin
   begin
     SuppressibleMsgBox(FmtMessage(CustomMessage('AppDirTooLong'), [IntToStr({#StepMaxAppDirLen})]),
       mbError, MB_OK, IDOK);
+    Result := False;
+  end;
+  if (CurPageID = wpSelectDir) and (not WizardSilent) and (Pos('!', WizardDirValue) > 0) then
+  begin
+    SuppressibleMsgBox(CustomMessage('AppDirHasBang'), mbError, MB_OK, IDOK);
     Result := False;
   end;
   if (CurPageID = UrlPage.ID) and (Trim(UrlPage.Values[0]) = '') then
@@ -522,6 +529,14 @@ begin
   if Length(ExpandConstant('{app}')) > {#StepMaxAppDirLen} then
   begin
     Result := FmtMessage(CustomMessage('AppDirTooLong'), [IntToStr({#StepMaxAppDirLen})]);
+    Exit;
+  end;
+
+  // install-service.bat assigns its arguments under delayed expansion: a `!` in {app} would be stripped from
+  // every path it builds, and nothing would be registered. Refused here, before anything is stopped.
+  if Pos('!', ExpandConstant('{app}')) > 0 then
+  begin
+    Result := CustomMessage('AppDirHasBang');
     Exit;
   end;
 

@@ -56,7 +56,7 @@ def test_the_release_publishes_the_accepted_artifact_without_rebuilding():
 
 
 def test_the_full_acceptance_runs_every_scenario():
-    scenarios = ["S1", "S2", "S3", "S4", "S4b", "S5", "S8", "S6", "S7", "S0"]
+    scenarios = ["S1", "S2", "S3", "S4", "S4b", "S5", "S8", "S6", "S6b", "S7", "S0"]
     for name in scenarios:
         assert re.search(rf"^function {name} \{{", ACCEPT, re.M), name
     full = re.search(r"\$Full = @\(([^)]*)\)", ACCEPT).group(1)
@@ -210,3 +210,13 @@ def test_only_a_dispatch_that_asks_for_it_skips_the_ci_gate():
     # A skipped gate up the chain would skip every job after build too unless each says what it needs.
     assert "needs.build.result == 'success'" in JOBS["acceptance"]["if"]
     assert "github.event_name == 'push'" in JOBS["release"]["if"]
+
+
+def test_a_bang_in_the_install_directory_is_refused_on_the_real_installer():
+    """S6b: a directory with `!` is refused with Setup's 7, nothing created, the service untouched (owner, 2026-10-18)."""
+    s6b = re.search(r"^function S6b \{.*?^\}", ACCEPT, re.M | re.S).group(0)
+    assert "!" in re.search(r"^\$BangDir = (.*)$", ACCEPT, re.M).group(1)
+    for check in ("$code -eq 7", "Test-Path -LiteralPath $BangDir", "Svc-Status BamDude"):
+        assert check in s6b, check
+    reset = re.search(r"^function Reset-Machine \{.*?^\}", ACCEPT, re.M | re.S).group(0)
+    assert "$BangDir" in reset  # whatever a failed run left there goes with the reset

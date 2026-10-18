@@ -9,7 +9,7 @@
   runner. Every call of Setup is silent (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART) under a deadline that ends the
   whole process tree; nothing here may wait on a window.
 
-  Order: S1 S2 S3 S4 S4b S5 S8 S6 S7, a reset, then S0 (an upgrade from v0.7.0 needs a machine without BamDude).
+  Order: S1 S2 S3 S4 S4b S5 S8 S6 S6b S7, a reset, then S0 (an upgrade from v0.7.0 needs a machine without BamDude).
   Only the full scope can open a release; the diagnostic scope runs a subset and never does.
 #>
 param(
@@ -33,6 +33,7 @@ $Limit = [int](Get-Content -LiteralPath $Payload -Raw | ConvertFrom-Json).app_di
 $Base = 'C:\БД тест '
 $AppDir = $Base + ('я' * ($Limit - $Base.Length))  # exactly at the limit: Cyrillic, with a space
 $TooLong = $AppDir + 'я'
+$BangDir = 'C:\БД тест!'  # install-service.bat cannot use a path with `!`: Setup refuses it
 $Key = 'win-x64-cp312'
 $OldTag = 'v0.7.0'
 $OldAsset = 'bamdude-0.7.0-windows-x64-setup.exe'
@@ -209,7 +210,7 @@ function Reset-Machine {
     }
     Remove-Service BamDude
     Remove-Service BamDudePostgres
-    foreach ($dir in @($AppDir, $TooLong, $OldDir, $Data)) {
+    foreach ($dir in @($AppDir, $TooLong, $BangDir, $OldDir, $Data)) {
         if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     }
     Remove-Item -LiteralPath $State -ErrorAction SilentlyContinue
@@ -334,6 +335,13 @@ function S6 {  # one unit past the limit: refused before anything is stopped or 
     Assert ((Svc-Status BamDude) -eq 'Running') 'a refused install stopped the service'
 }
 
+function S6b {  # a `!` in the install directory: refused before anything is stopped or created
+    $code = Invoke-Setup $Installer $BangDir 'S6b'
+    Assert ($code -eq 7) "Setup exited $code, not 7"
+    Assert (-not (Test-Path -LiteralPath $BangDir)) 'Setup created the directory with a !'
+    Assert ((Svc-Status BamDude) -eq 'Running') 'a refused install stopped the service'
+}
+
 function S7 {  # a silent uninstall keeps the data and opens no window
     Invoke-Uninstall $AppDir
     Assert (-not (Svc BamDude)) 'the service survived the uninstall'
@@ -359,7 +367,7 @@ function S0 {  # an upgrade from the released v0.7.0: Node replaced, CAD added, 
 
 # --- run --------------------------------------------------------------------------------------------------------
 
-$Full = @('S1', 'S2', 'S3', 'S4', 'S4b', 'S5', 'S8', 'S6', 'S7', 'S0')
+$Full = @('S1', 'S2', 'S3', 'S4', 'S4b', 'S5', 'S8', 'S6', 'S6b', 'S7', 'S0')
 $Diagnostic = @('S1', 'S2', 'S6', 'S7')
 $Run = if ($Scope -eq 'full') { $Full } else { $Diagnostic }
 Reset-Machine
