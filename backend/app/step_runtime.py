@@ -262,6 +262,51 @@ def bundle_dir(app_dir: Path, key: str, digest: str) -> Path:
     return bundle_root(app_dir) / key / digest[:32]
 
 
+# --- the administrator's choice (spec stage C R1) ----------------------------------------------------------------
+#
+# A native install carries the component only when its administrator chose it (owner's Q3): the choice is a marker
+# beside the bundle root, written and read here alone. It is an intent, never evidence: whether a bundle works is
+# for verify to say, and a marker written before a failed install does not make anything verified. Docker and the
+# Windows installer carry the component by default and never read it.
+
+CHOICE_FILE = "step-preview.choice.json"
+CHOICES = ("enabled", "disabled")
+CHOOSERS = ("install", "cli")
+
+
+def choice_path(app_dir: Path) -> Path:
+    return Path(app_dir) / "runtime" / CHOICE_FILE
+
+
+def read_choice(app_dir: Path) -> str:
+    """``enabled`` or ``disabled`` only from a marker of this schema; anything else — missing, unreadable, another
+    schema or value — is ``none``, never ``enabled``."""
+    try:
+        body = json.loads(choice_path(app_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "none"
+    if not isinstance(body, dict) or body.get("schema") != 1 or body.get("choice") not in CHOICES:
+        return "none"
+    return body["choice"]
+
+
+def write_choice(app_dir: Path, choice: str, *, by: str) -> None:
+    """Replace the marker in one rename; a marker that cannot be written is the closed ``permission``."""
+    if choice not in CHOICES or by not in CHOOSERS:
+        raise ValueError(f"choice {choice!r} by {by!r}")
+    target = choice_path(app_dir)
+    body = {"schema": 1, "choice": choice, "decided_at": iso(datetime.now(UTC)), "by": by}
+    temporary = target.with_name(f".{CHOICE_FILE}.{uuid.uuid4().hex}.tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(body, indent=1), encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise InstallError("permission") from exc
+
+
 def receipt_for(catalog: Catalog, selection: Selection, **extra) -> dict:
     return {
         "schema": 1,
@@ -489,8 +534,36 @@ def verify(app_dir: Path, *, full: bool = True, data_dir: Path = DATA) -> tuple[
     return (EXIT_FAILED if problems else EXIT_OK), problems
 
 
+def status(app_dir: Path, *, check: bool = False, data_dir: Path = DATA) -> tuple[int, dict]:
+    """The choice and the bundle, in closed values without paths (spec stage C R2). Without ``check``: what the
+    receipt says, cheaply — ``installed`` is never "works" (a receipt over an emptied site still locates). With
+    ``check``: the full verify, ``works`` or the closed reason it failed with (the tree's as ``verify_failed:…``,
+    as install words it; the smoke's as it is)."""
+    answer = {"choice": read_choice(app_dir)}
+    try:
+        catalog = load_catalog(data_dir, decode_tags=False)
+    except CatalogError as exc:
+        return (EXIT_FAILED if check else EXIT_OK), {**answer, "bundle": f"catalog_invalid:{exc.reason}"}
+    found = refine_missing(locate(app_dir, catalog))
+    if not found.ok:
+        bundle = {"not_installed": "missing"}.get(found.reason or "", found.reason or "missing")
+        if not check:
+            return EXIT_OK, {**answer, "bundle": bundle}
+        return (EXIT_UNSUPPORTED if bundle == "unsupported" else EXIT_FAILED), {**answer, "bundle": bundle}
+    if not check:
+        return EXIT_OK, {**answer, "bundle": "installed"}
+    wheel = next(a for a in catalog.manifest["artifacts"] if a["key"] == found.key)
+    problems = [f"verify_failed:{p}" for p in verify_tree(found.site, catalog.closure["artifacts"][wheel["filename"]])]
+    problems = problems or smoke(found.site)
+    return (EXIT_FAILED, {**answer, "bundle": problems[0]}) if problems else (EXIT_OK, {**answer, "bundle": "works"})
+
+
 PROBE_STEP = DATA / "step_probe" / "box_mm.step"
 RENDER_SECONDS = 120
+# The outer budget the in-app update gives one install (spec stage C R6b): a POLICY, not a proven upper bound — the
+# lock wait, pip and each smoke child are bounded, the rehash and the proof of a tree's end are not. Past it the
+# helper is stopped and its end still proven.
+INSTALL_DEADLINE_SECONDS = 2 * INSTALL_SECONDS + SMOKE_SECONDS + 2 * RENDER_SECONDS
 APP_ROOT = Path(__file__).resolve().parents[2]
 MIN_DRAWN = 0.01  # of a picture's pixels must differ from its corner
 
@@ -667,8 +740,12 @@ def _platform_lock(root: Path, key: str, timeout: float):
     """One install of a platform+ABI at a time: a lock file the OS releases when its holder ends, however it ends.
     Both locks are per open handle, so two threads of one process exclude each other too. The file stays: removing
     it would race an install opening it."""
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / f".{key}.lock").open("a+b") as handle:
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        handle = (root / f".{key}.lock").open("a+b")
+    except PermissionError as exc:  # a tree a `sudo` run left root-owned (spec stage C R9)
+        raise InstallError("permission") from exc
+    with handle:
         deadline = time.monotonic() + timeout
         while not _try_lock(handle):
             if time.monotonic() >= deadline:
@@ -934,12 +1011,25 @@ def prune(
 def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -> int:
     ap = argparse.ArgumentParser(prog="python -m backend.app.step_runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("install", "verify", "select", "requirements", "prune"):
+    for name in ("install", "verify", "select", "requirements", "prune", "choose", "status"):
         p = sub.add_parser(name)
         p.add_argument("--app-dir", type=Path, default=Path(__file__).resolve().parents[2])
+        if name == "choose":
+            p.description = "Record the administrator's choice of the STEP component; installs nothing."
+            p.add_argument("choice", choices=CHOICES)
+            p.add_argument("--by", choices=CHOOSERS, required=True)
+        if name == "status":
+            p.add_argument(
+                "--check", action="store_true", help="the full verify (rehash + STEP->PNG), not only the receipt"
+            )
         if name == "install":
             p.add_argument("--wheels", type=Path, help="install offline from this directory of the pinned wheels")
             p.add_argument("--allow-candidate", action="store_true", help="development only; no official build")
+            p.add_argument(
+                "--if-enabled",
+                action="store_true",
+                help="only when the administrator chose the component; otherwise nothing at all (no network, no lock)",
+            )
             p.add_argument(
                 "--import-only",
                 action="store_true",
@@ -956,6 +1046,17 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             p.add_argument("--other-keys", action="store_true", help="also this platform's other Python ABIs")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "choose":
+            write_choice(a.app_dir, a.choice, by=a.by)
+            print(json.dumps({"ok": True, "choice": a.choice}))
+            return EXIT_OK
+        if a.cmd == "status":
+            rc, answer = status(a.app_dir, check=a.check, data_dir=data_dir)
+            print(json.dumps(answer))
+            return rc
+        if a.cmd == "install" and a.if_enabled and read_choice(a.app_dir) != "enabled":
+            print(json.dumps({"ok": True, "skipped": "not_enabled"}))
+            return EXIT_OK
         if a.cmd == "install":
             target = install(
                 a.app_dir,
@@ -995,6 +1096,9 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
         if getattr(exc, "detail", ""):
             answer["detail"] = exc.detail
         print(json.dumps(answer))
+        return EXIT_FAILED
+    except PermissionError:  # a tree a `sudo` run left root-owned (spec stage C R9): closed, never the raw class
+        print(json.dumps({"ok": False, "reason": "permission"}))
         return EXIT_FAILED
     except Exception as exc:  # a closed answer; the traceback is not shown to the operator
         print(json.dumps({"ok": False, "reason": type(exc).__name__}))
