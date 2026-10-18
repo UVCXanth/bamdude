@@ -378,7 +378,7 @@ describe('OrdersPage', () => {
       render(<OrdersPage />);
       fireEvent.click(await screen.findByRole('button', { name: 'Plate quantities', exact: true }));
       expect(await screen.findByRole('dialog', { name: 'Plate quantities' })).toBeInTheDocument();
-      expect(within(screen.getByRole('dialog')).getByRole('spinbutton')).toHaveValue(10);
+      expect(await within(screen.getByRole('dialog')).findByRole('spinbutton')).toHaveValue(10);
     });
     // V02 (Codex r1), through the real router: history moves to a page whose answer is held. The
     // previous rows stand in, the order shown stays on its tab, the first stand-in row is never

@@ -38,7 +38,7 @@ describe('OrderView composition', () => {
     const line = order.lines[0];
     const mocks = mockOrderDetailApi(order);
     mocks.getOrderPlan.mockResolvedValue({ lines: [{ line_id: line.id, product_id: line.product_id,
-      product_name: line.product_name, material: null, outstanding_before: [], rows: [], surplus_after: [],
+      product_name: line.product_name, material: null, outstanding_before: [{ part_id: 1, name: 'Part A', count: 1 }], rows: [], surplus_after: [],
       unsatisfiable: [], candidates: [], not_sliced: [] }],
       totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null }, truncated: false });
     const write = vi.spyOn(api, 'updateOrderLine');
