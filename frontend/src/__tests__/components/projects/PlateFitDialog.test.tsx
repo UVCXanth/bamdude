@@ -31,6 +31,20 @@ async function calculate(d = door) {
 }
 
 describe('whole-plate quantity review', () => {
+  it('shows the greedy free-stock reservation before applying and rechecks the resulting plan', async () => {
+    const reply = result([900, 3000]);
+    reply.options[1] = { ...reply.options[1], from_finished: 2, from_kits: 3, stock_parts: { '1': 4 },
+      parts: [{ ...reply.options[1].parts[0], free_stock: 9, new_printed: 2921 }] };
+    vi.mocked(api.getPlateFit).mockResolvedValue(reply);
+    const plan = readyPlan(); plan.lines[0].outstanding_before[0].count = 2921;
+    vi.mocked(api.getOrderPlan).mockResolvedValue(plan);
+    await calculate();
+    expect(screen.getByText('Applying will reserve free stock: 2 finished products, 3 kits and 4 individual parts.')).toBeInTheDocument();
+    expect(api.updateOrderLine).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set quantity to 3,000' }));
+    await waitFor(() => expect(door.onApplied).toHaveBeenCalled());
+  });
   it('requires separate consent to remove only the reviewed pending auto jobs', async () => {
     vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([900, 3000]), removable_auto_ids: [91, 92] });
     render(<PlateFitDialog door={door} onClose={vi.fn()} />);

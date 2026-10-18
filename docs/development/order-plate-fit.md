@@ -11,7 +11,7 @@ need an initially empty acknowledgement; a new selection resets it.
 ## Existing solutions
 
 - SciPy `optimize.milp` / HiGHS is already installed (`scipy>=1.11` for calibration
-  meshes). Its integer bounds, time budget, gap and result status fit this task.
+  meshes). Its integer bounds, time budget, gap and result status let us skip impossible quantities without replacing the greedy planner.
   Official API: <https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html>.
 - PuLP / CBC would introduce another modelling dependency and solver executable
   configuration. It offers no benefit over the already bundled solver here:
@@ -23,25 +23,38 @@ need an initially empty acknowledgement; a new selection resets it.
 No general solver, scheduler, ledger or persistence layer is added. The domain
 adapter reads the existing composition, order metrics, reservations and shared
 queued-yield reader. The ordinary greedy planner and dispatcher are unchanged.
+The existing stock-offer arithmetic is exposed as a pure shared pass; the
+ordinary offer/take endpoints use that same pass, with no duplicated rules.
 
-For each counted printed part, required output is `per * quantity + ceil(extra *
-quantity)`. Good output, received coverage, existing allocations, expected
-running and queued output are fixed offsets; new plate runs are nonnegative
-integers. Rejected output is absent. Every returned answer is verified with
-Python integer/Fraction arithmetic. A time/node limit says **unfinished**, never
-**infeasible** or **nearest**. Nearest is reported only after solver optimality.
-Unknown/unselected shelf output and ambiguous implicit attribution are refused.
+The invariant is **greedy covering, including free ready products, kits and
+individual parts**. Every candidate quantity goes through the existing
+`stock_offers` shared-shelf pass and `plan_engine.cover`. A mathematically exact
+alternative mix is not an answer when the greedy planner leaves surplus
+(e.g. demand 8 with plates of 6 and 4 is refused; the greedy exact quantity is
+10). HiGHS searches only a necessary-condition integer relaxation, including
+available stock bounds, to skip impossible quantities. Its runs are NEVER
+returned. Each candidate is checked with the canonical greedy rules and Python
+integer/Fraction arithmetic; rejected quantities are excluded and search
+continues under the shared time budget. Nearest is reported only after
+optimality and greedy verification; an unfinished search says **unfinished**.
+The existing cover iteration guard remains a limit, not proof of no solution.
+
+Required output includes `per * quantity + ceil(extra * quantity)`. Good output,
+received coverage, existing allocations and running/queued output count once;
+rejects do not. Free stock is proposed before new printing, and the shared-shelf
+pass never spends it twice across configurations/lines. Already reserved stock
+of other orders is unavailable. Preview never reserves anything. Unknown or
+unselected shelf output and ambiguous implicit attribution are refused.
 Already banked/returned output is refused rather than reusing another shelf's
-parts. Free stock is never borrowed automatically: allocate it through the
-existing Stock & issue action first, then recalculate.
+parts.
 
 ## Applying and queue changes
 
 The proposal carries a fingerprint of the quantity, resolved composition,
 fixed output and selected recipes. The existing line PATCH rechecks it under
-the normal stock/line locks before updating quantity, retains the existing
-issued/held floors, fits reservations using the existing writer, and verifies
-that the resulting accounts still satisfy the exact plan. A stale proposal
+the normal positions/lines/parts locks before updating quantity, retains the existing
+issued/held floors, fits reservations using the existing writer, takes the shown free stock through `stock_offers.take` (requiring stock-move permission), and verifies
+that the resulting accounts still satisfy the exact plan. A clamped stock take rolls back the entire edit, including quantity and reviewed Auto Queue removals. A stale proposal
 rolls back. No new migration or database column is required.
 
 By default both queues remain fixed. An optional **Recalculate unassigned Auto

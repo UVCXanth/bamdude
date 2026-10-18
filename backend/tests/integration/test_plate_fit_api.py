@@ -4,9 +4,11 @@ import pytest
 from sqlalchemy import func, select
 
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.product import ProductPlate
 from backend.app.models.project_line import ProjectLine
-from backend.app.services import part_stock
+from backend.app.services import finished_stock, part_stock
 from backend.tests.integration.test_workshop_stock_plan_regressions import archive, shop  # noqa: F401
 
 
@@ -275,3 +277,227 @@ async def test_auto_assignment_during_review_refuses_removal_and_quantity_edit(c
     order = await committing_client.get(f"/api/v1/projects/{shop['order']}")
     assert order.json()["lines"][0]["quantity"] == 10
     assert (await db_session.get(AutoQueueItem, auto.id)).status == "assigned"
+
+
+async def separate_plates(db, shop):
+    plates = []
+    for name, count in (("Part A", 3), ("Part B", 1)):
+        file = LibraryFile(
+            filename=f"Product A {name}.gcode.3mf",
+            file_path="synthetic-only",
+            file_type="gcode",
+            file_size=1,
+            file_metadata={
+                "plates": [
+                    {"index": 1, "printable_objects": {str(i): name for i in range(count)}, "print_time_seconds": 100}
+                ]
+            },
+        )
+        db.add(file)
+        await db.flush()
+        plate = ProductPlate(product_id=shop["a"].product_id, library_file_id=file.id, plate_index=0)
+        db.add(plate)
+        await db.flush()
+        plates.append(plate.id)
+    await db.commit()
+    return plates
+
+
+async def test_free_finished_kits_and_loose_parts_are_greedily_used_and_reserved_only_on_apply(
+    committing_client, db_session, shop
+):
+    ids = await separate_plates(db_session, shop)
+    position = await finished_stock.item_for(db_session, shop["a"].product_id, {}, create=True)
+    await finished_stock.receive(db_session, position, 2)
+    for part, count in ((shop["a"], 12), (shop["b"], 3)):
+        await part_stock.move(
+            db_session, part_id=part.id, delta=count, reason="manual", note="Product A free-stock fixture"
+        )
+    await db_session.commit()
+    response = await preview(committing_client, shop, plate_ids=ids)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    current = next(o for o in data["options"] if o["quantity"] == 10)
+    assert (current["from_finished"], current["from_kits"], current["stock_parts"]) == (2, 3, {str(shop["a"].id): 3})
+    assert [p["free_stock"] for p in current["parts"]] == [18, 5]
+    assert sorted(r["count"] for r in current["runs"]) == [4, 5]
+    assert await finished_stock.held_for_line(db_session, shop["line"]) == 0
+    assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {}
+    accepted = await apply(committing_client, shop, data, current)
+    assert accepted.status_code == 200, accepted.text
+    assert await finished_stock.held_for_line(db_session, shop["line"]) == 2
+    assert await part_stock.balances(db_session, shop["a"].product_id) == {shop["a"].id: 0, shop["b"].id: 0}
+    assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {
+        shop["a"].id: 12,
+        shop["b"].id: 3,
+    }
+    assert await db_session.scalar(select(func.count()).select_from(AutoQueueItem)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(PrintQueueItem)) == 0
+
+
+async def test_changed_free_shelf_invalidates_the_offer_without_reserving_or_editing(
+    committing_client, db_session, shop
+):
+    ids = await separate_plates(db_session, shop)
+    response = await preview(committing_client, shop, plate_ids=ids)
+    data = response.json()
+    current = next(o for o in data["options"] if o["quantity"] == 9)
+    await part_stock.move(db_session, part_id=shop["a"].id, delta=3, reason="manual", note="Concurrent shelf receipt")
+    await db_session.commit()
+    refused = await apply(committing_client, shop, data, current)
+    assert refused.status_code == 409 and refused.json()["detail"]["error"] == "plate_fit_stale"
+    assert (await committing_client.get(f"/api/v1/projects/{shop['order']}")).json()["lines"][0]["quantity"] == 10
+    assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {}
+
+
+async def test_shared_free_stock_is_not_promised_to_two_lines(committing_client, db_session, shop):
+    line = ProjectLine(project_id=shop["order"], product_id=shop["a"].product_id, quantity=10)
+    db_session.add(line)
+    for part, count in ((shop["a"], 3), (shop["b"], 1)):
+        await part_stock.move(db_session, part_id=part.id, delta=count, reason="manual", note="Shared shelf")
+    await db_session.commit()
+    second = {**shop, "line": line.id}
+    response = await preview(committing_client, second)
+    assert response.status_code == 200, response.text
+    current = next(o for o in response.json()["options"] if o["quantity"] == 10)
+    assert current["from_finished"] == current["from_kits"] == 0
+    assert current["stock_parts"] == {}
+    assert current["runs"][0]["count"] == 10
+
+
+async def test_stock_move_permission_is_checked_before_quantity_or_free_stock_changes(
+    committing_client, db_session, shop
+):
+    from backend.tests.integration.test_workshop_library_rights import _jwt, _user
+
+    for part, count in ((shop["a"], 3), (shop["b"], 1)):
+        await part_stock.move(db_session, part_id=part.id, delta=count, reason="manual", note="Free stock rights")
+    await db_session.commit()
+    name = "fit_stock_read_only"
+    await _user(db_session, name, ["orders:read", "orders:update", "products:read", "stock:read"])
+    response = await committing_client.post(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/plate-fit",
+        json={"around": 10, "plate_ids": [shop["plate"].id]},
+        headers=_jwt(name),
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    current = next(o for o in data["options"] if o["quantity"] == 9)
+    assert current["from_kits"] == 1
+    refused = await committing_client.patch(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}",
+        json={
+            "quantity": 9,
+            "plate_fit": {
+                "basis": data["basis"],
+                "plate_ids": data["plate_ids"],
+                "runs": current["runs"],
+                "acknowledge_large_change": False,
+            },
+        },
+        headers=_jwt(name),
+    )
+    assert refused.status_code == 403, refused.text
+    assert (await committing_client.get(f"/api/v1/projects/{shop['order']}")).json()["lines"][0]["quantity"] == 10
+    assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {}
+
+
+async def test_stock_take_failure_rolls_back_quantity_queue_removal_and_all_shelf_changes(
+    committing_client, db_session, shop, monkeypatch
+):
+    from dataclasses import replace
+
+    from backend.app.services import stock_offers
+
+    for part, count in ((shop["a"], 3), (shop["b"], 1)):
+        await part_stock.move(db_session, part_id=part.id, delta=count, reason="manual", note="Atomic shelf fixture")
+    auto = AutoQueueItem(
+        project_id=shop["order"],
+        project_line_id=shop["line"],
+        library_file_id=shop["file"].id,
+        plate_id=1,
+        status="pending",
+    )
+    db_session.add(auto)
+    await db_session.commit()
+    auto_id = auto.id
+    response = await preview(committing_client, shop, replace_pending=True)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    chosen = next(o for o in data["options"] if o["quantity"] == 9)
+    assert chosen["from_kits"] == 1 and chosen["runs"][0]["count"] == 8
+    original = stock_offers.take
+
+    async def clamped_after_real_take(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        return [replace(row, got_kits=0) for row in rows]
+
+    monkeypatch.setattr(stock_offers, "take", clamped_after_real_take)
+    refused = await committing_client.patch(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}",
+        json={
+            "quantity": 9,
+            "plate_fit": {
+                "basis": data["basis"],
+                "plate_ids": data["plate_ids"],
+                "runs": chosen["runs"],
+                "replace_pending": True,
+                "acknowledge_queue_change": True,
+            },
+        },
+    )
+    assert refused.status_code == 409 and refused.json()["detail"]["error"] == "plate_fit_stale"
+    assert (await committing_client.get(f"/api/v1/projects/{shop['order']}")).json()["lines"][0]["quantity"] == 10
+    assert (await db_session.get(AutoQueueItem, auto_id)).status == "pending"
+    assert await part_stock.reserved_parts_for_line(db_session, await db_session.get(ProjectLine, shop["line"])) == {}
+    assert await part_stock.balances(db_session, shop["a"].product_id) == {shop["a"].id: 3, shop["b"].id: 1}
+
+
+async def test_extra_demand_does_not_pretend_finished_stock_can_cover_already_completed_base_units(
+    committing_client, db_session, shop
+):
+    # With plates of 6A+2B, q=10 needs just the 20% extras (6A+2B).
+    # The free ready product cannot cover them: all ten base units already exist.
+    line = await db_session.get(ProjectLine, shop["line"])
+    line.extra_percentages = {str(shop["a"].id): 20, str(shop["b"].id): 20}
+    file = shop["file"]
+    file.file_metadata = {
+        "plates": [
+            {
+                "index": 1,
+                "printable_objects": {str(i): "Part A" if i < 6 else "Part B" for i in range(8)},
+                "print_time_seconds": 100,
+            }
+        ]
+    }
+    await db_session.commit()
+    await archive(db_session, shop, status="completed", quantities=(30, 10))
+    position = await finished_stock.item_for(db_session, shop["a"].product_id, {}, create=True)
+    await finished_stock.receive(db_session, position, 1)
+    await db_session.commit()
+    response = await preview(committing_client, shop, around=12)
+    assert response.status_code == 200, response.text
+    lower = max((o for o in response.json()["options"] if o["quantity"] < 12), key=lambda o: o["quantity"])
+    assert lower["quantity"] == 10
+    assert lower["from_finished"] == 0 and lower["runs"][0]["count"] == 1
+
+
+async def test_free_stock_clamps_to_small_demand_but_does_not_hide_infeasibility_above_it(
+    committing_client, db_session, shop
+):
+    ids = await separate_plates(db_session, shop)
+    for part, count in ((shop["a"], 7), (shop["b"], 1)):
+        await part_stock.move(
+            db_session, part_id=part.id, delta=count, reason="manual", note="Stock saturation boundary"
+        )
+    await db_session.commit()
+    response = await preview(committing_client, shop, plate_ids=ids)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert [o["quantity"] for o in data["options"]] == [2]
+    assert data["upper"] == "none" and data["current"] == "none"
+    lower = data["options"][0]
+    assert lower["stock_parts"] == {str(shop["a"].id): 3} and lower["from_kits"] == 1
+    assert [p["free_stock"] for p in lower["parts"]] == [6, 1]
+    assert lower["runs"] == [{"plate_id": ids[1], "count": 1}]
+    assert await part_stock.balances(db_session, shop["a"].product_id) == {shop["a"].id: 7, shop["b"].id: 1}

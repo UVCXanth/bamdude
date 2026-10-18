@@ -24,7 +24,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.services import finished_stock, order_journal, part_stock, plan_engine, stock_pick
 from backend.app.services.line_composition import counted, load_line_configs
-from backend.app.services.order_metrics import attribute, composition_of, load_order_context
+from backend.app.services.order_metrics import LineFigures, OrderContext, attribute, composition_of, load_order_context
 from backend.app.services.product_composition import recipes_for_products
 
 
@@ -72,6 +72,47 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
     queued = await plan_engine.queued_yield_by_line(
         db, recipes, ctx.lines, plan_engine.counted_parts_by_line({project.id: figures})
     )
+    wants = _wants(ctx, figures, queued)
+    if not wants:
+        return []
+    supply = await load_supply(db, replace(ctx, lines=[line for line in lines if line.id in wants]))
+    return offers_for(ctx, figures, queued, supply)
+
+
+@dataclass(frozen=True, slots=True)
+class Supply:
+    """The existing offer's shelf reads, reusable across read-only what-if quantities."""
+
+    ready: dict[int, stock_pick.Suggestion]
+    parts: dict[int, dict[int, int]]
+
+
+async def load_supply(db: AsyncSession, ctx: OrderContext) -> Supply:
+    lines = [line for line in ctx.lines if line.mode == "product"]
+    configs = await load_line_configs(db, [line.id for line in lines])
+    suggestions = await stock_pick.suggest(
+        db,
+        [
+            stock_pick.PickRequest(
+                product_id=line.product_id,
+                choices=configs[line.id].choices if line.id in configs else {},
+                counts=configs[line.id].counts if line.id in configs else {},
+                # The capacity fields are independent of requested quantity.
+                quantity=1,
+            )
+            for line in lines
+        ],
+    )
+    return Supply(
+        dict(zip((line.id for line in lines), suggestions, strict=True)),
+        await part_stock.balances_for_products(db, sorted({line.product_id for line in lines})),
+    )
+
+
+def _wants(
+    ctx: OrderContext, figures: Mapping[int, LineFigures], queued: Mapping[int, dict[int, int]]
+) -> dict[int, int]:
+    lines = [line for line in ctx.lines if line.mode == "product"]
     wants: dict[int, int] = {}
     for line in lines:
         figs = figures[line.id]
@@ -82,28 +123,25 @@ async def offers(db: AsyncSession, project: Project) -> list[Offer]:
             p.extra_qty and p.remaining > p.in_progress + queued.get(line.id, {}).get(p.part_id, 0) for p in figs.parts
         ):
             wants[line.id] = want
-    if not wants:
-        return []
-    configs = await load_line_configs(db, list(wants))
+    return wants
+
+
+def offers_for(
+    ctx: OrderContext,
+    figures: Mapping[int, LineFigures],
+    queued: Mapping[int, dict[int, int]],
+    supply: Supply,
+) -> list[Offer]:
+    """The SAME greedy shared-shelf pass used by offers/take, without database writes.
+
+    The input shelves are copied: one quantity's virtual take must not reduce
+    the next quantity's shelf. Earlier order lines still get first claim.
+    """
+    lines = [line for line in ctx.lines if line.mode == "product"]
+    wants = _wants(ctx, figures, queued)
     asked = [line for line in lines if line.id in wants]
-    full_asked = [line for line in asked if wants[line.id] > 0]
-    suggestions = await stock_pick.suggest(
-        db,
-        [
-            stock_pick.PickRequest(
-                product_id=line.product_id,
-                choices=configs[line.id].choices if line.id in configs else {},
-                counts=configs[line.id].counts if line.id in configs else {},
-                quantity=wants[line.id],
-            )
-            for line in full_asked
-        ],
-    )
-    by_line = dict(zip((line.id for line in full_asked), suggestions, strict=True))
-    suggestions = [
-        by_line.get(line.id, stock_pick.Suggestion(line.product_id, 0, 0, 0, 0, 0, None, None)) for line in asked
-    ]
-    shelves = await part_stock.balances_for_products(db, sorted({line.product_id for line in asked}))
+    shelves = {pid: dict(parts) for pid, parts in supply.parts.items()}
+    suggestions = [supply.ready[line.id] for line in asked]
     # Suggestions describe each row's shelf. Offers are one batch: spend a
     # shared shelf once, including two configurations of the same product.
     ready_left: dict[int, int] = {}

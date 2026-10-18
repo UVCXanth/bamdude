@@ -2195,8 +2195,9 @@ export interface PlateFitConfirmation {
 }
 export interface PlateFitOption {
   quantity: number;
+  from_finished?: number; from_kits?: number; stock_parts?: Record<string, number>;
   runs: { plate_id: number; count: number }[];
-  parts: { part_id: number; name: string; required: number; allocated: number; completed: number; printing: number; queued: number; new_printed: number }[];
+  parts: { part_id: number; name: string; required: number; allocated: number; completed: number; printing: number; queued: number; new_printed: number; free_stock?: number }[];
   print_time_seconds: number | null; filament_used_grams: number | null;
 }
 export interface PlateFitResponse {

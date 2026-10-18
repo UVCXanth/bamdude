@@ -2029,6 +2029,14 @@ async def update_line(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     line = await _get_line(db, project_id, line_id)
+    if data.plate_fit is not None:
+        await ensure(creds, Permission.ORDERS_READ)
+        await ensure(creds, Permission.PRODUCTS_READ)
+        await ensure(creds, Permission.STOCK_READ)
+        # The shared-stock offer visits all lines. Acquire their canonical
+        # position -> line -> part locks together before the ordinary edit.
+        project = await _get_project(db, project_id)
+        await finished_stock.lock_lines_with_parts(db, project.lines)
     if line.mode == "parts":
         # Rules 15–16: one set of parts, never kits.
         if "quantity" in data.model_fields_set and data.quantity != 1:
@@ -2044,10 +2052,8 @@ async def update_line(
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     fit_snapshot = None
+    fit_selection = None
     if data.plate_fit is not None:
-        await ensure(creds, Permission.ORDERS_READ)
-        await ensure(creds, Permission.PRODUCTS_READ)
-        await ensure(creds, Permission.STOCK_READ)
         if data.plate_fit.replace_pending:
             await creds.check(_plate_fit_queue_gate)
         if data.quantity is None or data.model_fields_set - {"quantity", "plate_fit"}:
@@ -2061,7 +2067,9 @@ async def update_line(
                 replace_pending=data.plate_fit.replace_pending,
                 lock_pending=data.plate_fit.replace_pending,
             )
-            plate_fit.confirm(fit_snapshot, data.quantity, data.plate_fit)
+            fit_selection = await plate_fit.disk(lambda: plate_fit.confirm(fit_snapshot, data.quantity, data.plate_fit))
+            if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+                await ensure(creds, Permission.STOCK_MOVE)
         except plate_fit.FitError as e:
             raise _fit_error(e) from e
     if line.mode != "parts" and finished_stock.moved(line):
@@ -2168,6 +2176,24 @@ async def update_line(
             await plate_fit.remove_reviewed_pending(db, fit_snapshot)
         except plate_fit.FitError as e:
             raise _fit_error(e) from e
+        if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+            try:
+                taken = await stock_offers.take(
+                    db,
+                    project,
+                    {line_id: (fit_selection.from_finished, fit_selection.from_kits, fit_selection.stock_parts)},
+                    actor=current_user,
+                )
+                if len(taken) != 1 or (taken[0].got_finished, taken[0].got_kits, taken[0].got_parts) != (
+                    fit_selection.from_finished,
+                    fit_selection.from_kits,
+                    fit_selection.stock_parts,
+                ):
+                    raise plate_fit.FitError("stale")
+            except (stock_offers.StockOfferError, finished_stock.FinishedStockError, part_stock.PartStockError) as e:
+                raise _fit_error(plate_fit.FitError("stale")) from e
+            except plate_fit.FitError as e:
+                raise _fit_error(e) from e
         await db.flush()
         try:
             after_fit = await plate_fit.load(db, project_id, line_id, data.plate_fit.plate_ids)

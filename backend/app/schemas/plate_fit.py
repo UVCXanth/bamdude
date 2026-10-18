@@ -37,11 +37,15 @@ class PlateFitPart(BaseModel):
     completed: int
     printing: int
     queued: int
+    free_stock: int = 0
     new_printed: int
 
 
 class PlateFitOption(BaseModel):
     quantity: int
+    from_finished: int = 0
+    from_kits: int = 0
+    stock_parts: dict[int, int] = Field(default_factory=dict)
     runs: list[PlateFitRun]
     parts: list[PlateFitPart]
     print_time_seconds: int | None

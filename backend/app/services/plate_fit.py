@@ -1,8 +1,8 @@
 """Exact quantities for selected whole plates, using the already bundled SciPy/HiGHS.
 
 This is a proposal, not a replacement planner. Facts come from order_metrics and
-queued_yield_by_line; no printer, queue or stock writer is called here. Free
-stock remains free: only the line's existing allocations enter the equations.
+queued_yield_by_line. Free ready units, kits and loose parts follow the shared
+stock_offers pass; preview never writes. The actual mix stays greedy cover.
 PuLP/CBC and OR-Tools would add another solver/deployment dependency. HiGHS is
 already required for calibration meshes and supplies bounded integer solving.
 """
@@ -12,9 +12,10 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from fractions import Fraction
 from math import gcd
+from types import SimpleNamespace
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.schemas.plate_fit import PlateFitOption, PlateFitPart, PlateFitRequest, PlateFitRun
-from backend.app.services import order_metrics, plan_engine, queue_rebalance
+from backend.app.services import order_metrics, plan_engine, queue_rebalance, stock_offers
 from backend.app.services.line_composition import counted, has_shelf
 from backend.app.services.preview_artifacts import disk
 from backend.app.services.product_composition import recipes_for_products
@@ -73,6 +74,9 @@ class Snapshot:
     basis: str
     candidates: list[plan_engine.Candidate]
     removable: list[AutoQueueItem] = field(default_factory=list)
+    context: order_metrics.OrderContext | None = None
+    queued: dict[int, dict[int, int]] = field(default_factory=dict)
+    supply: stock_offers.Supply | None = None
 
 
 async def load(
@@ -110,12 +114,22 @@ async def load(
             library_file_id=a.library_file_id,
             plate_index=a.plate_index,
         )
-        and sum(row.product_id == line.product_id for row in ctx.lines) > 1
+        and sum(
+            row.product_id
+            in order_metrics.products_for_print(
+                ctx.plate_product,
+                ctx.whole_file_product,
+                library_file_id=a.library_file_id,
+                plate_index=a.plate_index,
+            )
+            for row in ctx.lines
+        )
+        > 1
         for a in ctx.archives
     ):
         raise FitError("ambiguous_output")
     figures, _unallocated = order_metrics.attribute(ctx)
-    recipes = await recipes_for_products(db, [ctx.products_by_id[line.product_id]])
+    recipes = await recipes_for_products(db, ctx.products_by_id.values())
     queued = await plan_engine.queued_yield_by_line(
         db,
         recipes,
@@ -154,6 +168,7 @@ async def load(
             for p, _per in comp:
                 bucket = queued.setdefault(line_id, {})
                 bucket[p.id] = max(0, bucket.get(p.id, 0) - recipe.yield_by_part.get(p.id, 0))
+    supply = await stock_offers.load_supply(db, ctx)
     all_candidates = recipes.get(line.product_id, [])
     if plate_ids is None:
         plan = await plan_engine.plan_for_order(db, order_id)
@@ -252,13 +267,18 @@ async def load(
         "parts": [asdict(p) | {"extra": str(p.extra)} for p in parts],
         "plates": [asdict(p) for p in plates],
         "replace_pending": replace_pending,
+        "supply": asdict(supply),
+        "shared_claims": {lid: asdict(f) for lid, f in figures.items()},
+        "shared_queued": queued,
         "removable": [{c.name: getattr(item, c.name) for c in AutoQueueItem.__table__.columns} for item in removable],
     }
     basis = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
-    return Snapshot(line_id, line.quantity, minimum, parts, plates, basis, candidates, removable)
+    return Snapshot(line_id, line.quantity, minimum, parts, plates, basis, candidates, removable, ctx, queued, supply)
 
 
-def option(snapshot: Snapshot, quantity: int, counts: list[int]) -> PlateFitOption | None:
+def option(
+    snapshot: Snapshot, quantity: int, counts: list[int], offer: stock_offers.Offer | None = None
+) -> PlateFitOption | None:
     if not snapshot.minimum <= quantity <= MAX_QUANTITY or len(counts) != len(snapshot.plates):
         return None
     if any(type(n) is not int or n < 0 or n > MAX_QUANTITY for n in counts):
@@ -267,11 +287,19 @@ def option(snapshot: Snapshot, quantity: int, counts: list[int]) -> PlateFitOpti
         sum(plate.yields[i] * n for plate, n in zip(snapshot.plates, counts, strict=True))
         for i in range(len(snapshot.parts))
     ]
-    if any(part.required(quantity) != part.fixed + n for part, n in zip(snapshot.parts, made, strict=True)):
+    offer = offer or stock_offers.Offer(snapshot.line_id, "", 0, 0)
+    from_free = [p.per * (offer.from_finished + offer.kits) + offer.parts.get(p.id, 0) for p in snapshot.parts]
+    if any(
+        part.required(quantity) != part.fixed + n + stock
+        for part, n, stock in zip(snapshot.parts, made, from_free, strict=True)
+    ):
         return None
     active = [(plate, n) for plate, n in zip(snapshot.plates, counts, strict=True) if n]
     return PlateFitOption(
         quantity=quantity,
+        from_finished=offer.from_finished,
+        from_kits=offer.kits,
+        stock_parts=offer.parts,
         runs=[PlateFitRun(plate_id=p.id, count=n) for p, n in active],
         parts=[
             PlateFitPart(
@@ -283,8 +311,9 @@ def option(snapshot: Snapshot, quantity: int, counts: list[int]) -> PlateFitOpti
                 printing=p.printing,
                 queued=p.queued,
                 new_printed=n,
+                free_stock=stock,
             )
-            for p, n in zip(snapshot.parts, made, strict=True)
+            for p, n, stock in zip(snapshot.parts, made, from_free, strict=True)
         ],
         print_time_seconds=sum(p.seconds * n for p, n in active)
         if all(p.seconds and p.seconds > 0 for p, _n in active)
@@ -295,36 +324,127 @@ def option(snapshot: Snapshot, quantity: int, counts: list[int]) -> PlateFitOpti
     )
 
 
+def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | None, bool]:
+    """Accept only the existing greedy cover after the existing greedy shelf offer."""
+    offer = stock_offers.Offer(snapshot.line_id, "", 0, 0)
+    if snapshot.context is not None and snapshot.supply is not None:
+        # Plain value objects: changing an ORM line even in a rolled-back preview
+        # would mark the live session dirty and could autoflush it on a later read.
+        lines = [
+            SimpleNamespace(**{c.name: getattr(line, c.name) for c in line.__table__.columns})
+            for line in snapshot.context.lines
+        ]
+        next(line for line in lines if line.id == snapshot.line_id).quantity = quantity
+        ctx = replace(snapshot.context, lines=lines)
+        figures, _ = order_metrics.attribute(ctx)
+        offer = next(
+            (
+                o
+                for o in stock_offers.offers_for(ctx, figures, snapshot.queued, snapshot.supply)
+                if o.line_id == snapshot.line_id
+            ),
+            offer,
+        )
+    need = {
+        p.id: p.required(quantity) - p.fixed - p.per * (offer.from_finished + offer.kits) - offer.parts.get(p.id, 0)
+        for p in snapshot.parts
+    }
+    if any(n < 0 for n in need.values()):
+        return None, False
+    rows, surplus, truncated = plan_engine.cover(need, snapshot.candidates, set(need), None)
+    if truncated:
+        return None, True
+    if surplus:
+        return None, False
+    runs = {row.plate_id: row.count for row in rows}
+    return option(snapshot, quantity, [runs.get(p.id, 0) for p in snapshot.plates], offer), False
+
+
 def solve(
     snapshot: Snapshot, lower: int, upper: int, direction: int, deadline: float
 ) -> tuple[PlateFitOption | None, str]:
-    """Only an optimal integer solution is called nearest. Verify it in Python integers."""
+    """HiGHS only skips impossible quantities; stock_offers + greedy cover decide.
+
+    The integer model is a necessary-condition relaxation of the canonical
+    greedy choices, never a replacement objective or returned plate mix. Each
+    optimally nearest candidate is checked by those existing algorithms. A
+    rejected quantity is excluded and search continues, under one time budget.
+    """
     import numpy as np
     from scipy.optimize import Bounds, LinearConstraint, milp
 
     lower, upper = max(lower, snapshot.minimum), min(upper, MAX_QUANTITY)
     if lower > upper:
         return None, "none"
-    seconds = deadline - time.monotonic()
-    if seconds <= 0:
+    if deadline <= time.monotonic():
         return None, "limited"
-    # Necessary divisibility after eliminating quantity from two exact-BOM
-    # equations. Without it a mismatched stock offset can make branch-and-bound
-    # walk a million quantities merely to prove a parity contradiction.
-    for i, left in enumerate(snapshot.parts):
-        for j, right in enumerate(snapshot.parts[:i]):
-            if left.extra or right.extra:
-                continue
-            divisor = gcd(*(right.per * p.yields[i] - left.per * p.yields[j] for p in snapshot.plates))
-            offset = right.per * left.fixed - left.per * right.fixed
-            if (divisor == 0 and offset != 0) or (divisor and offset % divisor):
-                return None, "none"
+    edge, truncated = greedy_option(snapshot, lower if direction == 1 else upper)
+    if truncated:
+        return None, "limited"
+    if edge is not None:
+        return edge, "found"
+    ready = 0
+    loose = [0] * len(snapshot.parts)
+    if snapshot.supply is not None and snapshot.context is not None:
+        line = next(row for row in snapshot.context.lines if row.id == snapshot.line_id)
+        ready = snapshot.supply.ready[line.id].finished_free
+        loose = [snapshot.supply.parts.get(line.product_id, {}).get(p.id, 0) for p in snapshot.parts]
+    if not ready and not any(loose):
+        for i, left in enumerate(snapshot.parts):
+            for j, right in enumerate(snapshot.parts[:i]):
+                if left.extra or right.extra:
+                    continue
+                divisor = gcd(*(right.per * p.yields[i] - left.per * p.yields[j] for p in snapshot.plates))
+                offset = right.per * left.fixed - left.per * right.fixed
+                if (divisor == 0 and offset != 0) or (divisor and offset % divisor):
+                    return None, "none"
+    saturation = MAX_QUANTITY + 1
+    shared_product = False
+    if snapshot.context is not None:
+        shared_product = any(
+            row.id != snapshot.line_id and row.product_id == line.product_id for row in snapshot.context.lines
+        )
+
+    # Above this BASE-unit bound, even after all already covered/queued
+    # components, enough base-kit room remains to take every ready unit and
+    # loose part. Extras alone cannot establish it: all base units might
+    # already be covered, in which case the ready-goods offer must stay zero.
+    # Another configuration's whole-kit pass can precede this line's loose
+    # pass, even when that line is later. Shared products therefore retain the
+    # conservative relaxation; never assume their shelf belongs to this line.
+    if not shared_product:
+        covered_bound = max((-(-max(0, p.fixed) // p.per) for p in snapshot.parts), default=0)
+        if snapshot.context is not None:
+            figures, _ = order_metrics.attribute(snapshot.context)
+            existing = figures[snapshot.line_id]
+            # This deliberately overestimates covered BASE units. Do not let
+            # extra write-offs cancel that bound merely because they subtract
+            # from the exact part equation above.
+            covered_bound = max(
+                covered_bound,
+                sum(max(0, getattr(line, key) or 0) for key in ("from_finished", "assembled", "received"))
+                + max(
+                    (
+                        -(-(p.usable + p.allocated_qty + p.stock_used_qty + p.extra_stock_received_qty) // p.per)
+                        for p in existing.parts
+                        if p.per > 0
+                    ),
+                    default=0,
+                ),
+            )
+        parts_bound = max((-(-cap // p.per) for p, cap in zip(snapshot.parts, loose, strict=True)), default=0)
+        saturation = max(snapshot.minimum, covered_bound + ready + parts_bound)
+    regions = [(lower, min(upper, saturation - 1), False), (max(lower, saturation), upper, True)]
+    if direction == -1:
+        regions.reverse()
     m, n = len(snapshot.plates), len(snapshot.parts)
-    size = 1 + m + n
+    stock_at = 1 + m + n
+    size = stock_at + 1 + n
     matrix, lo, hi = [], [], []
     for i, part in enumerate(snapshot.parts):
         row = [0] * size
         row[0], row[1 + m + i] = part.per, 1
+        row[stock_at], row[stock_at + 1 + i] = -part.per, -1
         for j, plate in enumerate(snapshot.plates):
             row[1 + j] = -plate.yields[i]
         matrix.append(row)
@@ -337,24 +457,59 @@ def solve(
         hi.append(part.extra.denominator - 1)
     objective = np.zeros(size)
     objective[0] = direction
-    bounds = Bounds([lower] + [0] * (size - 1), [upper] + [MAX_QUANTITY] * m + [np.inf] * n)
-    try:
-        result = milp(
-            objective,
-            integrality=np.ones(size),
-            bounds=bounds,
-            constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
-            options={"time_limit": min(1.5, seconds), "mip_rel_gap": 0.0, "node_limit": 100_000},
-        )
-    except (ValueError, RuntimeError):
-        return None, "limited"
-    if result.status == 2:
-        return None, "none"
-    if result.status != 0 or result.x is None:
-        return None, "limited"
-    values = [int(round(v)) for v in result.x]
-    found = option(snapshot, values[0], values[1 : 1 + m])
-    return found, "found" if found is not None else "limited"
+    for region_low, region_high, saturated in regions:
+        lower, upper = region_low, region_high
+        while lower <= upper:
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                return None, "limited"
+            bounds = Bounds(
+                [lower] + [0] * (m + n) + ([ready] + loose if saturated else [0] * (n + 1)),
+                [upper] + [MAX_QUANTITY] * m + [np.inf] * n + [ready] + loose,
+            )
+            try:
+                result = milp(
+                    objective,
+                    integrality=np.ones(size),
+                    bounds=bounds,
+                    constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
+                    options={"time_limit": min(1.5, seconds), "mip_rel_gap": 0.0, "node_limit": 100_000},
+                )
+            except (ValueError, RuntimeError):
+                return None, "limited"
+            if result.status == 2:
+                break
+            if result.status != 0 or result.x is None or len(result.x) != size:
+                return None, "limited"
+            values = [int(round(v)) for v in result.x]
+            q, picked_ready = values[0], values[stock_at]
+            picked_parts = values[stock_at + 1 :]
+            if (
+                not lower <= q <= upper
+                or not 0 <= picked_ready <= ready
+                or any(not 0 <= value <= maximum for value, maximum in zip(picked_parts, loose, strict=True))
+            ):
+                return None, "limited"
+            relaxed_offer = stock_offers.Offer(
+                snapshot.line_id,
+                "",
+                picked_ready,
+                0,
+                {p.id: v for p, v in zip(snapshot.parts, picked_parts, strict=True) if v},
+            )
+            if option(snapshot, q, values[1 : 1 + m], relaxed_offer) is None:
+                return None, "limited"
+            found, truncated = greedy_option(snapshot, q)
+            if truncated:
+                return None, "limited"
+            if found is not None:
+                return found, "found"
+            if direction == 1:
+                lower = q + 1
+            else:
+                upper = q - 1
+
+    return None, "none"
 
 
 async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
@@ -394,8 +549,8 @@ def confirm(snapshot: Snapshot, quantity: int, confirmation) -> PlateFitOption:
     runs = {row.plate_id: row.count for row in confirmation.runs}
     if len(runs) != len(confirmation.runs) or not set(runs) <= {p.id for p in snapshot.plates}:
         raise FitError("invalid_plan")
-    result = option(snapshot, quantity, [runs.get(p.id, 0) for p in snapshot.plates])
-    if result is None:
+    result, truncated = greedy_option(snapshot, quantity)
+    if truncated or result is None or runs != {r.plate_id: r.count for r in result.runs}:
         raise FitError("invalid_plan")
     return result
 

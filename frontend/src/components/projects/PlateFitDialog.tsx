@@ -43,6 +43,8 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   const change = current && data ? current.quantity - data.current_quantity : 0;
   const large = data != null && Math.abs(change) * 100 > data.current_quantity * 10;
   const removedCount = data?.removable_auto_ids.length ?? 0;
+  const takesStock = !!current?.parts.some(p => (p.free_stock ?? 0) > 0);
+  const cannotTakeStock = takesStock && !hasPermission('stock:move');
   const delta = (n: number) => `${n > 0 ? '+' : ''}${n.toLocaleString()}`;
   const reset = () => { sequence.current++; setData(null); setSelected(null); setAck(false); setQueueAck(false); setError(null); };
   const choose = (value: number) => { setSelected(value); setAck(false); setQueueAck(false); setError(null); };
@@ -104,7 +106,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   return <Modal title={t(door.mode === 'browse' ? 'plateFit.browse' : 'plateFit.nearest')} icon={<Calculator className="w-5 h-5" />} size="3xl"
     onClose={() => { sequence.current++; onClose(); }} closeDisabled={busy}
     footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
-      <Button onClick={() => void apply()} disabled={busy || !current || (large && !ack) || (removedCount > 0 && !queueAck)}>
+      <Button onClick={() => void apply()} disabled={busy || !current || (large && !ack) || (removedCount > 0 && !queueAck) || cannotTakeStock}>
         {saved ? t('plateFit.retryPlan') : t(removedCount > 0 ? 'plateFit.applyQueue' : 'plateFit.apply', { quantity: selected?.toLocaleString() ?? '—', count: removedCount })}
       </Button></div>}>
     <div className="p-4 space-y-4">
@@ -169,9 +171,9 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
           </>}
         </div>
         <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-bambu-gray">
-          {['part', 'required', 'allocated', 'completed', 'printing', 'queued', 'newPrinted'].map(key => <th key={key} className="p-2 font-normal">{t(`plateFit.columns.${key}`)}</th>)}
+          {['part', 'required', 'allocated', 'completed', 'printing', 'queued', 'freeStock', 'newPrinted'].map(key => <th key={key} className="p-2 font-normal">{t(`plateFit.columns.${key}`)}</th>)}
         </tr></thead><tbody>{current.parts.map(p => <tr key={p.part_id} className="border-t border-bambu-dark-tertiary">
-          <td className="p-2">{p.name}</td>{[p.required, p.allocated, p.completed, p.printing, p.queued, p.new_printed].map((n, i) => <td key={i} className="p-2 tabular-nums">{n.toLocaleString()}</td>)}
+          <td className="p-2">{p.name}</td>{[p.required, p.allocated, p.completed, p.printing, p.queued, p.free_stock ?? 0, p.new_printed].map((n, i) => <td key={i} className="p-2 tabular-nums">{n.toLocaleString()}</td>)}
         </tr>)}</tbody></table></div>
         <details className="text-sm"><summary className="cursor-pointer text-bambu-green">{t('plateFit.files')}</summary><ul className="mt-2 space-y-1">{current.runs.map(r => {
           const plate = data.plates.find(p => p.plate_id === r.plate_id);
@@ -179,6 +181,8 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
         })}</ul></details>
         {current.runs.some(r => r.count > 999) && <p className="text-amber-700 dark:text-amber-300">{t('plateFit.batchLimit')}</p>}
         <p className="text-xs text-bambu-gray">{t('plateFit.draft')}</p>
+        {takesStock && <p className="text-sm font-medium text-bambu-green">{t('plateFit.stockTake', { ready: current.from_finished ?? 0, kits: current.from_kits ?? 0, parts: Object.values(current.stock_parts ?? {}).reduce((a, b) => a + b, 0) })}</p>}
+        {cannotTakeStock && <p role="alert" className="text-amber-700 dark:text-amber-300">{t('plateFit.stockPermission')}</p>}
       </>}
       {saved && <p role="status">{t('plateFit.saved')}</p>}
       {error && <p role="alert" className="text-red-600 dark:text-red-400">{error}</p>}

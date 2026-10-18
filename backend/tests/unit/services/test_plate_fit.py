@@ -7,12 +7,30 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.models.library import LibraryFile
+from backend.app.models.product import ProductPlate
 from backend.app.schemas.plate_fit import PlateFitRequest
 from backend.app.services import plate_fit as fit
+from backend.app.services.product_composition import PlateRecipe
 
 
 def snapshot(parts, plates, quantity=1000):
-    return fit.Snapshot(1, quantity, 1, parts, plates, "a" * 64, [])
+    candidates = [
+        (
+            ProductPlate(id=p.id, library_file_id=p.id, plate_index=0),
+            LibraryFile(id=p.id, filename=f"Product A-{p.id}.gcode.3mf"),
+            PlateRecipe(
+                p.id,
+                0,
+                True,
+                yield_by_part={part.id: n for part, n in zip(parts, p.yields, strict=True) if n},
+                print_time_seconds=p.seconds,
+                filament_used_grams=p.grams,
+            ),
+        )
+        for p in plates
+    ]
+    return fit.Snapshot(1, quantity, 1, parts, plates, "a" * 64, candidates)
 
 
 def solve(s, lo, hi, direction=1):
@@ -30,11 +48,13 @@ def test_nearest_can_be_three_times_the_order_and_browse_at_twenty_thousand():
     assert solve(s, 20001, fit.MAX_QUANTITY)[0].quantity == 21000
 
 
-def test_same_quantity_can_use_a_different_mix_than_the_greedy():
+def test_mathematically_exact_mix_is_refused_when_the_existing_greedy_overproduces():
     s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (6,)), fit.Plate(2, (4,))])
     result, status = solve(s, 8, 8)
-    assert status == "found" and result.quantity == 8
-    assert [(r.plate_id, r.count) for r in result.runs] == [(2, 2)]
+    assert (result, status) == (None, "none")
+    result, status = solve(s, 8, 12)
+    assert status == "found" and result.quantity == 10
+    assert [(r.plate_id, r.count) for r in result.runs] == [(1, 1), (2, 1)]
 
 
 def test_stock_offsets_can_prove_no_solution():
@@ -71,7 +91,7 @@ def test_mixed_plate_answers_match_exhaustive_small_integer_search(offsets):
         if a == b * 3 and 1 <= b <= 20:
             exact.add(b)
     for low, high, direction in [(1, 20, 1), (1, 20, -1), (8, 14, 1), (8, 14, -1)]:
-        possible = [n for n in exact if low <= n <= high]
+        possible = [n for n in exact if low <= n <= high and fit.greedy_option(s, n)[0] is not None]
         result, status = solve(s, low, high, direction)
         assert status == ("found" if possible else "none")
         if possible:
@@ -81,7 +101,7 @@ def test_mixed_plate_answers_match_exhaustive_small_integer_search(offsets):
 def test_timeout_never_claims_no_solution_or_nearest(monkeypatch):
     import scipy.optimize
 
-    s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))])
+    s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (2,))])
     monkeypatch.setattr(scipy.optimize, "milp", lambda *a, **k: SimpleNamespace(status=1, x=[3, 3, 0]))
     assert solve(s, 1, 5) == (None, "limited")
     assert fit.solve(s, 1, 5, 1, 0) == (None, "limited")
