@@ -51,12 +51,12 @@ CAD_ROOT = BUILD_DIR / "cad-build"
 CAD_OWNER = BUILD_DIR / "cad-owner"
 CAD_INSTALL_SECONDS = 15 * 60 + 300  # step_runtime.INSTALL_SECONDS plus the proof of the tree's end
 CAD_VERIFY_SECONDS = 600  # a full rehash plus the STEP->PNG smoke (two children of up to 120 s each)
-# The target's limits, whatever the build host: any file under MAX_PATH less its NUL, and a native module under the
+# The target's limits, whatever the build host: any file under MAX_PATH less its NUL, and a native library under the
 # loader's own limit, which is lower — step_runtime.PATH_LIMIT on Windows (measured 2026-10-18 in the installer
 # acceptance: a DLL at 259 did not load, at 250 it does, at 251 it does not).
 WINDOWS_PATH_LIMIT = 259
 WINDOWS_LIBRARY_PATH_LIMIT = 250
-NATIVE_SUFFIXES = (".dll", ".pyd", ".exe")
+NATIVE_SUFFIXES = (".dll", ".pyd")
 
 # Matches the Dockerfile (python:3.12-slim-trixie) and `requires-python`, so a
 # Windows install runs the same interpreter CI tests. Bump when those bump.
@@ -632,8 +632,8 @@ def step_max_app_dir_len(catalog=None, key: str = "win-x64-cp312") -> int:
 
 def payload_max_app_dir_len(staging: Path) -> int:
     """The same bound over every file staged for {app} — Python's site-packages, the backend, Node, the tools: a
-    native module (Python's extensions, PostgreSQL's and Node's libraries) under the loader's limit, any other file
-    under MAX_PATH. A dependency deeper than the CAD bundle's deepest DLL would otherwise be laid down where it
+    native library (Python's extensions, PostgreSQL's and Node's libraries) under the loader's limit, any other file
+    (an .exe included) under MAX_PATH. A dependency deeper than the CAD bundle's deepest DLL would otherwise be laid down where it
     cannot be read or loaded."""
     bounds = [
         (WINDOWS_LIBRARY_PATH_LIMIT if f.suffix.lower() in NATIVE_SUFFIXES else WINDOWS_PATH_LIMIT)

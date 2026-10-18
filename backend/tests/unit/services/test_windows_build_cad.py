@@ -419,19 +419,32 @@ def test_the_limit_covers_the_whole_payload(build, monkeypatch):
     assert limit < 100 and f"#define StepMaxAppDirLen {limit}" in (build.STAGING / "version.iss").read_text("utf-8")
 
 
-@pytest.mark.parametrize("suffix", [".dll", ".pyd", ".exe"])
-def test_a_native_module_in_the_payload_is_bounded_by_the_loaders_limit(build, suffix):
+def _units(build, path):
+    return len(str(path.relative_to(build.STAGING)).encode("utf-16-le")) // 2
+
+
+@pytest.mark.parametrize("suffix", [".dll", ".pyd"])
+def test_a_native_library_in_the_payload_is_bounded_by_the_loaders_limit(build, suffix):
     """Python's own extension modules, PostgreSQL's and Node's libraries load by the same loader as the CAD bundle's:
-    a native module anywhere under {app} is held to 250, any other file to MAX_PATH - 1 (installer acceptance S1)."""
+    a native library anywhere under {app} is held to 250, any other file to MAX_PATH - 1 (installer acceptance S1)."""
     native = build.STAGING / "python" / "Lib" / "site-packages" / ("n" * 100) / f"m{suffix}"
     other = build.STAGING / "app" / "static" / ("t" * 114) / "page.js"
     for path in (native, other):
         path.parent.mkdir(parents=True)
         path.write_bytes(b"")
-    units = lambda p: len(str(p.relative_to(build.STAGING)).encode("utf-16-le")) // 2  # noqa: E731
-    assert units(other) > units(native)  # the deeper file is not the one that binds
-    assert build.payload_max_app_dir_len(build.STAGING) == build.WINDOWS_LIBRARY_PATH_LIMIT - 1 - units(native)
-    assert build.WINDOWS_LIBRARY_PATH_LIMIT - 1 - units(native) < build.WINDOWS_PATH_LIMIT - 1 - units(other)
+    assert _units(build, other) > _units(build, native)  # the deeper file is not the one that binds
+    bound = build.WINDOWS_LIBRARY_PATH_LIMIT - 1 - _units(build, native)
+    assert build.payload_max_app_dir_len(build.STAGING) == bound
+    assert bound < build.WINDOWS_PATH_LIMIT - 1 - _units(build, other)
+
+
+def test_an_executable_is_bounded_like_any_file(build):
+    """The loader's limit was measured for libraries; an .exe is held to MAX_PATH - 1 like any other file (owner,
+    2026-10-18) — the libraries it loads beside it are bounded by their own suffix."""
+    exe = build.STAGING / "app" / "runtime" / ("e" * 120) / "tool.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    assert build.payload_max_app_dir_len(build.STAGING) == build.WINDOWS_PATH_LIMIT - 1 - _units(build, exe)
 
 
 def test_the_payload_ships_no_bytecode_the_verify_wrote(build):
