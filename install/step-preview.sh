@@ -68,12 +68,21 @@ step_preview_status() {
     return "$rc"
 }
 
+step_preview_usage() {
+    echo "Usage: install/step-preview.sh enable|status [--path DIR]" >&2
+    exit 2
+}
+
 step_preview_main() {
     local command="${1:-}" path=""
     shift || true
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --path) path="$2"; shift 2 ;;
+            --path)
+                [[ -n "${2:-}" ]] || step_preview_usage
+                path="$2"
+                shift 2
+                ;;
             *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
@@ -86,6 +95,9 @@ step_preview_main() {
     fi
     case "$command" in
         enable)
+            if step_preview_owner_refused; then
+                exit 1
+            fi
             step_preview_bounds
             step_preview_enable
             ;;
@@ -93,8 +105,7 @@ step_preview_main() {
             step_preview_status
             ;;
         *)
-            echo "Usage: install/step-preview.sh enable|status [--path DIR]" >&2
-            exit 2
+            step_preview_usage
             ;;
     esac
 }

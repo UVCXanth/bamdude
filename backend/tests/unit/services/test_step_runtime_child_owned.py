@@ -186,6 +186,29 @@ async def test_two_runs_in_one_process_do_not_share_records(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_stays_a_cancel_when_the_run_fails_with_it(tmp_path, monkeypatch, caplog):
+    """A spawn that breaks while the cancel stops it must not turn the cancellation into an ordinary failure: the
+    update that asked for the stop would carry on as if the helper had merely failed."""
+    root = tmp_path / ".owner"
+    started = threading.Event()
+
+    def breaks_on_stop(cmd, *, stop, **kwargs):
+        started.set()
+        stop.wait(30)
+        raise RuntimeError("the spawn broke while stopping")
+
+    monkeypatch.setattr(child, "run_tree", breaks_on_stop)
+    caplog.set_level(logging.INFO, logger=child.logger.name)
+    task = asyncio.ensure_future(child.run_owned(["x"], owner_root=root, timeout=60, label="t"))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "outcome=failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_before_run_owned_starts_creates_nothing(tmp_path, monkeypatch):
     root = tmp_path / ".owner"
     monkeypatch.setattr(child, "run_tree", lambda *a, **k: pytest.fail("nothing may run"))

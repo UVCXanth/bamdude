@@ -8297,6 +8297,8 @@ export interface UpdateStatus {
   progress: number;
   message: string;
   error: string | null;
+  /** The STEP component's own result of a completed update: `ok`, `skipped` (not enabled) or a closed reason. */
+  step_preview?: string;
 }
 
 // Maintenance types

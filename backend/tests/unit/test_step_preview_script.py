@@ -77,6 +77,8 @@ def _verbs(calls):
         m = re.match(r"python \[-m\] \[backend\.app\.step_runtime\] \[(\w+)\]", c)
         if m:
             out.append(m.group(1))
+        elif c.startswith("apt-get update"):
+            out.append("index")
         elif c.startswith(("apt-get", "dnf")):
             out.append("packages")
     return out
@@ -85,7 +87,7 @@ def _verbs(calls):
 def test_enable_runs_the_cad_step_as_the_owner_with_cli(tmp_path):
     rc, out, calls = _run(tmp_path, "step_preview_enable")
     assert rc == 0, out
-    assert _verbs(calls) == ["select", "choose", "packages", "install"]
+    assert _verbs(calls) == ["select", "choose", "index", "packages", "install"]
     choose = next(c for c in calls if "[choose]" in c)
     assert "[enabled] [--by] [cli]" in choose
     assert all(c.startswith("sudo -u bamdude") for c in calls if c.startswith("sudo") and "apt-get" not in c)
@@ -126,6 +128,24 @@ def test_the_first_line_names_only_the_real_bounds(tmp_path):
     rc, out, _ = _run(tmp_path, "step_preview_bounds")
     first = out.strip().splitlines()[0]
     assert "15 min" in first and "120 s" in first and "not bounded" in first
+
+
+def test_a_path_without_its_value_is_a_usage_error(tmp_path):
+    rc, out, calls = _run(tmp_path, "(step_preview_main enable --path)")
+    assert rc == 2 and "Usage: install/step-preview.sh" in out, out
+    assert _verbs(calls) == []
+
+
+def test_enable_refuses_an_install_root_owns(tmp_path):
+    """The helper runs as the tree's owner: on a root-owned tree it would leave root-owned files the service later
+    meets as `permission`, so enable says what to do instead."""
+    stubs = (
+        'detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; stat() { if [[ "$1" == "-c" ]]; then echo root; '
+        'else command stat "$@"; fi; }; '
+    )
+    rc, out, calls = _run(tmp_path, stubs + '(step_preview_main enable --path "$INSTALL_PATH")')
+    assert rc == 1 and "belongs to root" in out, out
+    assert _verbs(calls) == []
 
 
 def test_the_helper_answers_its_limits():

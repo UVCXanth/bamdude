@@ -276,6 +276,7 @@ def test_update_phases_refuses_a_log_that_missed_one(tmp_path, log, phases, miss
 
 
 def test_expect_head_refuses_another_commit(tmp_path):
+    _bash()  # the named skip before any git: an image without git skips, never errors
     repo = tmp_path / "install"
     repo.mkdir()
     _git(repo, "init", "-q")

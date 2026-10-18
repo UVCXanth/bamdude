@@ -117,6 +117,8 @@ def _verbs(calls) -> list[str]:
         m = re.match(r"python \[-m\] \[backend\.app\.step_runtime\] \[(\w+)\]", c)
         if m:
             out.append(m.group(1))
+        elif c.startswith("apt-get update"):
+            out.append("index")
         elif c.startswith("apt-get"):
             out.append("apt")
     return out
@@ -129,7 +131,7 @@ def test_an_install_without_a_choice_gets_nothing(tmp_path):
 
 def test_an_enabled_install_is_refreshed_and_pruned_after_a_proven_stop(tmp_path):
     _, calls = _run(tmp_path)
-    assert _verbs(calls) == ["status", "apt", "install", "prune"]
+    assert _verbs(calls) == ["status", "index", "apt", "install", "prune"]
     install = next(c for c in calls if "[install]" in c and c.startswith("python"))
     assert "[--if-enabled]" in install
     prune = next(c for c in calls if "[prune]" in c)
@@ -183,6 +185,21 @@ def test_a_failed_refresh_never_fails_the_update(tmp_path):
     result, calls = _run(tmp_path, env={"FAKE_INSTALL": "1", "FAKE_REASON": "pip_failed"})
     assert "prune" not in _verbs(calls)
     assert "pip_failed" in result.stdout + result.stderr
+
+
+def test_an_interpreter_the_catalog_lacks_leaves_the_component_alone(tmp_path):
+    result, calls = _run(tmp_path, env={"FAKE_INSTALL": "3", "FAKE_REASON": "unsupported"})
+    out = result.stdout + result.stderr
+    assert "prune" not in _verbs(calls)
+    assert "not available for this Python" in out and "try again" not in out
+
+
+def test_a_root_owned_install_is_left_alone(tmp_path):
+    result, calls = _run(
+        tmp_path, steps='SERVICE_USER=root; record_service_cgroup; rm -f "$COUNTER"; refresh_enabled_step_preview'
+    )
+    assert _verbs(calls) == ["status"]
+    assert "belongs to root" in result.stdout + result.stderr
 
 
 def test_the_group_is_recorded_whatever_the_state(tmp_path):

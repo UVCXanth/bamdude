@@ -540,6 +540,10 @@ step_preview_reason() {
 # component; anything else — no venv yet, an old helper without `status` — "no".
 step_preview_default() {
     local answer
+    if [[ -x "$INSTALL_PATH/venv/bin/python" && "$OS_TYPE" != "macos" ]]; then
+        # Through sudo: say so before a password prompt appears among the questions. Stderr: stdout is the answer.
+        log_info "Reading the STEP preview choice of the existing install (as $SERVICE_USER)..." >&2
+    fi
     if [[ -x "$INSTALL_PATH/venv/bin/python" ]] && answer=$(step_preview_helper status 2>/dev/null) \
         && [[ "$answer" == *'"choice": "enabled"'* ]]; then
         echo yes
@@ -550,6 +554,9 @@ step_preview_default() {
 
 ask_step_preview() {
     if ! step_preview_offered; then
+        if [[ "$STEP_PREVIEW" == "yes" ]]; then
+            log_warn "--with-step-preview is ignored here: the installer does not set the component up on this machine"
+        fi
         STEP_PREVIEW=""
         case "$OS_TYPE" in
             arch|suse)
@@ -577,9 +584,22 @@ install_step_preview_libraries() {
     [[ -n "$packages" ]] || return 0
     # shellcheck disable=SC2086  # one word per package
     case "$PKG_MANAGER" in
-        apt) sudo apt-get install -y $packages ;;
+        apt)
+            # `enable` and update.sh run this alone, on an index that may be weeks old: a package the mirror has
+            # moved on from is a 404 until the index is refreshed. dnf/yum refresh stale metadata themselves.
+            sudo apt-get update -qq || log_warn "The package index could not be refreshed; installing from the one on disk"
+            sudo apt-get install -y $packages
+            ;;
         dnf|yum) sudo "$PKG_MANAGER" install -y $packages ;;
     esac
+}
+
+# A tree root owns would get its component as root, and the service would later
+# meet it as `permission`: the CAD step leaves such an install alone and says why.
+step_preview_owner_refused() {
+    [[ "$OS_TYPE" != "macos" && "$SERVICE_USER" == "root" ]] || return 1
+    log_warn "$INSTALL_PATH belongs to root, not to the user BamDude runs as: the STEP preview component is left alone. Give the install back to its service user (sudo chown -R <user> \"$INSTALL_PATH\"), then run install/step-preview.sh enable"
+    return 0
 }
 
 # select -> the choice FIRST -> the libraries -> the component (spec stage C
@@ -656,6 +676,9 @@ refresh_enabled_step_preview() {
     local answer rc=0 stopped=no
     answer=$(step_preview_helper status 2>/dev/null) || true
     [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
+    if step_preview_owner_refused; then
+        return 0
+    fi
     if step_preview_may_prune; then
         stopped=yes
     fi
@@ -663,6 +686,10 @@ refresh_enabled_step_preview() {
         log_warn "The system libraries for STEP previews could not be installed; trying the component anyway"
     fi
     STEP_PREVIEW_ANSWER=$(step_preview_helper install --if-enabled) || rc=$?
+    if [[ $rc -eq 3 ]]; then
+        log_info "STEP previews are not available for this Python on this machine; the component was left as it is"
+        return 0
+    fi
     if [[ $rc -ne 0 ]]; then
         log_warn "The STEP preview component was not updated: $(step_preview_hint "$STEP_PREVIEW_ANSWER")"
         return 0

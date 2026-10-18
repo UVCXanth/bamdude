@@ -3443,6 +3443,7 @@ export default {
     confirmPasswordPlaceholder: 'Підтвердити пароль',
     // Title tooltips
     viewReleaseOnGitHub: 'Переглянути реліз на GitHub',
+    stepPreviewNotUpdated: 'Компонент прев’ю STEP не оновлено ({{reason}}); сам BamDude оновлено.',
     turnAllPlugsOn: 'Увімкнути всі розетки',
     turnAllPlugsOff: 'Вимкнути всі розетки',
     // Modal: Clear logs

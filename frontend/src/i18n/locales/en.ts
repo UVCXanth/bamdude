@@ -3437,6 +3437,7 @@ export default {
     confirmPasswordPlaceholder: 'Confirm password',
     // Title tooltips
     viewReleaseOnGitHub: 'View release on GitHub',
+    stepPreviewNotUpdated: 'The STEP preview component was not updated ({{reason}}); BamDude itself was.',
     turnAllPlugsOn: 'Turn all plugs on',
     turnAllPlugsOff: 'Turn all plugs off',
     // Modal: Clear logs

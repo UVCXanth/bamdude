@@ -179,6 +179,8 @@ def test_an_unwritable_runtime_is_permission(tmp_path, win, capsys):
 
 
 def test_install_needs_no_writable_home(tmp_path, win, capsys, monkeypatch):
+    """The helper's own Python never writes HOME. pip and the smoke are stubbed here, so pip's side is asserted only
+    by the flags it is given (isolated, no cache), not measured; no acceptance scenario measures it either."""
     data, app = _released(tmp_path), tmp_path / "app"
     nowhere = tmp_path / "no-such-home" / "deeper"
     monkeypatch.setenv("HOME", str(nowhere))

@@ -104,9 +104,13 @@ def test_the_flag_runs_select_choose_libraries_install_in_that_order(tmp_path):
     assert result.returncode == 0 and "AFTER the step" in result.stdout, result.stderr
     order = [c for c in calls if c.startswith(("python", "apt-get"))]
     verbs = [
-        ("apt" if c.startswith("apt-get") else re.search(r"\[(select|choose|install)\]", c).group(1)) for c in order
+        ("index" if c.startswith("apt-get update") else "apt")
+        if c.startswith("apt-get")
+        else re.search(r"\[(select|choose|install)\]", c).group(1)
+        for c in order
     ]
-    assert verbs == ["select", "choose", "apt", "install"], calls
+    # The index is refreshed first: `enable` and update.sh run this step alone, on an index that may be weeks old.
+    assert verbs == ["select", "choose", "index", "apt", "install"], calls
     assert "[enabled] [--by] [install]" in _helper(calls, "choose")[0]
     assert "apt-get install -y libgl1 libx11-6 libexpat1 zlib1g" in calls
     assert sum(1 for c in calls if c.startswith("sudo -u bamdude")) == 3  # select, choose, install: the owner's
@@ -114,7 +118,7 @@ def test_the_flag_runs_select_choose_libraries_install_in_that_order(tmp_path):
 
 def test_fedora_installs_its_own_package_names(tmp_path):
     _, calls, _ = _run(tmp_path, "STEP_PREVIEW=yes; provision_step_preview", os_type="rhel", pkg="dnf")
-    assert "dnf install -y mesa-libGL libX11 expat zlib" in calls
+    assert [c for c in calls if c.startswith("dnf")] == ["dnf install -y mesa-libGL libX11 expat zlib"]
 
 
 def test_macos_installs_no_package_and_runs_as_the_user(tmp_path):
@@ -131,6 +135,8 @@ def test_a_rerun_keeps_enabled_through_the_installed_helper(tmp_path):
     )
     assert "CHOICE=yes" in result.stdout
     assert "[enabled]" in _helper(calls, "choose")[0] and _helper(calls, "install")
+    # The read of the installed choice runs through sudo: the line says why a password prompt may appear here.
+    assert "Reading the STEP preview choice of the existing install" in result.stderr
 
 
 def test_an_old_helper_without_status_defaults_to_no(tmp_path):
@@ -159,6 +165,19 @@ def test_arch_suse_and_other_machines_are_not_asked(tmp_path, os_type, pkg, arch
     )
     assert "CHOICE=[]" in result.stdout and "AFTER the step" in result.stdout
     assert _helper(calls, "choose") == [] and _helper(calls, "install") == []
+
+
+@pytest.mark.parametrize(("os_type", "pkg", "arch"), [("arch", "pacman", "x86_64"), ("debian", "apt", "armv7l")])
+def test_a_flag_that_cannot_apply_is_named(tmp_path, os_type, pkg, arch):
+    result, calls, _ = _run(
+        tmp_path,
+        'STEP_PREVIEW=yes; ask_step_preview; echo "CHOICE=[$STEP_PREVIEW]"; provision_step_preview',
+        os_type=os_type,
+        pkg=pkg,
+        env={"FAKE_ARCH": arch},
+    )
+    assert "CHOICE=[]" in result.stdout and _helper(calls, "install") == []
+    assert re.search(r"\[WARN\].*--with-step-preview", result.stdout), result.stdout
 
 
 def test_an_unsupported_interpreter_writes_no_choice(tmp_path):

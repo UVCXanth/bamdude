@@ -481,7 +481,6 @@ async def run_owned(cmd: list[str], *, owner_root: Path, timeout: float, cwd=Non
 async def _run_owned(cmd, owner_root: Path, timeout: float, cwd, env, label: str) -> OwnedRun:
     from backend.app import step_runtime
     from backend.app.services import part_render_tree as tree
-    from backend.app.services.preview_artifacts import owned
 
     run_id = uuid.uuid4().hex[:12]
     begun = time.monotonic()
@@ -513,9 +512,18 @@ async def _run_owned(cmd, owner_root: Path, timeout: float, cwd, env, label: str
         await asyncio.shield(task)
     except asyncio.CancelledError:
         stop.set()
-        with contextlib.suppress(BaseException):  # a second cancellation, or the task's own end: it is over
-            await owned(task)
-        ended(_settled(task, records)[0])
+        # The thread under the task cannot be cancelled: wait for its end through any further cancellation. (Not
+        # preview_artifacts.owned: this module is the Docker CAD layer's, copied before the rest of the app.)
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except BaseException:  # another cancellation, or the task's own end
+                continue
+        try:
+            outcome = _settled(task, records)[0]
+        except Exception:  # an error of the run itself never turns the cancellation into a failure
+            outcome = "failed"
+        ended(outcome)
         raise
     except Exception:
         pass  # the task's own exception: settled below
