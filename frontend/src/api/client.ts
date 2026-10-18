@@ -14549,8 +14549,18 @@ export interface PartRenderWorkerHealth {
   last: { outcome: string; elapsed_ms: number } | null;
 }
 
+export interface StepPreviewState {
+  /** The administrator's recorded choice: `enabled` / `disabled` / `none`. */
+  choice: string;
+  /** What the receipt says (`installed`, `missing`, `unsupported`, `unknown` or a closed reason) — never `works`. */
+  bundle: string;
+  /** `native` / `docker` / `windows_installer`: only a native install has the administrator's commands. */
+  install_kind: string;
+}
+
 export interface SystemInfo {
   preview?: PreviewHealth;
+  step_preview?: StepPreviewState;
   analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   library_file_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   part_render_worker?: PartRenderWorkerHealth;

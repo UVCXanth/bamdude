@@ -8146,6 +8146,23 @@ export default {
       directory: 'Runtime directory',
       guide: 'Preview troubleshooting and recovery',
     },
+    stepPreview: {
+      title: 'STEP preview component',
+      choice: {
+        enabled: 'Enabled by the administrator: updates keep it current',
+        disabled: 'Disabled by the administrator: updates leave it alone',
+        none: 'Not chosen yet',
+      },
+      bundle: {
+        installed: 'Installed',
+        missing: 'Not installed',
+        unsupported: 'Not available for this machine',
+        unknown: 'State unknown',
+        other: 'Not usable ({{reason}})',
+      },
+      enable: 'To install or repair it, run on the server:',
+      check: 'To check that it renders:',
+    },
     cameraWorker: {
       title: 'Camera worker',
       states: { ready: 'Available', starting: 'Starting', recovering: 'Restarting', unavailable: 'Unavailable', stopped: 'Stopped' },

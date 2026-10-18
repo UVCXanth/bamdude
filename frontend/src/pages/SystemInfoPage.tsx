@@ -37,6 +37,7 @@ import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { PrintStateIssuesPanel } from '../components/PrintStateIssuesPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
+import { StepPreviewComponentRow } from '../components/StepPreviewComponentRow';
 import { formatDateTime, type TimeFormat } from '../utils/date';
 
 function formatBytes(bytes: number): string {
@@ -628,6 +629,7 @@ export function SystemInfoPage() {
             </a>
           </>
         )}
+        {systemInfo.step_preview && <StepPreviewComponentRow state={systemInfo.step_preview} />}
       </Section>
 
       <Section title={t('system.cameraWorker.title')} icon={Activity}>
