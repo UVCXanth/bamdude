@@ -1,0 +1,469 @@
+name: Native Install Acceptance
+
+# The real install.sh, update.sh and step-preview.sh on disposable runners
+# (spec stage C R12): one job per scenario, each with its own install path,
+# port and service, and GitHub redirected to a local remote that serves this
+# commit, so the scripts run unchanged and install exactly this code.
+#
+# Dispatch only, never a push or a tag: it installs packages, creates a
+# service user and a systemd unit, removes a system library and moves a
+# process into the unit's cgroup. install.sh runs as a user runs it, without
+# --allow-candidate, so this needs the RELEASE pin of the STEP component and
+# is not run before the release repin. No secrets: the local remote is built
+# from this checkout, and nothing is published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "full (every scenario) or diagnostic (N1, N2 and F1)"
+        type: choice
+        options:
+          - full
+          - diagnostic
+        default: full
+      baseline:
+        description: "The previous release N3 updates from, as a tag (empty: the newest stable tag before this commit)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # The candidate (this commit) as `main` and the previous release as
+  # `baseline`, in a shallow bare repository every scenario installs from.
+  fixture:
+    name: Local remote
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build the local remote
+        env:
+          BASELINE_TAG: ${{ inputs.baseline }}
+          CANDIDATE: ${{ github.sha }}
+        run: bash scripts/native_install_acceptance.sh fixture "$RUNNER_TEMP/fixture" "$CANDIDATE"
+
+      - name: Keep it
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture/
+          if-no-files-found: error
+          retention-days: 3
+
+  n1:
+    name: N1 fresh install with STEP previews
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N1
+        run: bash scripts/native_install_acceptance.sh N1 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N1
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N1
+          path: native-acceptance/native-acceptance-N1.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N1
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n2:
+    name: N2 fresh unattended install, component disabled
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N2
+        run: bash scripts/native_install_acceptance.sh N2 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N2
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N2
+          path: native-acceptance/native-acceptance-N2.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N2
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n3:
+    name: N3 update from the previous release, then enable
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N3
+        run: bash scripts/native_install_acceptance.sh N3 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N3
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N3
+          path: native-acceptance/native-acceptance-N3.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N3
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n4:
+    name: N4 update prunes an older pin
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N4
+        run: bash scripts/native_install_acceptance.sh N4 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N4
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N4
+          path: native-acceptance/native-acceptance-N4.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N4
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n5:
+    name: N5 a removed system library is named and restored
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 125
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N5
+        run: bash scripts/native_install_acceptance.sh N5 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N5
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N5
+          path: native-acceptance/native-acceptance-N5.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N5
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n6:
+    name: N6 a root-owned leftover is a permission refusal
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N6
+        run: bash scripts/native_install_acceptance.sh N6 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N6
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N6
+          path: native-acceptance/native-acceptance-N6.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N6
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  n7:
+    name: N7 a process in the unit's group and the proven stop
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: N7
+        run: bash scripts/native_install_acceptance.sh N7 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup N7
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-N7
+          path: native-acceptance/native-acceptance-N7.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-N7
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  f1:
+    name: F1 Fedora libraries and the helper as a non-root user
+    needs: fixture
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    timeout-minutes: 125
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: F1
+        run: bash scripts/native_install_acceptance.sh F1 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup F1
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-F1
+          path: native-acceptance/native-acceptance-F1.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-F1
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  m1:
+    name: M1 macOS install with STEP previews
+    if: inputs.scope == 'full'
+    needs: fixture
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the local remote
+        uses: actions/download-artifact@v7
+        with:
+          name: native-fixture
+          path: ${{ runner.temp }}/fixture
+
+      - name: M1
+        run: bash scripts/native_install_acceptance.sh M1 "$RUNNER_TEMP/fixture"
+
+      - name: Clean up
+        if: always()
+        run: bash scripts/native_install_acceptance.sh cleanup M1
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-M1
+          path: native-acceptance/native-acceptance-M1.json
+          if-no-files-found: warn
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-acceptance-logs-M1
+          path: native-acceptance/logs/
+          if-no-files-found: warn
+
+  # One line per scenario, and `full: true` only when the full scope passed
+  # whole; a diagnostic run's skipped scenarios are not failures.
+  verdict:
+    name: Verdict
+    if: always()
+    needs: [fixture, n1, n2, n3, n4, n5, n6, n7, f1, m1]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Judge the scenarios
+        env:
+          SCOPE: ${{ inputs.scope }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import sys
+
+          scope = os.environ["SCOPE"]
+          results = {name: job["result"] for name, job in json.loads(os.environ["RESULTS"]).items()}
+          ran = {name: result for name, result in results.items() if result != "skipped"}
+          full = scope == "full" and all(result == "success" for result in results.values())
+          lines = [f"### Native install acceptance ({scope})", "", "| Job | Result |", "|---|---|"]
+          lines += [f"| {name.upper()} | {result} |" for name, result in sorted(results.items())]
+          lines += ["", f"full: {str(full).lower()}", ""]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines))
+          print(json.dumps({"scope": scope, "full": full, "results": results}, sort_keys=True))
+          sys.exit(0 if ran.get("fixture") == "success" and all(r == "success" for r in ran.values()) else 1)
+          EOF
