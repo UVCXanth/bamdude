@@ -932,8 +932,19 @@ PRUNE_LOCK_SECONDS = 5.0
 _DIGEST_DIR = re.compile(r"[0-9a-f]{32}\Z")
 
 
+def manifest_bundle_name(path: Path) -> str:
+    """The bundle directory name of the pin a manifest file names — what ``bundle_dir`` uses for it. Read as JSON
+    only, never validated as this version's catalog: it may be an older code's own manifest."""
+    return hashlib.sha256(canonical(json.loads(path.read_text(encoding="utf-8")))).hexdigest()[:32]
+
+
 def prune(
-    app_dir: Path, *, other_keys: bool = False, lock_seconds: float = PRUNE_LOCK_SECONDS, data_dir: Path = DATA
+    app_dir: Path,
+    *,
+    other_keys: bool = False,
+    keep_bundles: frozenset[str] = frozenset(),
+    lock_seconds: float = PRUNE_LOCK_SECONDS,
+    data_dir: Path = DATA,
 ) -> dict:
     """Old CAD bundles out of the way once nothing can render from them (spec stage B R10). The CALLER has already
     run a full verify of the current bundle and proven that nothing runs from this app dir (a stopped service):
@@ -973,6 +984,9 @@ def prune(
             for d in (root / key).iterdir()
             if d.is_dir() and _DIGEST_DIR.match(d.name) and d.resolve() != found.bundle.resolve()
         ]
+        # The pin a failed update would roll the code back to (update.sh names it): its bundle outlives this prune.
+        keep("rollback", sum(1 for d in candidates if d.name in keep_bundles))
+        candidates = [d for d in candidates if d.name not in keep_bundles]
         try:
             with _platform_lock(root, key, lock_seconds):
                 for trash in (root / key).glob(".trash-*"):
@@ -1044,6 +1058,13 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
                 "everything that renders from this app dir."
             )
             p.add_argument("--other-keys", action="store_true", help="also this platform's other Python ABIs")
+            p.add_argument(
+                "--keep-manifest",
+                type=Path,
+                action="append",
+                default=[],
+                help="keep the bundle of this manifest's pin (the code a failed update would roll back to)",
+            )
     a = ap.parse_args(argv)
     try:
         if a.cmd == "limits":  # what an install really bounds (spec stage C R6b): the scripts name these
@@ -1076,7 +1097,12 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
             )
             return EXIT_OK
         if a.cmd == "prune":
-            answer = prune(a.app_dir, other_keys=a.other_keys, data_dir=data_dir)
+            try:
+                keep_bundles = frozenset(manifest_bundle_name(path) for path in a.keep_manifest)
+            except (OSError, ValueError):  # what to keep is unknown: nothing goes
+                print(json.dumps({"ok": False, "removed": 0, "kept": {}, "reason": "keep_unreadable"}))
+                return EXIT_FAILED
+            answer = prune(a.app_dir, other_keys=a.other_keys, keep_bundles=keep_bundles, data_dir=data_dir)
             print(json.dumps(answer))
             return EXIT_OK if answer["ok"] else EXIT_FAILED
         if a.cmd == "verify":

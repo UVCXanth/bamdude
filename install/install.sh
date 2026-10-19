@@ -761,8 +761,14 @@ prune_old_step_preview() {
         return 0  # the refresh already said why it left the component alone
     fi
     [[ "$(step_preview_old_bundles)" -gt 0 ]] || return 0
+    # The pin of the code before this update: a start that fails rolls back to it, so its bundle stays (Codex
+    # F1-R1) until a later update, whose own rollback target is this code, lets it go.
+    local keep=()
+    if [[ -n "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ]]; then
+        keep=(--keep-manifest "$STEP_PREVIEW_ROLLBACK_MANIFEST")
+    fi
     if step_preview_may_prune; then
-        step_preview_helper prune >/dev/null || log_warn "Old STEP preview components could not be removed"
+        step_preview_helper prune ${keep[@]+"${keep[@]}"} >/dev/null || log_warn "Old STEP preview components could not be removed"
     else
         log_warn "The old STEP preview component was kept: the service's stop could not be proven"
     fi

@@ -339,8 +339,22 @@ refresh_step_preview() {
   refresh_enabled_step_preview
 }
 
+# The pin of the code this update replaces: a start that fails after the prune
+# rolls the code back to it, and its STEP bundle must still be there then (Codex
+# F1-R1). Kept as the old code's own manifest, readable by the owner the helper
+# runs as; none when the old code had no STEP component.
+STEP_PREVIEW_ROLLBACK_MANIFEST=""
+remember_rollback_pin() {
+  local manifest="$INSTALL_DIR/backend/app/data/step_runtime_manifest.json"
+  [ -f "$manifest" ] || return 0
+  STEP_PREVIEW_ROLLBACK_MANIFEST="$(mktemp)"
+  cp "$manifest" "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+  chmod 0644 "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+}
+
 # The earlier pin's bundle, last before the start (R4a, shell review S2): only
-# on the stop proven right after `systemctl stop` AND again now.
+# on the stop proven right after `systemctl stop` AND again now — and never the
+# rollback target's (remember_rollback_pin).
 STEP_STOP_PROVEN=0
 prune_step_preview() {
   # shellcheck source=install.sh
@@ -501,6 +515,7 @@ if service_proven_stopped; then
   STEP_STOP_PROVEN=1  # the first of the two proofs an old STEP bundle needs before it goes
 fi
 
+remember_rollback_pin
 log "Updating code to origin/$BRANCH"
 as_owner git reset --hard "origin/$BRANCH"
 CODE_UPDATED=1
@@ -564,3 +579,4 @@ systemctl --no-pager --lines=8 status "$SERVICE_NAME"
 
 new_commit="$(as_owner git rev-parse --short HEAD || true)"
 log "Update complete: ${old_commit:-unknown} -> ${new_commit:-unknown}"
+[ -z "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ] || rm -f "$STEP_PREVIEW_ROLLBACK_MANIFEST"

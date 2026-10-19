@@ -451,6 +451,36 @@ def test_prune_removes_another_digest_of_this_key_and_keeps_the_current(tmp_path
     assert sr.locate(app, sr.load_catalog(data, decode_tags=False)).ok
 
 
+def test_prune_keeps_the_bundle_of_the_code_a_failed_update_rolls_back_to(tmp_path, win, capsys):
+    """update.sh prunes before it starts the service, and a start that fails rolls the code back: the previous
+    code's pin must still have its bundle then (Codex F1-R1). `--keep-manifest` names that pin by its manifest —
+    the old code's own file, kept before the code moved — and only bundles of other pins go."""
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    current = installed(app, data)
+    previous = json.loads((data / sr.MANIFEST_NAME).read_text(encoding="utf-8"))
+    previous["pinned_at"] = "2026-09-01T00:00:00Z"  # the code before this update ran on another pin
+    rollback = tmp_path / "previous-manifest.json"
+    rollback.write_text(json.dumps(previous, indent=1), encoding="utf-8")
+    kept = _digest_dir(app, "win-x64-cp312", sr.hashlib.sha256(sr.canonical(previous)).hexdigest()[:32])
+    older = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    assert sr.main(["prune", "--app-dir", str(app), "--keep-manifest", str(rollback)], data_dir=data) == 0
+    answer = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert answer == {"ok": True, "removed": 1, "kept": {"rollback": 1}}
+    assert kept.is_dir() and current.is_dir() and not older.exists()
+
+
+def test_prune_with_a_rollback_manifest_it_cannot_read_removes_nothing(tmp_path, win, capsys):
+    data = catalog_copy(tmp_path / "data")
+    app = tmp_path / "app"
+    installed(app, data)
+    older = _digest_dir(app, "win-x64-cp312", "d" * 32)
+    missing = tmp_path / "gone.json"
+    assert sr.main(["prune", "--app-dir", str(app), "--keep-manifest", str(missing)], data_dir=data) == 1
+    answer = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert answer["ok"] is False and answer["reason"] == "keep_unreadable" and older.is_dir()
+
+
 def test_prune_without_a_located_bundle_removes_nothing(tmp_path, win, capsys):
     data = catalog_copy(tmp_path / "data")
     app = tmp_path / "app"

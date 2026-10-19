@@ -145,7 +145,9 @@ What a reason means:
 Updates keep an enabled component current: `update.sh` and an update from
 Settings refresh it, and `update.sh` removes an older version only when it can
 prove the service stopped (cgroup v2: the unit's group is empty); otherwise it
-keeps it and says so. A failure here never fails the update; an update from
+keeps it and says so. The version the code before the update runs on is always
+kept — a start that fails rolls the code back to it — and goes with the next
+update. A failure here never fails the update; an update from
 Settings names the reason under its result. The System page
 shows the component's state — installed or not, never "works", which only
 `status` checks — and, on a native install, these two commands. Choosing

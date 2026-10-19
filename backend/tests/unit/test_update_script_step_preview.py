@@ -235,6 +235,148 @@ def test_a_state_that_cannot_be_read_is_said_not_swallowed(tmp_path):
     assert "could not be read" in result.stdout + result.stderr
 
 
+def test_the_prune_keeps_the_pin_a_failed_start_rolls_back_to(tmp_path):
+    """A start that fails after the prune rolls the code back (Codex F1-R1): the previous code's pin, which
+    update.sh kept as a manifest before the code moved, is handed to the helper's prune to keep."""
+    rollback = tmp_path / "previous-manifest.json"
+    rollback.write_text("{}", encoding="utf-8")
+    _, calls = _run(tmp_path, env={"STEP_PREVIEW_ROLLBACK_MANIFEST": rollback.as_posix()})
+    prune = next(c for c in calls if "[prune]" in c)
+    assert f"[--keep-manifest] [{rollback.as_posix()}]" in prune
+
+
+def test_without_a_previous_pin_the_prune_keeps_nothing_extra(tmp_path):
+    _, calls = _run(tmp_path)
+    prune = next(c for c in calls if "[prune]" in c)
+    assert "--keep-manifest" not in prune
+
+
+@pytest.mark.parametrize("had_a_pin", [True, False])
+def test_update_sh_remembers_the_pin_of_the_code_it_replaces(tmp_path, had_a_pin):
+    install = tmp_path / "bam dude"
+    data = install / "backend" / "app" / "data"
+    data.mkdir(parents=True)
+    if had_a_pin:
+        (data / "step_runtime_manifest.json").write_text('{"status": "release"}', encoding="utf-8")
+    program = "\n".join(
+        [
+            "set -Eeuo pipefail",
+            f"INSTALL_DIR='{install.as_posix()}'",
+            'STEP_PREVIEW_ROLLBACK_MANIFEST=""',  # as update.sh declares it
+            _lifted("remember_rollback_pin"),
+            "remember_rollback_pin",
+            'if [ -n "$STEP_PREVIEW_ROLLBACK_MANIFEST" ]; then echo "KEPT=[$(cat "$STEP_PREVIEW_ROLLBACK_MANIFEST")]";'
+            ' else echo "KEPT=[]"; fi',
+        ]
+    )
+    script = tmp_path / "run.sh"
+    script.write_text(program, encoding="utf-8", newline="\n")
+    result = subprocess.run([BASH, script.as_posix()], capture_output=True, text=True, timeout=60)
+    kept = re.search(r"KEPT=\[(.*)\]", result.stdout)
+    assert kept, (result.stdout, result.stderr)
+    assert kept.group(1) == ('{"status": "release"}' if had_a_pin else ""), result.stdout
+
+
+def test_update_sh_remembers_the_pin_before_the_code_moves_and_hands_it_to_the_prune():
+    text = UPDATE_SH.read_text(encoding="utf-8").replace("\r\n", "\n")
+    remembered = text.index("\nremember_rollback_pin\n")
+    moved = text.index('as_owner git reset --hard "origin/$BRANCH"')
+    assert remembered < moved < text.index("(prune_step_preview)")
+    assert "STEP_PREVIEW_ROLLBACK_MANIFEST" in _lifted("prune_step_preview") or (
+        "STEP_PREVIEW_ROLLBACK_MANIFEST" in _lifted("remember_rollback_pin")
+    )
+
+
+def _update_tail_over_a_real_prune(tmp_path, *, first_start_fails=False, fail_before_prune=False, proven=True):
+    """update.sh's own last part and its ERR rollback, over the REAL chain: prune_step_preview (update.sh) →
+    prune_old_step_preview (install.sh) → `python -m backend.app.step_runtime prune` on the committed catalog. Only
+    systemctl, git and sudo are stand-ins; the previous code ran on another pin (Codex F1-R1)."""
+    import json
+    import sys
+
+    from backend.app import step_runtime as sr
+
+    catalog = sr.load_catalog()
+    sel = sr.select(catalog)
+    app = tmp_path / "install"
+    (app / "install").mkdir(parents=True)
+    # install.sh as is, with the OS pinned to a supported Linux: its own detection is not what is under test
+    (app / "install" / "install.sh").write_text(
+        INSTALL_SH.read_text(encoding="utf-8").replace("\r\n", "\n")
+        + "\ndetect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    python = app / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        f'#!/usr/bin/env bash\ncd "{ROOT.as_posix()}" && exec "{Path(sys.executable).as_posix()}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    python.chmod(0o755)
+    sr.write_choice(app, "enabled", by="cli")
+    current = sr.bundle_dir(app, sel.key, catalog.digest)
+    (current / "site" / "OCP").mkdir(parents=True)
+    (current / "receipt.json").write_text(json.dumps(sr.receipt_for(catalog, sel)), encoding="utf-8")
+    previous = {**catalog.manifest, "pinned_at": "2026-09-01T00:00:00Z"}
+    rollback = tmp_path / "previous-manifest.json"
+    rollback.write_text(json.dumps(previous, indent=1), encoding="utf-8")
+    old = sr.bundle_dir(app, sel.key, sr.hashlib.sha256(sr.canonical(previous)).hexdigest())
+    older = sr.bundle_dir(app, sel.key, "d" * 64)
+    for bundle in (old, older):
+        (bundle / "site").mkdir(parents=True)
+    code = tmp_path / "current-code"
+    code.write_text("new\n", encoding="utf-8")
+    text = UPDATE_SH.read_text(encoding="utf-8").replace("\r\n", "\n")
+    program = "\n".join(
+        [
+            "set -Eeuo pipefail",
+            f"INSTALL_DIR='{app.as_posix()}'",
+            'VENV_PYTHON="$INSTALL_DIR/venv/bin/python"',
+            "SERVICE_STOPPED=1 CODE_UPDATED=1 old_commit=old SERVICE_NAME=fake",
+            f"STEP_STOP_PROVEN={1 if proven else 0}",
+            f"STEP_PREVIEW_ROLLBACK_MANIFEST='{rollback.as_posix()}'",
+            f"CODE='{code.as_posix()}'",
+            'log() { echo "$*"; }; warn() { echo "$*" >&2; }',
+            'sudo() { if [[ "$1" == "-u" ]]; then shift 2; fi; "$@"; }',
+            'as_owner() { if [ "$2" = reset ]; then echo old > "$CODE"; else cat "$CODE"; fi; }',
+            f"FAIL_FIRST={1 if first_start_fails else 0}",
+            'systemctl() { if [ "$1" = start ] && [ "$FAIL_FIRST" = 1 ]; then FAIL_FIRST=0; return 17; fi; return 0; }',
+            "service_proven_stopped() { return 0; }",
+            _lifted("prune_step_preview"),
+            _lifted("on_error"),
+            "trap 'on_error $?' ERR",
+            "false" if fail_before_prune else ":",
+            text[text.index("# Last before the start:") :],
+        ]
+    )
+    script = tmp_path / "update-tail.sh"
+    script.write_text(program, encoding="utf-8", newline="\n")
+    result = subprocess.run([BASH, script.as_posix()], capture_output=True, text=True, timeout=180)
+    return result, code.read_text(encoding="utf-8").strip(), current, old, older
+
+
+def test_a_start_that_fails_after_the_prune_rolls_back_to_code_whose_bundle_is_still_there(tmp_path):
+    result, code, current, old, older = _update_tail_over_a_real_prune(tmp_path, first_start_fails=True)
+    assert result.returncode == 17, (result.stdout, result.stderr)
+    assert code == "old"  # the rollback ran
+    assert old.is_dir(), "the code restored by the rollback lost its CAD bundle"
+    assert current.is_dir() and not older.exists()  # a bundle no code can roll back to still goes
+
+
+def test_a_start_that_succeeds_keeps_the_rollback_bundle_until_a_later_update(tmp_path):
+    result, code, current, old, older = _update_tail_over_a_real_prune(tmp_path)
+    assert result.returncode == 0 and code == "new", (result.stdout, result.stderr)
+    assert current.is_dir() and old.is_dir() and not older.exists()
+
+
+@pytest.mark.parametrize("case", [{"fail_before_prune": True}, {"proven": False}])
+def test_no_bundle_goes_on_a_failure_before_the_prune_or_an_unproven_stop(tmp_path, case):
+    result, _code, current, old, older = _update_tail_over_a_real_prune(tmp_path, **case)
+    assert current.is_dir() and old.is_dir() and older.is_dir(), (result.stdout, result.stderr)
+
+
 def test_update_sh_prunes_last_just_before_the_start():
     text = UPDATE_SH.read_text(encoding="utf-8")
     start = text.index('log "Starting service: $SERVICE_NAME"')
