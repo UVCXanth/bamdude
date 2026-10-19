@@ -283,6 +283,7 @@ on_error() {
   exit "$exit_code"
 }
 trap 'on_error $?' ERR
+trap cleanup_rollback_pin EXIT
 
 # The part-render runtime (pinned Node.js, spec §6): an install made before it
 # shipped gets it here, and a new pin in the manifest reaches every updated
@@ -342,14 +343,21 @@ refresh_step_preview() {
 # The pin of the code this update replaces: a start that fails after the prune
 # rolls the code back to it, and its STEP bundle must still be there then (Codex
 # F1-R1). Kept as the old code's own manifest, readable by the owner the helper
-# runs as; none when the old code had no STEP component.
+# runs as; none when the old code had no STEP component. Read AS THE OWNER: the
+# tree is theirs, and root must never follow a link they placed there (security
+# review). The copy is theirs alone (mktemp's 0600) and goes on every way out.
 STEP_PREVIEW_ROLLBACK_MANIFEST=""
 remember_rollback_pin() {
   local manifest="$INSTALL_DIR/backend/app/data/step_runtime_manifest.json"
   [ -f "$manifest" ] || return 0
   STEP_PREVIEW_ROLLBACK_MANIFEST="$(mktemp)"
-  cp "$manifest" "$STEP_PREVIEW_ROLLBACK_MANIFEST"
-  chmod 0644 "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+  if ! as_owner cat -- "$manifest" > "$STEP_PREVIEW_ROLLBACK_MANIFEST"; then
+    die "Cannot read the STEP preview pin of the installed code as $INSTALL_OWNER. Nothing was changed."
+  fi
+  chown "$INSTALL_OWNER" "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+}
+cleanup_rollback_pin() {
+  [ -z "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ] || rm -f "$STEP_PREVIEW_ROLLBACK_MANIFEST"
 }
 
 # The earlier pin's bundle, last before the start (R4a, shell review S2): only
@@ -461,6 +469,7 @@ fi
 resolve_install_owner
 check_owner_can_write
 check_owner_can_build
+remember_rollback_pin
 
 if [ -z "$BRANCH" ]; then
   BRANCH="$(as_owner git rev-parse --abbrev-ref HEAD)"
@@ -515,7 +524,6 @@ if service_proven_stopped; then
   STEP_STOP_PROVEN=1  # the first of the two proofs an old STEP bundle needs before it goes
 fi
 
-remember_rollback_pin
 log "Updating code to origin/$BRANCH"
 as_owner git reset --hard "origin/$BRANCH"
 CODE_UPDATED=1
@@ -579,4 +587,3 @@ systemctl --no-pager --lines=8 status "$SERVICE_NAME"
 
 new_commit="$(as_owner git rev-parse --short HEAD || true)"
 log "Update complete: ${old_commit:-unknown} -> ${new_commit:-unknown}"
-[ -z "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ] || rm -f "$STEP_PREVIEW_ROLLBACK_MANIFEST"

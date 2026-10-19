@@ -258,11 +258,14 @@ def test_update_sh_remembers_the_pin_of_the_code_it_replaces(tmp_path, had_a_pin
     data.mkdir(parents=True)
     if had_a_pin:
         (data / "step_runtime_manifest.json").write_text('{"status": "release"}', encoding="utf-8")
+    calls = tmp_path / "calls.txt"
     program = "\n".join(
         [
             "set -Eeuo pipefail",
-            f"INSTALL_DIR='{install.as_posix()}'",
+            f"INSTALL_DIR='{install.as_posix()}' INSTALL_OWNER=bamdude CALLS='{calls.as_posix()}'",
             'STEP_PREVIEW_ROLLBACK_MANIFEST=""',  # as update.sh declares it
+            'as_owner() { echo "AS_OWNER $*" >> "$CALLS"; "$@"; }',
+            'chown() { echo "CHOWN $*" >> "$CALLS"; }',
             _lifted("remember_rollback_pin"),
             "remember_rollback_pin",
             'if [ -n "$STEP_PREVIEW_ROLLBACK_MANIFEST" ]; then echo "KEPT=[$(cat "$STEP_PREVIEW_ROLLBACK_MANIFEST")]";'
@@ -275,16 +278,41 @@ def test_update_sh_remembers_the_pin_of_the_code_it_replaces(tmp_path, had_a_pin
     kept = re.search(r"KEPT=\[(.*)\]", result.stdout)
     assert kept, (result.stdout, result.stderr)
     assert kept.group(1) == ('{"status": "release"}' if had_a_pin else ""), result.stdout
+    if had_a_pin:
+        # Read as the owner — root never follows a link the owner placed in their tree (security review) — into a
+        # file of the owner's alone.
+        lines = calls.read_text(encoding="utf-8").splitlines()
+        assert any(c.startswith("AS_OWNER cat -- ") and c.endswith("step_runtime_manifest.json") for c in lines)
+        assert any(c.startswith("CHOWN bamdude ") for c in lines)
 
 
-def test_update_sh_remembers_the_pin_before_the_code_moves_and_hands_it_to_the_prune():
+def test_update_sh_remembers_the_pin_before_anything_changes_and_hands_it_to_the_prune():
     text = UPDATE_SH.read_text(encoding="utf-8").replace("\r\n", "\n")
     remembered = text.index("\nremember_rollback_pin\n")
-    moved = text.index('as_owner git reset --hard "origin/$BRANCH"')
-    assert remembered < moved < text.index("(prune_step_preview)")
-    assert "STEP_PREVIEW_ROLLBACK_MANIFEST" in _lifted("prune_step_preview") or (
-        "STEP_PREVIEW_ROLLBACK_MANIFEST" in _lifted("remember_rollback_pin")
+    assert remembered < text.index("\ncreate_backup\n") < text.index('systemctl stop "$SERVICE_NAME"')
+    assert text.index('systemctl stop "$SERVICE_NAME"') < text.index('as_owner git reset --hard "origin/$BRANCH"')
+    assert "chmod 0644" not in _lifted("remember_rollback_pin")
+    assert "STEP_PREVIEW_ROLLBACK_MANIFEST" in _lifted("remember_rollback_pin")
+
+
+def test_the_remembered_pin_is_removed_on_every_way_out(tmp_path):
+    kept = tmp_path / "kept.json"
+    kept.write_text("{}", encoding="utf-8")
+    text = UPDATE_SH.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert "\ntrap cleanup_rollback_pin EXIT\n" in text
+    program = "\n".join(
+        [
+            "set -Eeuo pipefail",
+            f"STEP_PREVIEW_ROLLBACK_MANIFEST='{kept.as_posix()}'",
+            _lifted("cleanup_rollback_pin"),
+            "trap cleanup_rollback_pin EXIT",
+            "exit 3",
+        ]
     )
+    script = tmp_path / "run.sh"
+    script.write_text(program, encoding="utf-8", newline="\n")
+    assert subprocess.run([BASH, script.as_posix()], capture_output=True, timeout=60).returncode == 3
+    assert not kept.exists()
 
 
 def _update_tail_over_a_real_prune(tmp_path, *, first_start_fails=False, fail_before_prune=False, proven=True):
