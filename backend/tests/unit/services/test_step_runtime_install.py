@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import psutil
@@ -28,6 +29,15 @@ def tmp_path(install_tmp_path):
 
 
 WIN312 = ["cp312-cp312-win_amd64", "cp312-abi3-win_amd64", "py3-none-win_amd64", "py3-none-any"]
+
+
+def another_pin_time() -> str:
+    """Another manifest digest that keeps the committed pin's own age rule: a day after its pin time. An earlier
+    time made a young pin of a release one (its wheels must be 14 days old at pinned_at), so these tests held only
+    while the committed pin was a candidate."""
+    committed = json.loads((sr.DATA / sr.MANIFEST_NAME).read_text(encoding="utf-8"))["pinned_at"]
+    later = datetime.fromisoformat(committed.replace("Z", "+00:00")) + timedelta(days=1)
+    return later.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def catalog_copy(target: Path, **changes) -> Path:
@@ -82,7 +92,7 @@ def test_a_failed_install_of_a_new_pin_keeps_the_last_good_bundle(tmp_path, win)
     old_data = catalog_copy(tmp_path / "old")
     app = tmp_path / "app"
     last_good = installed(app, old_data)
-    new_data = catalog_copy(tmp_path / "new", pinned_at="2026-10-15T00:00:00Z")  # another manifest digest
+    new_data = catalog_copy(tmp_path / "new", pinned_at=another_pin_time())  # another manifest digest
     with pytest.raises(sr.InstallError) as failed:
         sr.install(app, data_dir=new_data, allow_candidate=True, runner=failing)
     assert failed.value.reason == "pip_failed"
@@ -127,7 +137,7 @@ def test_a_rename_that_fails_leaves_no_half_bundle_and_keeps_the_last_good(tmp_p
     old_data = catalog_copy(tmp_path / "old")
     app = tmp_path / "app"
     last_good = installed(app, old_data)
-    new_data = catalog_copy(tmp_path / "new", pinned_at="2026-10-15T00:00:00Z")
+    new_data = catalog_copy(tmp_path / "new", pinned_at=another_pin_time())
     monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
     monkeypatch.setattr(sr, "smoke", lambda site: [])
 
@@ -244,7 +254,7 @@ def test_a_new_pin_installs_beside_a_bundle_a_render_holds_open(tmp_path, win, m
     last_good = installed(app, old_data)
     library = last_good / "site" / "OCP" / "TKernel.dll"
     library.write_bytes(b"loaded")
-    new_data = catalog_copy(tmp_path / "new", pinned_at="2026-10-15T00:00:00Z")
+    new_data = catalog_copy(tmp_path / "new", pinned_at=another_pin_time())
     monkeypatch.setattr(sr, "verify_tree", lambda site, closure: [])
     monkeypatch.setattr(sr, "smoke", lambda site: [])
 
