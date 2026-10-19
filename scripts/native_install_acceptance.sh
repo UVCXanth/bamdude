@@ -281,7 +281,8 @@ listener() {
     if [[ "$OS" == "macos" ]]; then
         lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -n 1
     else
-        sudo ss -Hltnp "sport = :$PORT" | sed -n 's/.*pid=\([0-9]*\),.*/\1/p' | head -n 1
+        # Container root may lack CAP_SYS_PTRACE and see no other uid's socket pid; its owner can inspect it.
+        as_owner ss -Hltnp "sport = :$PORT" | sed -n 's/.*pid=\([0-9]*\),.*/\1/p' | head -n 1
     fi
     return 0
 }
@@ -290,7 +291,7 @@ process_cwd() {
     if [[ "$OS" == "macos" ]]; then
         lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
     else
-        sudo readlink -f "/proc/$1/cwd"
+        as_owner readlink -f "/proc/$1/cwd"
     fi
 }
 

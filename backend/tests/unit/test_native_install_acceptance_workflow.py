@@ -451,3 +451,29 @@ def test_the_harness_parses_and_has_lf_endings():
     assert SCRIPT.read_bytes().startswith(b"#!/usr/bin/env bash\n") and b"\r\n" not in SCRIPT.read_bytes()
     result = subprocess.run([bash, "-n", SCRIPT.as_posix()], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+def test_macos_acceptance_selects_a_python_supported_by_the_cad_pin():
+    steps = _scenario_jobs()["M1"]["steps"]
+    setup = next((s for s in steps if s.get("uses", "").startswith("actions/setup-python@")), None)
+    assert setup is not None, "the runner's default Python may be newer than the CAD wheels"
+    assert str(setup["with"]["python-version"]) == "3.13"
+    scenario = next(s for s in steps if "native_install_acceptance.sh M1 " in s.get("run", ""))
+    assert steps.index(setup) < steps.index(scenario)
+
+
+def test_controlled_app_observations_use_its_owner_in_an_unprivileged_container(tmp_path):
+    # Container root lacks CAP_SYS_PTRACE: it can see LISTEN but not another uid's pid/cwd. The owner can.
+    rc, out = _sourced(
+        tmp_path,
+        """OS=linux; PORT=8181
+as_owner() { ROLE=owner "$@"; }
+sudo() { ROLE=root "$@"; }
+ss() { if [[ "${ROLE:-}" == owner ]]; then echo 'LISTEN users:(("uvicorn",pid=321,fd=9))';
+       else echo 'LISTEN'; fi; }
+readlink() { [[ "${ROLE:-}" == owner ]] && echo /home/ci/bamdude; }
+echo "PID=$(listener)"
+echo "CWD=$(process_cwd 321)"
+""",
+    )
+    assert rc == 0 and "PID=321" in out and "CWD=/home/ci/bamdude" in out, out

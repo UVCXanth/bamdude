@@ -407,6 +407,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      # Exercise a supported CAD ABI, not whichever Python Homebrew most recently made the runner's default.
+      - name: Python for the native install
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
       - name: Download the local remote
         uses: actions/download-artifact@v7
         with:
