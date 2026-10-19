@@ -1007,18 +1007,21 @@ class PreviewRuntime:
                 if canceled:
                     result.files.clear()
                 result.outcome = "canceled" if canceled else "unavailable"
-                try:
-                    stopped_at = await owned(self._cancel(command))
-                    result.stage = result.stage or stopped_at
-                except asyncio.CancelledError:
-                    # Broker-loss callbacks may cancel this task again while
-                    # the shielded retirement is being joined. The checkpoint
-                    # remains usable; this is unavailable, not user cancel.
-                    if not self.dependency_lost:
-                        canceled = True
-                        result.files.clear()
-                except Exception:
-                    self.uncertain = True
+                # Only a run the service was told about needs its proof of end, or the retire; one cancelled while
+                # its input was still copied or sent (a STEP job's Cancel lands there) leaves the healthy service be.
+                if command:
+                    try:
+                        stopped_at = await owned(self._cancel(command))
+                        result.stage = result.stage or stopped_at
+                    except asyncio.CancelledError:
+                        # Broker-loss callbacks may cancel this task again while
+                        # the shielded retirement is being joined. The checkpoint
+                        # remains usable; this is unavailable, not user cancel.
+                        if not self.dependency_lost:
+                            canceled = True
+                            result.files.clear()
+                    except Exception:
+                        self.uncertain = True
             except Exception as exc:
                 revoked = True
                 result.outcome = (

@@ -498,18 +498,64 @@ async def test_real_obj_and_source_checkpoint_preserve_gcode(local_runtime, tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("repeat_cancel", [False, True])
-async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, repeat_cancel):
+async def test_a_cancel_before_any_command_leaves_the_healthy_service_running(local_runtime, monkeypatch):
+    """A STEP job's Cancel can land while its input is still being copied or sent — before the service was told
+    anything. Nothing of it runs there, so there is nothing to prove ended and no reason to retire a healthy
+    service (three retires a minute would open the circuit for every preview)."""
     import backend.app.services.preview_runtime as module
 
     entered = asyncio.Event()
-    original = module.put
 
-    async def held(*args, **kwargs):  # put now also takes the attempt's revoke token
+    async def held(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(module, "put", held)
+    retired = []
+    retire = local_runtime._retire
+
+    async def recorded_retire():
+        retired.append(True)
+        await retire()
+
+    monkeypatch.setattr(local_runtime, "_retire", recorded_retire)
+    service = local_runtime.service
+
+    async def caller():
+        async with local_runtime.attempt({"mesh": (b"test", "stl")}) as result:
+            return result.outcome
+
+    task = asyncio.create_task(caller())
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 15)
+    assert retired == []
+    assert local_runtime.service is service and service.process.poll() is None
+    assert not local_runtime.slot.locked()
+    assert local_runtime.ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_cancel", [False, True])
+async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, repeat_cancel):
+    # Cancelled while its run is out at the service, and the cancel that follows gets no reply: no proof of end,
+    # so the service is retired — and a second cancel during that retire is joined.
+    entered = asyncio.Event()
+
+    async def held(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(local_runtime, "_run_or_revoke", held)
+    rpc = local_runtime._rpc
+
+    async def unanswered_cancel(command, operation=None, timeout=None):
+        if operation == "cancel":
+            raise TimeoutError
+        return await rpc(command, operation, timeout=timeout)
+
+    monkeypatch.setattr(local_runtime, "_rpc", unanswered_cancel)
     reaping = asyncio.Event()
     release = asyncio.Event()
     retire = local_runtime._retire
@@ -537,7 +583,6 @@ async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, 
         await asyncio.wait_for(task, 15)
     assert not local_runtime.slot.locked()
     assert local_runtime.service is None
-    monkeypatch.setattr(module, "put", original)
 
 
 @pytest.mark.asyncio
