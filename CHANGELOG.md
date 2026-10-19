@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-19
+
+Images: `ghcr.io/kainpl/bamdude:0.7.1` / `kainpl/bamdude:0.7.1` (`:latest` tracks this release).
+
+This release strengthens everyday farm operation: plate-swap decisions stay bound to the actual print file, unresolved print-state conflicts can be reviewed and repaired, and smart-plug schedules, energy accounting and Telegram camera captures are more reliable.
+
+It also adds server-rendered pictures of individual printed parts and STEP files, whole-plate order quantity adjustment, and forecasts that account for operator availability. Preview workers recover from transient startup failures, while Windows and native updates preserve their runtime components safely.
+
+> **Before upgrading a swap farm:** older archives have an unknown swap declaration. Review their declaration before reprinting with BamDude's swap macros; existing queued jobs with an unknown source may fail before dispatch and require review and Retry. Inspect the plate before resuming a held queue. STEP previews are bundled with Docker and the Windows installer; native installations opt in with `install/step-preview.sh enable`.
+
 - **Whole-plate adjustment stays bounded and recoverable.** Calculator deadlines also interrupt the canonical greedy cover, including earlier order lines and apply-time revalidation. Reviewed queue removals refresh queue lists and forecasts immediately after saving. A failed saved-plan read retries only that read; changed demand offers a fresh calculation without attaching old run counts.
 
 - **Whole-plate search gives both directions time before expanding the range.** A difficult lower search no longer consumes the upper search's budget. Dense candidate ranges reuse the canonical cover between integer-solver jumps, and repeated operator-hour calculations share a bounded cache without changing fleet choices or stock accounting. Incomplete expanded searches remain explicitly marked as limited.
