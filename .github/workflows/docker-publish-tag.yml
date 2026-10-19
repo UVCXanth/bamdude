@@ -176,7 +176,10 @@ jobs:
     name: Tag the multi-arch image
     runs-on: ubuntu-latest
     needs: [build, sources]
-    if: github.repository == 'kainpl/bamdude'
+    # GitHub skips every job below a skipped one unless its condition carries a
+    # status function: a manual run's gate is skipped, and without !cancelled()
+    # this job never ran there. Past it, only on BOTH builds and the sources check.
+    if: ${{ !cancelled() && github.repository == 'kainpl/bamdude' && needs.build.result == 'success' && needs.sources.result == 'success' }}
     steps:
       - name: Classify tag
         id: classify

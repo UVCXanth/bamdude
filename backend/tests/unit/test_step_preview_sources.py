@@ -528,8 +528,8 @@ def test_a_publisher_runs_only_when_its_sources_check_succeeded(workflow, publis
     jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
     job = jobs[publisher]
     needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
-    (check,) = [
-        jobs[n]
+    ((name, check),) = [
+        (n, jobs[n])
         for n in needs
         if any(
             word in s.get("run", "")
@@ -538,8 +538,11 @@ def test_a_publisher_runs_only_when_its_sources_check_succeeded(workflow, publis
         )
     ]
     condition = str(job.get("if", ""))
-    for word in ("always()", "cancelled()", "failure()"):
+    for word in ("always()", "failure()"):
         assert word not in condition, f"{workflow.name}:{publisher} runs past its sources check ({word})"
+    # !cancelled() — needed below a skipped job — only with the sources check's own success spelled out.
+    if "cancelled()" in condition:
+        assert f"needs.{name}.result == 'success'" in condition, f"{workflow.name}:{publisher} runs past {name}"
     assert not job.get("continue-on-error") and not check.get("continue-on-error")
     assert not any(s.get("continue-on-error") for s in check["steps"])
 

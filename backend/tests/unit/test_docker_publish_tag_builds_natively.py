@@ -70,7 +70,7 @@ def test_each_image_is_checked_on_its_own_architecture_before_its_digest_is_kept
 def test_the_tags_come_from_the_checked_digests_after_both_builds_and_the_sources():
     publish = _jobs()["publish"]
     assert set(publish["needs"]) == {"build", "sources"}
-    for word in ("always()", "cancelled()", "failure()"):
+    for word in ("always()", "failure()"):
         assert word not in str(publish.get("if", ""))
     assert not any(str(s.get("uses", "")).startswith("docker/build-push-action@") for s in publish["steps"])
     runs = _runs(publish)
@@ -78,6 +78,15 @@ def test_the_tags_come_from_the_checked_digests_after_both_builds_and_the_source
     assert "@$amd64" in runs and "@$arm64" in runs
     download = _step(publish, "actions/download-artifact@")["with"]
     assert download["pattern"] == "digest-*" and download["merge-multiple"] is True
+
+
+def test_publish_runs_below_the_skipped_gate_of_a_manual_run_only_on_both_successes():
+    """GitHub skips every job below a skipped one unless its `if:` carries a status function: the manual run's gate
+    is skipped, and the first dispatch (run 39286953068) built and checked both arches but never ran publish. Past the
+    skipped ancestor it may go only on the explicit success of both builds and the sources check."""
+    condition = _jobs()["publish"]["if"]
+    assert "!cancelled()" in condition
+    assert "needs.build.result == 'success'" in condition and "needs.sources.result == 'success'" in condition
 
 
 def test_the_ci_gate_still_holds_a_tag():
