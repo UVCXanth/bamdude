@@ -77,7 +77,7 @@ import type {
   Permission,
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
-import { useStepThumbnailJobs } from '../hooks/useStepThumbnailJobs';
+import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumbnailJobs';
 import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
 import { thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
@@ -2353,19 +2353,34 @@ export function FileManagerPage() {
   });
 
   // The page's one owner of STEP thumbnail jobs: it polls only active receipts and reports through the ordinary
-  // library invalidation, so every other view learns from the same refetch.
+  // library invalidation, so every other view learns from the same refetch. What one poll ended is told once per
+  // kind (a batch, a restart that drops every job), never one identical toast per file.
   const stepJobCallbacks = useMemo(
     () => ({
       onSucceeded: (fileId: number) => {
         queryClient.invalidateQueries({ queryKey: ['library-files'] });
         setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() }));
-        showToast(t('fileManager.stepThumbnail.ready'), 'success');
       },
-      onFailed: (_fileId: number, code: string | null) =>
-        showToast(t('fileManager.stepThumbnail.failed', { reason: t(thumbnailReasonKey(code)) }), 'error'),
+      onFailed: () => {},
       onExpired: () => {
         queryClient.invalidateQueries({ queryKey: ['library-files'] });
-        showToast(t('fileManager.stepThumbnail.expired'), 'info');
+      },
+      onSettled: ({ succeeded, failed, expired }: StepJobSummary) => {
+        if (succeeded.length === 1) showToast(t('fileManager.stepThumbnail.ready'), 'success');
+        else if (succeeded.length > 1) showToast(t('fileManager.stepThumbnail.readyMany', { count: succeeded.length }), 'success');
+        const byReason = new Map<string | null, number>();
+        for (const { code } of failed) byReason.set(code, (byReason.get(code) ?? 0) + 1);
+        for (const [code, count] of byReason) {
+          const reason = t(thumbnailReasonKey(code));
+          showToast(
+            count === 1
+              ? t('fileManager.stepThumbnail.failed', { reason })
+              : t('fileManager.stepThumbnail.failedMany', { count, reason }),
+            'error',
+          );
+        }
+        if (expired.length === 1) showToast(t('fileManager.stepThumbnail.expired'), 'info');
+        else if (expired.length > 1) showToast(t('fileManager.stepThumbnail.expiredMany', { count: expired.length }), 'info');
       },
     }),
     [queryClient, showToast, t],

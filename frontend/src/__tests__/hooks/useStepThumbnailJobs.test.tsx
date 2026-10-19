@@ -75,6 +75,49 @@ describe('useStepThumbnailJobs', () => {
     expect(result.current.activeFileIds.size).toBe(0);
   });
 
+  it('reports everything one poll ended together, once', async () => {
+    server.use(
+      http.get(JOBS, () =>
+        answer(
+          [
+            { receipt_id: 'r1', file_id: 7, state: 'succeeded', error_code: null },
+            { receipt_id: 'r2', file_id: 8, state: 'failed', error_code: 'cad_unavailable' },
+          ],
+          ['r3'],
+        ),
+      ),
+    );
+    const onSettled = vi.fn();
+    const cb = { ...callbacks(), onSettled };
+    const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 10 }));
+    act(() =>
+      result.current.track(EPOCH, [
+        { receipt_id: 'r1', file_id: 7 },
+        { receipt_id: 'r2', file_id: 8 },
+        { receipt_id: 'r3', file_id: 9 },
+      ]),
+    );
+    await waitFor(() => expect(onSettled).toHaveBeenCalled());
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({
+      succeeded: [7],
+      failed: [{ fileId: 8, code: 'cad_unavailable' }],
+      expired: [9],
+    });
+  });
+
+  it('an earlier epoch (410) is one report for all its receipts', async () => {
+    server.use(http.get(JOBS, () => HttpResponse.json({ detail: { error: 'preview_job_expired', message: 'x' } }, { status: 410 })));
+    const onSettled = vi.fn();
+    const cb = { ...callbacks(), onSettled };
+    const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 10 }));
+    act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }, { receipt_id: 'r2', file_id: 8 }]));
+    await waitFor(() => expect(onSettled).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 40));
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ succeeded: [], failed: [], expired: [7, 8] });
+  });
+
   it('a receipt it may no longer read shows no result, only a re-read', async () => {
     server.use(http.get(JOBS, () => answer([], ['r1'])));
     const cb = callbacks();

@@ -22,6 +22,14 @@ export interface StepThumbnailCallbacks {
   onFailed: (fileId: number, code: string | null) => void;
   /** The job is gone for this caller (earlier session, access lost, bound passed): read the file again. */
   onExpired: (fileId: number) => void;
+  /** Everything one poll (or one refused cancel) ended, once — what the operator is told, never one per file. */
+  onSettled?: (summary: StepJobSummary) => void;
+}
+
+export interface StepJobSummary {
+  succeeded: number[];
+  failed: Array<{ fileId: number; code: string | null }>;
+  expired: number[];
 }
 
 interface Tracked {
@@ -78,11 +86,16 @@ export function useStepThumbnailJobs(
 
     const tick = async () => {
       timer = undefined;
+      const summary: StepJobSummary = { succeeded: [], failed: [], expired: [] };
+      const expire = (fileId: number) => {
+        summary.expired.push(fileId);
+        callbacksRef.current.onExpired(fileId);
+      };
       const now = Date.now();
       for (const [id, item] of tracked.current) {
         if (now - item.since > maxMs) {
           tracked.current.delete(id);
-          callbacksRef.current.onExpired(item.fileId);
+          expire(item.fileId);
         }
       }
       const byEpoch = new Map<string, Tracked[]>();
@@ -99,7 +112,7 @@ export function useStepThumbnailJobs(
             if (stopped) return;
             if (error instanceof ApiError && error.status === 410) {
               for (const item of items) {
-                if (tracked.current.delete(item.receiptId)) callbacksRef.current.onExpired(item.fileId);
+                if (tracked.current.delete(item.receiptId)) expire(item.fileId);
               }
               break;
             }
@@ -110,19 +123,27 @@ export function useStepThumbnailJobs(
             const item = receipt.receipt_id ? tracked.current.get(receipt.receipt_id) : undefined;
             if (!item || !receipt.state || !TERMINAL.has(receipt.state)) continue;
             tracked.current.delete(item.receiptId);
-            if (receipt.state === 'succeeded') callbacksRef.current.onSucceeded(item.fileId);
-            else if (receipt.state === 'failed') callbacksRef.current.onFailed(item.fileId, receipt.error_code);
+            if (receipt.state === 'succeeded') {
+              summary.succeeded.push(item.fileId);
+              callbacksRef.current.onSucceeded(item.fileId);
+            } else if (receipt.state === 'failed') {
+              summary.failed.push({ fileId: item.fileId, code: receipt.error_code });
+              callbacksRef.current.onFailed(item.fileId, receipt.error_code);
+            }
           }
           for (const id of status.missing) {
             const item = tracked.current.get(id);
             if (item) {
               tracked.current.delete(id);
-              callbacksRef.current.onExpired(item.fileId);
+              expire(item.fileId);
             }
           }
         }
       }
       if (stopped) return;
+      if (summary.succeeded.length + summary.failed.length + summary.expired.length > 0) {
+        callbacksRef.current.onSettled?.(summary);
+      }
       sync();
       if (tracked.current.size > 0) {
         delay = Math.min(Math.round(delay * 1.5), pollMs * 5);
@@ -176,6 +197,7 @@ export function useStepThumbnailJobs(
           tracked.current.delete(item.receiptId);
           sync();
           callbacksRef.current.onExpired(fileId);
+          callbacksRef.current.onSettled?.({ succeeded: [], failed: [], expired: [fileId] });
           return 'job_expired';
         }
         if (error instanceof ApiError && error.code) return error.code;

@@ -186,6 +186,43 @@ describe('File Manager — STEP thumbnails', () => {
     await waitFor(() => expect(filesRequests).toBeGreaterThan(loadsBefore)); // the file is read again
   });
 
+  it('jobs that end in the same poll are told in one toast per kind, never one per file', async () => {
+    const batchJobs = (results: Array<Record<string, unknown>>) =>
+      http.post(JOBS, () => HttpResponse.json({ jobs_epoch: EPOCH, results, next_after_id: null }, { status: 202 }));
+    const queued = [5, 7, 8].map((id) => ({ file_id: id, receipt_id: `r${id}`, state: 'queued', error_code: null }));
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+      batchJobs(queued),
+      http.get(JOBS, () => HttpResponse.json({ detail: { error: 'preview_job_expired', message: 'old' } }, { status: 410 })),
+    );
+    render(<FileManagerPage />);
+    const button = await screen.findByRole('button', { name: /Generate Thumbnails/i });
+    await userEvent.click(button);
+    expect(await screen.findByText('3 thumbnail jobs are no longer available. The files were refreshed — you can try again.')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.getAllByText(/no longer available/i)).toHaveLength(1);
+
+    server.use(
+      batchJobs(queued),
+      http.get(JOBS, () =>
+        HttpResponse.json({
+          jobs_epoch: EPOCH,
+          receipts: [
+            { receipt_id: 'r5', file_id: 5, state: 'succeeded', error_code: null },
+            { receipt_id: 'r7', file_id: 7, state: 'succeeded', error_code: null },
+            { receipt_id: 'r8', file_id: 8, state: 'failed', error_code: 'cad_unavailable' },
+          ],
+          missing: [],
+        }),
+      ),
+    );
+    await waitFor(() => expect(button).toBeEnabled());
+    await userEvent.click(button);
+    expect(await screen.findByText('2 STEP thumbnails ready')).toBeInTheDocument();
+    expect(await screen.findByText(/^STEP thumbnail failed: .*not available on this server/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^STEP thumbnail ready$/)).not.toBeInTheDocument();
+  });
+
   it('a running job offers a cancel, and a cancel too late says so', async () => {
     server.use(
       http.post(JOBS, () => HttpResponse.json({ jobs_epoch: EPOCH, results: [{ file_id: 5, receipt_id: 'r5', state: 'queued', error_code: null }], next_after_id: null }, { status: 202 })),
