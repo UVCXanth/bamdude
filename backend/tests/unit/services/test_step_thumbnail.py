@@ -289,6 +289,30 @@ def test_a_briefly_held_marker_or_result_is_still_written(tmp_path, monkeypatch)
     assert json.loads((tmp_path / child.RESULT).read_text(encoding="utf-8"))["outcome"] == "ok"
 
 
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Edges were intersecting, corrected",
+        # Measured on a real library model (2026-10-19, owner): it transferred whole (one root, one shape, no fail)
+        # and met every later check — 128 faces all triangulated, mesher flags 0, finite bounds — yet was refused on
+        # these three shape-healing notes the stage-0 measurement had not met.
+        "Wire was split on several wires",
+        "Poor result from projection vertex / curve 3d",
+        "Faces were incorrectly oriented in the shell, corrected",
+    ],
+)
+def test_a_shape_healing_note_is_no_refusal(note):
+    from backend.app.services.step_thumbnail import transfer_warning_allowed
+
+    assert transfer_warning_allowed(note)
+
+
+def test_a_transfer_warning_outside_the_measured_healing_notes_still_refuses():
+    from backend.app.services.step_thumbnail import transfer_warning_allowed
+
+    assert not transfer_warning_allowed("Some other transfer warning")
+
+
 def test_open_cascades_out_of_memory_is_a_resource_limit_like_memoryerror():
     """OCP raises Standard_OutOfMemory as an ordinary exception (a Job commit limit on Windows typically surfaces
     this way): spec §6 names it beside MemoryError as resource_limit, never render_failed."""

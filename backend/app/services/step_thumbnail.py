@@ -58,6 +58,11 @@ HEALING = (
     "Edges were intersecting, corrected",
     "Surface forced to be periodic",
     "Segments were disordered; fixed",
+    # A real library model (2026-10-19, owner): transferred whole and passed every later check, refused only on
+    # these shape-healing notes — the shape was repaired, not lost; the mesh checks still guard completeness.
+    "Wire was split on several wires",
+    "Poor result from projection vertex / curve 3d",
+    "Faces were incorrectly oriented in the shell, corrected",
 )
 
 
