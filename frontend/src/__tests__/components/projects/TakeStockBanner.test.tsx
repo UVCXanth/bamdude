@@ -16,6 +16,25 @@ describe('TakeStockBanner', () => {
     vi.spyOn(api, 'getStockOffers').mockResolvedValue(offers);
   });
 
+  it('offers named loose parts and sends their exact allocation to the server', async () => {
+    vi.spyOn(api, 'getStockOffers').mockResolvedValue([
+      { line_id: 7, product_name: 'Product A', from_finished: 0, kits: 0, parts: { 41: 30 } },
+    ]);
+    const take = vi.spyOn(api, 'takeStock').mockResolvedValue({ order: { id: 5 } as never,
+      results: [{ line_id: 7, asked_finished: 0, got_finished: 0, asked_kits: 0, got_kits: 0,
+        asked_parts: { 41: 30 }, got_parts: { 41: 30 } }],
+    });
+    render(<TakeStockBanner orderId={5} lines={[makeLine({ id: 7, parts: [
+      { part_id: 41, name: 'Part A' } as never,
+    ] })]} />);
+    expect(await screen.findByText('· Part A × 30')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Take from stock' }));
+    await waitFor(() => expect(take).toHaveBeenCalledWith(5, { lines: [
+      { line_id: 7, from_finished: 0, kits: 0, parts: { 41: 30 } },
+    ] }));
+    expect(await screen.findByText('Taken from stock: 0 ready · 0 kits · 30 loose parts — the print plan shrank')).toBeInTheDocument();
+  });
+
   it('lists what the shelves hold for the order', async () => {
     render(<TakeStockBanner orderId={5} />);
     expect(await screen.findByText('«Pipe» — 2 ready + 3 kits')).toBeInTheDocument();

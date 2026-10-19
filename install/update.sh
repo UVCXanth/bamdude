@@ -42,6 +42,78 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
+# The install's own files are changed by their owner, never by root: git (the
+# rollback included), the venv's pip and npm. Root keeps systemd. A root-run git
+# met "dubious ownership" in the service user's tree on every fresh install, and
+# root-run writes left files the service could not change later (the in-app
+# update runs as the service user). The owner must be the service's user.
+# A read that failed is never taken for an empty answer: only a successful
+# query of a unit without User= means root.
+INSTALL_OWNER=""
+resolve_install_owner() {
+  local owner service_user
+  # -L: a symlinked install belongs to whoever owns the tree, not to whoever made the link.
+  if ! owner="$(stat -L -c %U "$INSTALL_DIR" 2>/dev/null)" || [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
+    die "Cannot tell which user owns $INSTALL_DIR. Nothing was changed."
+  fi
+  if ! service_user="$(systemctl show "$SERVICE_NAME" -p User --value 2>/dev/null)"; then
+    die "Cannot read which user $SERVICE_NAME runs as (systemctl show failed). Nothing was changed."
+  fi
+  [ -n "$service_user" ] || service_user=root # a unit without User= runs as root
+  if [ "$owner" != "$service_user" ]; then
+    die "$INSTALL_DIR belongs to $owner, but $SERVICE_NAME runs as $service_user. The update changes the install's files as their owner, who must be the service's user. Nothing was changed. Give the install to $service_user (sudo chown -R $service_user: $INSTALL_DIR) or correct the unit's User=, then run the update again."
+  fi
+  [ "$owner" = root ] || require_cmd sudo
+  INSTALL_OWNER="$owner"
+}
+
+as_owner() {
+  if [ "$INSTALL_OWNER" = root ]; then "$@"; else sudo -H -u "$INSTALL_OWNER" "$@"; fi
+}
+
+# Whether the working tree has edits the reset would overwrite. A read that
+# failed is no clean tree: the question must not be skipped on it.
+local_edits() {
+  local out
+  out="$(as_owner git status --porcelain)" || die "Could not read the state of $INSTALL_DIR (git status failed as $INSTALL_OWNER). Nothing was changed."
+  [ -n "$out" ]
+}
+
+# The frontend is built as the owner, through sudo's PATH and the owner's HOME:
+# asked before the stop, so an npm only root can find (nvm, asdf) or an owner
+# without a usable home stops the update before anything changes, instead of
+# failing the build after the stop and rolling back on every update.
+FRONTEND_BUILD=0
+check_owner_can_build() {
+  [ -f "$FRONTEND_DIR/package.json" ] || return 0
+  if as_owner npm --version >/dev/null 2>&1; then
+    FRONTEND_BUILD=1
+    return 0
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    die "npm runs here, but not as $INSTALL_OWNER (sudo resets PATH to its secure_path, and the build needs a writable HOME), so the frontend could not be built. Nothing was changed. Install Node.js system-wide (from the distribution or NodeSource), then run the update again."
+  fi
+}
+
+# What the owner's git, pip and npm write must already be the owner's: an
+# earlier update run as root left root-owned files they cannot replace, which
+# would break the update half way, with the service stopped. Data, logs,
+# backups and the runtimes are not theirs to write and are left out. Found, the
+# update stops before anything changes, with the repair to run — never a
+# hidden chown. A scan that did not finish proves nothing, whatever it printed.
+check_owner_can_write() {
+  local stray scanned=0
+  stray="$(find -H "$INSTALL_DIR" -xdev \( -path "$INSTALL_DIR/data" -o -path "$INSTALL_DIR/logs" \
+    -o -path "$BACKUP_DIR" -o -path "$INSTALL_DIR/runtime" \) -prune -o ! -user "$INSTALL_OWNER" -print -quit \
+    2>/dev/null)" || scanned=$?
+  if [ -n "$stray" ]; then
+    die "Part of $INSTALL_DIR does not belong to $INSTALL_OWNER (first: ${stray#"$INSTALL_DIR"/}), likely left by an earlier update run as root. Nothing was changed. Give it back with: sudo chown -R $INSTALL_OWNER: $INSTALL_DIR — then run the update again."
+  fi
+  if [ "$scanned" -ne 0 ]; then
+    die "Could not check who owns the files of $INSTALL_DIR (find exited $scanned). Nothing was changed."
+  fi
+}
+
 # Restore the --loop asyncio pin on a unit file written before it existed
 # (upstream 0dfcff59).
 #
@@ -161,8 +233,8 @@ forward, easiest last:
 
        sudo systemctl stop ${SERVICE_NAME}
        sudo rm -rf ${INSTALL_DIR}/venv
-       sudo python3 -m venv ${INSTALL_DIR}/venv
-       sudo ${INSTALL_DIR}/venv/bin/pip install -r ${INSTALL_DIR}/requirements.txt
+       sudo -u ${INSTALL_OWNER:-bamdude} python3 -m venv ${INSTALL_DIR}/venv
+       sudo -u ${INSTALL_OWNER:-bamdude} ${INSTALL_DIR}/venv/bin/pip install -r ${INSTALL_DIR}/requirements.txt
        sudo systemctl start ${SERVICE_NAME}
 
   2. Install a newer Python alongside the system one and rebuild the venv with
@@ -201,7 +273,7 @@ on_error() {
   if [ "$SERVICE_STOPPED" -eq 1 ]; then
     if [ "$CODE_UPDATED" -eq 1 ] && [ -n "$old_commit" ]; then
       warn "Update failed after code change, attempting rollback to $old_commit"
-      git reset --hard "$old_commit" || warn "Rollback reset failed"
+      as_owner git reset --hard "$old_commit" || warn "Rollback reset failed"
     fi
 
     warn "Update failed, attempting to restart service: $SERVICE_NAME"
@@ -211,6 +283,96 @@ on_error() {
   exit "$exit_code"
 }
 trap 'on_error $?' ERR
+trap cleanup_rollback_pin EXIT
+
+# The part-render runtime (pinned Node.js, spec §6): an install made before it
+# shipped gets it here, and a new pin in the manifest reaches every updated
+# install -- the pin is how runtime security fixes travel. install.sh's own
+# function does the work. Run in a subshell: sourcing install.sh brings its
+# globals and `set -e`, which must not leak into this script.
+refresh_render_runtime() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -c %U "$INSTALL_DIR")"
+  provision_render_runtime
+}
+
+# The unit's cgroup, recorded BEFORE the stop whatever its state (spec stage C
+# R4a, consilium C2-R1): a unit that is already failed or inactive may still
+# have live descendants, so its group is checked like any other.
+SERVICE_CGROUP=""
+record_service_cgroup() {
+  SERVICE_CGROUP="$(systemctl show "$SERVICE_NAME" -p ControlGroup --value 2>/dev/null || true)"
+}
+
+# 0 only on a PROOF that nothing of the service runs: a successful query of a
+# loaded unit that is inactive or failed, a cgroup v2 hierarchy, and the
+# recorded group either gone from that readable hierarchy or `populated 0`
+# (the flag covers every descendant group). Unknown, unreadable, cgroup v1 or
+# hybrid, or no group recorded: no proof. The unit's state alone never is one.
+service_proven_stopped() {
+  local load active events root="${CGROUP_ROOT:-/sys/fs/cgroup}"
+  load="$(systemctl show "$SERVICE_NAME" -p LoadState --value 2>/dev/null)" || return 1
+  active="$(systemctl show "$SERVICE_NAME" -p ActiveState --value 2>/dev/null)" || return 1
+  [ "$load" = "loaded" ] || return 1
+  [ "$active" = "inactive" ] || [ "$active" = "failed" ] || return 1
+  [ "$(stat -fc %T "$root" 2>/dev/null || true)" = "cgroup2fs" ] || return 1
+  [ -n "$SERVICE_CGROUP" ] || return 1
+  if [ ! -e "$root$SERVICE_CGROUP" ]; then
+    [ -r "$root/cgroup.controllers" ] || return 1  # the hierarchy itself is there and readable
+    return 0
+  fi
+  events="$(cat "$root$SERVICE_CGROUP/cgroup.events" 2>/dev/null)" || return 1
+  printf '%s\n' "$events" | grep -qx 'populated 0'
+}
+
+# The STEP preview component (spec stage C R4): only an install whose
+# administrator enabled it gets the new pin. A subshell, like the render
+# runtime: install.sh's globals stay out of here.
+refresh_step_preview() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -L -c %U "$INSTALL_DIR")"
+  refresh_enabled_step_preview
+}
+
+# The pin of the code this update replaces: a start that fails after the prune
+# rolls the code back to it, and its STEP bundle must still be there then (Codex
+# F1-R1). Kept as the old code's own manifest, readable by the owner the helper
+# runs as; none when the old code had no STEP component. Read AS THE OWNER: the
+# tree is theirs, and root must never follow a link they placed there (security
+# review). The copy is theirs alone (mktemp's 0600) and goes on every way out.
+STEP_PREVIEW_ROLLBACK_MANIFEST=""
+remember_rollback_pin() {
+  local manifest="$INSTALL_DIR/backend/app/data/step_runtime_manifest.json"
+  [ -f "$manifest" ] || return 0
+  STEP_PREVIEW_ROLLBACK_MANIFEST="$(mktemp)"
+  if ! as_owner cat -- "$manifest" > "$STEP_PREVIEW_ROLLBACK_MANIFEST"; then
+    die "Cannot read the STEP preview pin of the installed code as $INSTALL_OWNER. Nothing was changed."
+  fi
+  chown "$INSTALL_OWNER" "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+}
+cleanup_rollback_pin() {
+  [ -z "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ] || rm -f "$STEP_PREVIEW_ROLLBACK_MANIFEST"
+}
+
+# The earlier pin's bundle, last before the start (R4a, shell review S2): only
+# on the stop proven right after `systemctl stop` AND again now — and never the
+# rollback target's (remember_rollback_pin).
+STEP_STOP_PROVEN=0
+prune_step_preview() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -L -c %U "$INSTALL_DIR")"
+  step_preview_may_prune() { [ "$STEP_STOP_PROVEN" = 1 ] && service_proven_stopped; }
+  prune_old_step_preview
+}
 
 create_backup() {
   local ts backup_file
@@ -298,28 +460,34 @@ EOF
   exit 1
 fi
 
-if [ -z "$BRANCH" ]; then
-  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  [ "$BRANCH" = "HEAD" ] && BRANCH="main"
-fi
-
 load_state="$(systemctl show "$SERVICE_NAME" --property=LoadState --value 2>/dev/null || true)"
 if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
   die "Service not found: ${SERVICE_NAME}.service"
 fi
 
+# Before any git: who changes the files, and whether they can.
+resolve_install_owner
+check_owner_can_write
+check_owner_can_build
+remember_rollback_pin
+
+if [ -z "$BRANCH" ]; then
+  BRANCH="$(as_owner git rev-parse --abbrev-ref HEAD)"
+  [ "$BRANCH" = "HEAD" ] && BRANCH="main"
+fi
+
 check_python_version
 
-old_commit="$(git rev-parse --short HEAD || true)"
+old_commit="$(as_owner git rev-parse --short HEAD || true)"
 
 log "Fetching latest code from origin/$BRANCH"
-git fetch --prune origin
+as_owner git fetch --prune origin
 
-remote_commit="$(git rev-parse --short "origin/$BRANCH" || true)"
+remote_commit="$(as_owner git rev-parse --short "origin/$BRANCH" || true)"
 log "Current commit: ${old_commit:-unknown}"
 log "Remote commit: ${remote_commit:-unknown}"
 
-if git diff --quiet HEAD "origin/$BRANCH"; then
+if as_owner git diff --quiet HEAD "origin/$BRANCH"; then
   log "You are already running the latest version of BamDude."
   read -r -p "Do you want to run the update process anyway? [y/N]: " run_anyway
   case "${run_anyway:-}" in
@@ -334,7 +502,7 @@ else
   esac
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+if local_edits; then
   if [ "$FORCE" != "1" ]; then
     read -r -p "Local edits were detected in your installation. Updating now will overwrite those edits. Continue? [y/N]: " answer
     case "${answer:-}" in
@@ -348,28 +516,52 @@ fi
 
 create_backup
 
+record_service_cgroup  # before the stop: what the prune of an old STEP component must prove empty
 log "Stopping service: $SERVICE_NAME"
 systemctl stop "$SERVICE_NAME"
 SERVICE_STOPPED=1
+if service_proven_stopped; then
+  STEP_STOP_PROVEN=1  # the first of the two proofs an old STEP bundle needs before it goes
+fi
 
 log "Updating code to origin/$BRANCH"
-git reset --hard "origin/$BRANCH"
+as_owner git reset --hard "origin/$BRANCH"
 CODE_UPDATED=1
 
 if [ -x "$VENV_PIP" ] && [ -f requirements.txt ]; then
   log "Updating Python dependencies"
-  "$VENV_PIP" install -r requirements.txt
+  as_owner "$VENV_PIP" install -r requirements.txt
 else
   warn "Skipping Python dependency update (venv pip or requirements.txt missing)."
 fi
 
+# Never fails the update: a missing runtime is a missing feature, reported on
+# the System page, not a reason to roll the code back.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  log "Updating the part-render runtime"
+  if ! (refresh_render_runtime); then
+    warn "Render runtime update failed; part thumbnails will report it on the System page."
+  fi
+else
+  warn "Skipping the render runtime (install/install.sh or the venv python missing)."
+fi
+
+# Never fails the update either: only an install whose administrator enabled
+# the STEP preview component gets it, and its old bundle goes only on a proven stop.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  log "Updating the STEP preview component (if enabled)"
+  if ! (refresh_step_preview); then
+    warn "STEP preview update failed; run install/step-preview.sh status to see why."
+  fi
+fi
+
 if [ -f "$FRONTEND_DIR/package.json" ]; then
-  if command -v npm >/dev/null 2>&1; then
+  if [ "$FRONTEND_BUILD" = 1 ]; then
     log "Building frontend"
     (
       cd "$FRONTEND_DIR"
-      npm ci
-      npm run build
+      as_owner npm ci
+      as_owner npm run build
     )
   else
     warn "Skipping frontend build (npm not installed)."
@@ -381,10 +573,17 @@ fi
 # While the service is stopped, so the flag takes effect on this restart.
 repair_loop_flag
 
+# Last before the start: nothing that can still roll the code back comes after it.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  if ! (prune_step_preview); then
+    warn "Old STEP preview components could not be checked; run install/step-preview.sh status to see why."
+  fi
+fi
+
 log "Starting service: $SERVICE_NAME"
 systemctl start "$SERVICE_NAME"
 SERVICE_STOPPED=0
 systemctl --no-pager --lines=8 status "$SERVICE_NAME"
 
-new_commit="$(git rev-parse --short HEAD || true)"
+new_commit="$(as_owner git rev-parse --short HEAD || true)"
 log "Update complete: ${old_commit:-unknown} -> ${new_commit:-unknown}"

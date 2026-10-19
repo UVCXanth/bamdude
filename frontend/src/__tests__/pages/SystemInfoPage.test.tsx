@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { SystemInfoPage } from '../../pages/SystemInfoPage';
 import { api } from '../../api/client';
@@ -232,6 +232,108 @@ describe('SystemInfoPage', () => {
     }
   });
 
+  it('shows the part thumbnail worker with its queue and last attempt', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: {
+        state: 'degraded',
+        reason: 'no_runtime',
+        runtime: null,
+        bundle: null,
+        queue: { pending: 3, failed: 1 },
+        last: { outcome: 'done', elapsed_ms: 2500 },
+      },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('Part thumbnail worker')).toBeInTheDocument();
+    expect(screen.getByText('Fallback only')).toBeInTheDocument();
+    expect(screen.getByText('no_runtime')).toBeInTheDocument();
+    expect(screen.getByText('Queue: 3 waiting, 1 failed')).toBeInTheDocument();
+    expect(screen.getByText('Last attempt: done in 2.5 s')).toBeInTheDocument();
+  });
+
+  it('names the last part thumbnail outcome in the reader\'s language', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: {
+        state: 'ready',
+        reason: null,
+        runtime: null,
+        bundle: null,
+        queue: null,
+        last: { outcome: 'invalid_output', elapsed_ms: 1200 },
+      },
+    } as never);
+    await i18n.changeLanguage('uk');
+    const view = render(<SystemInfoPage />);
+    try {
+      expect(await screen.findByText('Остання спроба: хибний результат за 1.2 с')).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      await i18n.changeLanguage('en');
+    }
+  });
+
+  const partRenderPanel = async () =>
+    (await screen.findByRole('heading', { name: 'Part thumbnail worker' })).closest('div.p-4') as HTMLElement;
+
+  it('explains why the part thumbnail worker is down, keeps the code and links its troubleshooting (spec §13, plan E7 D1)', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: {
+        state: 'unavailable',
+        reason: 'runtime_failed',
+        runtime: { version: 'v24.17.0', pinned_at: '2026-10-07' },
+        bundle: null,
+        queue: { pending: 4, failed: 0 },
+        last: null,
+      },
+    } as never);
+    render(<SystemInfoPage />);
+    const panel = await partRenderPanel();
+    expect(within(panel).getByText(/is installed but does not start/)).toBeInTheDocument();
+    expect(within(panel).getByText('runtime_failed')).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: 'Part thumbnail troubleshooting' })).toHaveAttribute(
+      'href',
+      'https://docs.bamdude.top/reference/troubleshooting/#part-thumbnail-worker',
+    );
+  });
+
+  it('a reason it has no sentence for shows the code alone, never a blank line (plan E7 D1)', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: { state: 'unavailable', reason: 'brand_new_reason', runtime: null, bundle: null, queue: null, last: null },
+    } as never);
+    render(<SystemInfoPage />);
+    const panel = await partRenderPanel();
+    expect(within(panel).getByText('brand_new_reason')).toBeInTheDocument();
+    expect(within(panel).queryByText('system.partRenderWorker.reasons.brand_new_reason')).not.toBeInTheDocument();
+  });
+
+  it('a healthy worker shows no troubleshooting link (plan E7 D1)', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: { state: 'ready', reason: null, runtime: null, bundle: null, queue: null, last: null },
+    } as never);
+    render(<SystemInfoPage />);
+    const panel = await partRenderPanel();
+    expect(within(panel).queryByRole('link', { name: 'Part thumbnail troubleshooting' })).not.toBeInTheDocument();
+  });
+
+  it('every reason the worker reports has a sentence in both languages (plan E7 D1)', () => {
+    // the closed list part_render_runtime reports (health, the monitor, the not-started fallback)
+    const reasons = [
+      'ownership_uncertain', 'stopped', 'not_started', 'starting', 'startup_failed', 'broker_disconnected',
+      'worker_restarting', 'circuit_open', 'staging_full', 'runtime_missing', 'runtime_provisioning', 'runtime_failed',
+      'bundle_mismatch', 'no_runtime',
+    ];
+    for (const lng of ['en', 'uk']) {
+      for (const reason of reasons) {
+        expect(i18n.exists(`system.partRenderWorker.reasons.${reason}`, { lng }), `${lng} ${reason}`).toBe(true);
+      }
+    }
+  });
+
   it('uses the Ukrainian recovery text and matching documentation page', async () => {
     vi.mocked(api.getSystemInfo).mockResolvedValue({
       ...mockSystemInfo,
@@ -247,6 +349,25 @@ describe('SystemInfoPage', () => {
       expect(screen.getByText(/Не видаляйте маркер середовища навмання/)).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'Діагностика та відновлення прев’ю' })).toHaveAttribute(
         'href', 'https://docs.bamdude.top/uk/reference/troubleshooting/#local-preview-service',
+      );
+    } finally {
+      view.unmount();
+      await i18n.changeLanguage('en');
+    }
+  });
+
+  it('links the Ukrainian troubleshooting page for the part thumbnail worker (plan E7 D1)', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: { state: 'degraded', reason: 'no_runtime', runtime: null, bundle: null, queue: null, last: null },
+    } as never);
+    await i18n.changeLanguage('uk');
+    const view = render(<SystemInfoPage />);
+    try {
+      const panel = (await screen.findByRole('heading', { name: 'Воркер мініатюр деталей' })).closest('div.p-4') as HTMLElement;
+      expect(within(panel).getByRole('link', { name: 'Діагностика мініатюр деталей' })).toHaveAttribute(
+        'href',
+        'https://docs.bamdude.top/uk/reference/troubleshooting/#part-thumbnail-worker',
       );
     } finally {
       view.unmount();

@@ -733,6 +733,7 @@ class PrinterManager:
         self._on_finish_photo_moment: Callable[[int, dict], None] | None = None
         self._on_status_change: Callable[[int, PrinterState], None] | None = None
         self._on_ams_change: Callable[[int, list], None] | None = None
+        self._on_spool_inserted: Callable[[int, dict], None] | None = None
         self._on_layer_change: Callable[[int, int, int], None] | None = None
         # #1349: fires when an AMS on the connected printer finishes a
         # drying cycle. Receives ``(printer_id, ams_id)``.
@@ -861,8 +862,14 @@ class PrinterManager:
         token = secrets.token_urlsafe(24)
         async with async_session() as db:
             printer = await db.get(Printer, printer_id)
-            if printer is None or not printer.require_plate_clear:
+            if printer is None:
                 return None
+            if not printer.require_plate_clear:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.services.order_auto_eject import archive_mode
+
+                if not archive_mode(await db.get(PrintArchive, archive_id)):
+                    return None
             printer.awaiting_plate_clear = True
             printer.awaiting_plate_clear_archive_id = archive_id
             printer.awaiting_plate_clear_token = token
@@ -1036,6 +1043,9 @@ class PrinterManager:
         """Set callback for AMS data change events."""
         self._on_ams_change = callback
 
+    def set_spool_inserted_callback(self, callback: Callable[[int, dict], None]):
+        self._on_spool_inserted = callback
+
     def set_layer_change_callback(self, callback: Callable[[int, int, int], None]):
         """Set callback for layer change events.
 
@@ -1149,6 +1159,10 @@ class PrinterManager:
             if self._on_ams_change:
                 self._schedule_async(self._on_ams_change(printer_id, ams_data))
 
+        def on_spool_inserted(event: dict):
+            if self._on_spool_inserted:
+                self._schedule_async(self._on_spool_inserted(printer_id, event))
+
         def on_layer_change(layer_num: int, previous_layer: int):
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num, previous_layer))
@@ -1211,6 +1225,7 @@ class PrinterManager:
             on_print_start=on_print_start,
             on_print_complete=on_print_complete,
             on_ams_change=on_ams_change,
+            on_spool_inserted=on_spool_inserted,
             on_layer_change=on_layer_change,
             on_macro_complete=on_macro_complete,
             on_kprofiles_changed=on_kprofiles_changed,
@@ -1548,6 +1563,8 @@ class PrinterManager:
         printer_id: int,
         gcode: str,
         macro_name: str,
+        *,
+        may_run: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
         """Send a macro and block until ``on_macro_complete`` fires or the printer disconnects.
 
@@ -1574,12 +1591,16 @@ class PrinterManager:
         """
         from backend.app.services.macro_executor import send_macro_and_await_ack
 
+        if may_run is not None and not may_run():
+            return False, "Print superseded"
         client = self._clients.get(printer_id)
         if not client:
             return False, "Printer not connected"
 
         model = self._models.get(printer_id)
         ack_ok, ack_msg = await send_macro_and_await_ack(client, gcode, macro_name, model)
+        if may_run is not None and not may_run():
+            return False, "Print superseded"
         if not ack_ok:
             return False, ack_msg
 
@@ -1587,12 +1608,15 @@ class PrinterManager:
         # the Event when bambu_mqtt fires on_macro_complete.
         event = asyncio.Event()
         result: dict = {"status": "pending", "message": ""}
-        self._macro_waiters[printer_id] = (event, result)
+        waiter = (event, result)
+        self._macro_waiters[printer_id] = waiter
 
         offline_since: float | None = None
         watched = client  # identity, so a swap can be named rather than guessed at
         try:
             while not event.is_set():
+                if may_run is not None and not may_run():
+                    return False, "Print superseded"
                 # Re-read every poll instead of watching the captured `client`.
                 # ``connect_printer`` does not mutate a client, it REPLACES the
                 # entry in ``self._clients`` — so a reference captured before the
@@ -1663,7 +1687,8 @@ class PrinterManager:
                         )
                 await asyncio.sleep(0.5)
         finally:
-            self._macro_waiters.pop(printer_id, None)
+            if self._macro_waiters.get(printer_id) is waiter:
+                self._macro_waiters.pop(printer_id, None)
 
         # The completion event is the authority, not the socket: a printer that
         # reports the macro done and drops immediately after has still done it.

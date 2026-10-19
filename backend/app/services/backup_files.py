@@ -32,6 +32,10 @@ async def exclusive_operation():
         yield
 
 
+# Deliberately absent: settings.part_renders_dir. Part thumbnails are derived files the queue rebuilds
+# (spec §8.3) -- the one exception to vault inv-data-dir-one-root-per-subsystem. Their rows travel with
+# the database, and the start-up reconciliation (part_renders.reconcile) settles rows and files after a
+# restore.
 def directories(settings) -> dict[str, Path]:
     """One map for both directions, including custom archive/calibration roots."""
     base = Path(settings.base_dir)
@@ -113,8 +117,13 @@ def copy_file(source: Path, target: Path) -> None:
     shutil.copystat(source, target, follow_symlinks=False)
 
 
-def copy_tree(source: Path, target: Path) -> None:
-    before = inventory(source)
+THUMBNAILS = "thumbnails"  # the library's pictures: copied in a phase of their own (stage_library_thumbnails)
+
+
+def copy_tree(source: Path, target: Path, *, exclude: Path | None = None) -> None:
+    """Copy a tree strictly: any change to it while it is copied fails the copy. ``exclude`` names one subtree
+    another phase copies on its own terms -- delegated, never silently ignored."""
+    before = inventory(source, exclude=exclude)
     if not before["."][0]:
         raise ValueError(f"Expected a directory: {source}")
     target.mkdir(parents=True, exist_ok=True)
@@ -126,15 +135,36 @@ def copy_tree(source: Path, target: Path) -> None:
             destination.mkdir(parents=True, exist_ok=True)
         else:
             copy_file(source / name, destination)  # SEC-PATH-OK: inventory-relative path, links rejected.
-    if inventory(source) != before:
+    if inventory(source, exclude=exclude) != before:
         raise ValueError(f"Source directory changed while copying: {source}")
+
+
+def copy_library(library: Path, library_copy: Path) -> None:
+    """The library, strictly, its pictures delegated. Their directory is made before the first inventory if it is
+    missing (the app makes it on its first picture anyway), so its creation mid-copy cannot change the parent."""
+    try:
+        (library / THUMBNAILS).mkdir(exist_ok=True)  # SEC-PATH-OK: a fixed subtree name under the library root.
+    except OSError:
+        pass  # a read-only library: no picture can be published into it during the copy either
+    copy_tree(library, library_copy, exclude=library / THUMBNAILS)
+
+
+def stage_library_thumbnails(library: Path, library_copy: Path) -> None:
+    """The library's pictures, last and strictly: the caller holds the library preview publications paused, so
+    nothing is published into them meanwhile (Codex A-R5). A library that never had pictures has none to copy."""
+    source = library / THUMBNAILS  # SEC-PATH-OK: a fixed subtree name under the configured library root.
+    if source.exists() or source.is_symlink():
+        copy_tree(source, library_copy / THUMBNAILS)
 
 
 def stage_files(settings, data_dir: Path, staging: Path) -> None:
     for name, source in directories(settings).items():
         target = staging / name  # SEC-PATH-OK: name is from the fixed directories() map.
         if source.exists() or source.is_symlink():
-            copy_tree(source, target)
+            if name == "library":
+                copy_library(source, target)  # its pictures: stage_library_thumbnails, under the publication pause
+            else:
+                copy_tree(source, target)
         else:
             target.mkdir()  # Empty/absent managed directories must survive the ZIP.
     for name in (".mfa_encryption_key", ".install_id"):

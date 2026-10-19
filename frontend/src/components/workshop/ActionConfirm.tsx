@@ -26,6 +26,7 @@ export function ActionConfirm({
   primaryLabel,
   cancelLabel,
   danger = false,
+  primaryDisabled = false,
   send,
   onClose,
   size = 'sm',
@@ -37,6 +38,8 @@ export function ActionConfirm({
   /** The way back, where «Cancel» says less than the action's own word (discarding a draft: «Stay»). */
   cancelLabel?: string;
   danger?: boolean;
+  /** The reviewed action is not ready to send yet. Cancel remains available. */
+  primaryDisabled?: boolean;
   /** The write and everything after its success; it rejects with the refusal. */
   send: () => Promise<unknown>;
   onClose: () => void;
@@ -83,9 +86,9 @@ export function ActionConfirm({
           <Button
             id={primaryId}
             variant={danger ? 'danger' : 'primary'}
-            disabled={busy}
+            disabled={busy || primaryDisabled}
             onClick={() => {
-              if (sent.current) return;
+              if (sent.current || primaryDisabled) return;
               sent.current = true;
               setSending(true);
               write.mutate();

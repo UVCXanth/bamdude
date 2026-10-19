@@ -19,16 +19,22 @@ FROM python:3.12-slim-trixie
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies. libgl1, libx11-6 and libexpat1 are what the
+# STEP-preview CAD component's native closure needs from the system (measured on
+# a clean trixie: libGL.so.1, libX11.so.6, libexpat.so.1). ffmpeg pulls them in
+# today; they are named so that a slimmer ffmpeg can never drop them silently.
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
     gnupg \
     gosu \
     iproute2 \
     libcap2-bin \
-    openssh-client \
+    libexpat1 \
+    libgl1 \
+    libx11-6 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,7 +58,10 @@ RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
 # which depends on ambient capability support in the container runtime.
 RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 
-# Install Python dependencies with cache mount.
+# Install Python dependencies with cache mount. The runtime container is
+# updated by replacing the image; pip itself is build-only, so remove it from
+# this same layer after installation. Its vendored Python packages otherwise
+# remain in the final image even after the app's copies have been patched.
 # pip is upgraded to >=26.1 first to close CVE-2026-6357 — the python:3.12-slim
 # base image ships pip 25.0.1, which runs its self-update check after installing
 # wheels, so a hostile wheel could hijack stdlib imports during install. Upgrade
@@ -60,13 +69,48 @@ RUN setcap cap_net_bind_service=+ep "$(readlink -f /usr/local/bin/python3)"
 # install runs under the patched pip and the dist-info in the final image is the
 # fixed version. Floor is enforced at the image-build layer where the vulnerable
 # copy actually lived — no requirements.txt change needed.
+#
+# The STEP-preview CAD component (spec §8) is installed in this same layer,
+# because its installer is pip: the helper and its catalog are copied first, on
+# their own, and the bundle lands in /app/runtime/step-preview — never DATA_DIR,
+# never written at runtime. Exit 3 (no build for this architecture, e.g. armv7)
+# leaves an image without STEP pictures; any other failure fails the build. A
+# candidate pin is installed only with STEP_PREVIEW_CANDIDATE=1 (development);
+# a release image needs a release pin. This early layer has no backend yet, so
+# it can only check the import (--import-only, named so in its answer): the
+# image's acceptance is the full verify below — a real STEP->PNG.
+ARG STEP_PREVIEW_CANDIDATE=0
 COPY requirements.txt ./
+COPY backend/__init__.py ./backend/
+COPY backend/app/__init__.py backend/app/step_runtime.py backend/app/step_preview_probe.py ./backend/app/
+COPY backend/app/services/__init__.py backend/app/services/step_runtime_child.py \
+     backend/app/services/part_render_tree.py backend/app/services/worker_containment.py \
+     backend/app/services/worker_env.py ./backend/app/services/
+COPY backend/app/data/step_runtime_manifest.json backend/app/data/step_runtime_closure.json ./backend/app/data/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --root-user-action=ignore --upgrade 'pip>=26.1.2' \
- && pip install --root-user-action=ignore -r requirements.txt
+ && pip install --root-user-action=ignore -r requirements.txt \
+ && { python -m backend.app.step_runtime install --app-dir /app --import-only \
+        $( [ "$STEP_PREVIEW_CANDIDATE" = 1 ] && echo --allow-candidate ) || [ "$?" -eq 3 ]; } \
+ && pip uninstall --yes pip
+
+# Part-render runtime (spec §6): the pinned official Node.js for this
+# architecture, verified against render_runtime.json. Provisioned from a copy of
+# the module and the manifest alone, after the Python dependencies: the layer is
+# rebuilt only when render_runtime.py or the pin changes. No system libraries:
+# the official build needs glibc, which the base image has.
+COPY backend/app/services/render_runtime.py /opt/render-runtime/render_runtime.py
+COPY backend/app/data/render_runtime.json /opt/render-runtime/render_runtime.json
+RUN python /opt/render-runtime/render_runtime.py provision --runtime /app/runtime --manifest /opt/render-runtime/render_runtime.json \
+    && rm -rf /opt/render-runtime
 
 # Copy backend
 COPY backend/ ./backend/
+
+# The CAD bundle against the backend it serves, the image's acceptance: a full
+# read-only verify (receipt, rehash, import, and the probe STEP converted and
+# rendered to a PNG) with pip already gone. 3 = no build for this architecture.
+RUN python -m backend.app.step_runtime verify --app-dir /app || [ "$?" -eq 3 ]
 
 # Copy built frontend from builder stage
 COPY --from=frontend-builder /app/static ./static

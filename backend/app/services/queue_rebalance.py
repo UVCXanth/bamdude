@@ -61,6 +61,7 @@ from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, mode
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_metrics import attribute, batch_contexts, line_accepts_materials
+from backend.app.services.order_print_options import override_options
 from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import (
     _pick_key,
@@ -752,6 +753,7 @@ async def _apply(
     from the line, so a row whose ``project_id`` points at an order that is gone
     (SQLite honours no FK action) cannot make the creation refuse.
     """
+
     file = (
         await db.execute(LibraryFile.active().where(LibraryFile.id == move.plate.library_file_id))
     ).scalar_one_or_none()
@@ -776,15 +778,18 @@ async def _apply(
         if move.k > 1:
             profile = await preference_options(db, current_user, to_model)
             options = profile.for_auto_queue() if profile else {}
-            if file.swap_compatible:
-                options["execute_swap_macros"] = False
-                options["swap_macro_events"] = None
+            options.update(override_options(item.order_print_options, to_model))
+            # The companions are router rows, whose swap fields are inert: their assignment decides per
+            # printer from the captured declaration (swap-source-lifecycle spec r4 §8), not this library row.
             # After the profile, so the row wins: these four are not toggles the
             # profile has an opinion about (``SharedQueueOptions`` carries none of
             # them) — they say how THIS job feeds and what happens when it ends.
             # ``feed_policy`` may be the row's own ``"auto"``; the writer normalises
             # it exactly as it does for every other door.
             payload = {
+                "auto_eject_enabled": item.auto_eject,
+                "auto_eject_settings": item.auto_eject_settings or {},
+                "auto_eject_skip_acknowledged": True,  # Preserve the already accepted job policy.
                 **options,
                 "use_ams": item.use_ams,
                 "feed_policy": item.feed_policy,
@@ -882,6 +887,7 @@ async def _apply(
                 ),
                 current_user,
                 requirements_cache=cache,
+                order_print_options=item.order_print_options,
             )
             for row in created:
                 row.batch_id = batch_id

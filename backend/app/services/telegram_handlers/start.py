@@ -88,7 +88,7 @@ async def cmd_start(message: Message, state: FSMContext | None = None) -> None:
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext | None = None) -> None:
+async def cmd_cancel(message: Message, state: FSMContext | None = None, tg_chat=None) -> None:
     """Leave whatever wizard is open, from anywhere.
 
     ⚠️ Registered on ``start.py``'s router, which ``telegram_bot.py`` includes
@@ -101,10 +101,13 @@ async def cmd_cancel(message: Message, state: FSMContext | None = None) -> None:
     being stuck, which is the very thing this exists to fix.
     """
     lang = await get_language()
+    from backend.app.services.telegram_handlers.defects import cancel_owner_drafts
+
+    had_draft = await cancel_owner_drafts(message, tg_chat)
     had_scene = state is not None and await state.get_state() is not None
     if state is not None:
         await state.clear()
-    key = "start.cancelled" if had_scene else "start.nothing_to_cancel"
+    key = "start.cancelled" if had_scene or had_draft else "start.nothing_to_cancel"
     await message.answer(escape_md(t(lang, NS, key)))
 
 

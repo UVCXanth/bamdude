@@ -47,7 +47,7 @@
   "source_copy_busy": "The queue is already copying files. Try again in a moment.",
   "source_spool_replaced": "A restore replaced the saved queue files. Try again.",
   "source_invalid": "The source file is not a readable sliced file.",
-  "source_copy_timeout": "Copying the source file into the queue took too long. Check the storage connection, then try again.",
+  "source_copy_timeout": "Copying the source timed out. Check that its storage is available before retrying.",
   "source_spool_no_space": "There is not enough free space to save this file for the queue.",
   "source_spool_write_failed": "The file could not be saved for the queue. Check the server's data storage.",
   "source_copy_failed": "The file could not be saved for the queue.",
@@ -55,5 +55,23 @@
     "wanted_and_loaded": "Channel {slot} needs {wanted}; loaded: {loaded}.",
     "wanted_nothing_loaded": "Channel {slot} needs {wanted}; nothing is loaded.",
     "wanted_only": "Channel {slot} needs {wanted}."
-  }
+  },
+  "auto_eject_conflict": "Finish G-code auto-eject conflicts with printer Swap Mode",
+  "plate_calibration_required": "Plate-check calibration is required",
+  "plate_check_unavailable": "Could not obtain or analyse a fresh plate image",
+  "plate_objects_detected": "Objects remain on the plate; inspect the part and purge cube zones",
+  "plate_manual_inspection": "The previous run requires inspection and a run-bound manual plate answer",
+  "plate_context_changed": "Printer or dispatch context changed; a fresh check is required",
+  "plate_telemetry_unavailable": "Fresh local printer telemetry is unavailable",
+  "swap_source_unknown": "This file's source does not say whether it carries its own plate-swap sequence, so BamDude does not run its swap macros for it. Print it with the swap macros off, or from a source whose declaration is known.",
+  "swap_cycle_started": "The table-swap cycle started but did not finish. Inspect the mechanism and plate before resuming.",
+  "swap_cycle_possibly_started": "The table-swap cycle may have started, but completion is unconfirmed. Inspect the mechanism and plate before resuming.",
+  "swap_hold_source_unknown": "The table swap was not run: this print's source does not say whether it carries its own plate-swap sequence. Inspect the plate, then resume the queue.",
+  "swap_hold_source_baked": "The table swap was not run: this print's source carries its own plate-swap sequence, so BamDude's would have been a second one. Inspect the plate, then resume the queue.",
+  "swap_hold_run_unproven": "The table swap was not run: this finish could not be tied to the print BamDude started. Inspect the plate, then resume the queue.",
+  "swap_hold_not_completed": "The print did not complete, so the table swap was not run. Inspect and clear the plate, then resume the queue.",
+  "swap_hold_swap_off": "The table swap was not run: swap mode is off on this printer or its change-table macro is missing. Run the table swap or clear the plate, then resume the queue.",
+  "swap_hold_outcome_uncertain": "The table swap was not run: the print's outcome is uncertain after the outage. Inspect the plate, then resume the queue.",
+  "swap_hold_macro_error": "The table swap did not finish: BamDude could not run the printer's change-table macro. Inspect the mechanism and plate, then resume the queue.",
+  "swap_hold_attempt_unknown": "The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue."
 }

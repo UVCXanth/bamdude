@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import { focusManager } from '@tanstack/react-query';
 import { render } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
@@ -468,6 +468,82 @@ describe('InventoryPage — server-driven params (task 4)', () => {
         ),
       ).toBe(true)
     );
+  });
+
+  it.each([
+    ['#', 'id'], ['Lot', 'lot'], ['Purchased', 'purchase_date'], ['Location', 'location'],
+    ['Label', 'label_weight'], ['Net', 'net'], ['Remaining', 'remaining'],
+  ])('sorts grouped rows by %s in both directions on the server', async (label, key) => {
+    localStorage.setItem('bamdude-inventory-group', 'true');
+    localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'material', direction: 'asc' }));
+    render(<InventoryPageRouter />);
+    const header = await screen.findByRole('columnheader', { name: label });
+    for (const direction of ['asc', 'desc']) {
+      fireEvent.click(header);
+      await waitFor(() => expect(pageRequests().some((u) =>
+        u.searchParams.get('group_similar') === 'true' && u.searchParams.get('sort_by') === `${key}_${direction}`,
+      )).toBe(true));
+    }
+  });
+
+  it.each([['#', 'id'], ['Lot', 'lot'], ['Purchased', 'purchase_date'], ['Net', 'net'], ['Remaining', 'remaining']])(
+    'sorts lazily fetched group members by %s in both directions', async (label, key) => {
+      localStorage.setItem('bamdude-inventory-group', 'true');
+      localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'material', direction: 'asc' }));
+      const members = [
+        { ...SPOOLS[0], id: 30, lot: 1, purchase_date: '2026-01-01T00:00:00Z', weight_used: 900 },
+        { ...SPOOLS[0], id: 10, lot: 3, purchase_date: '2026-03-01T00:00:00Z', weight_used: 100 },
+        { ...SPOOLS[0], id: 20, lot: 2, purchase_date: '2026-02-01T00:00:00Z', weight_used: 500 },
+      ];
+      server.use(
+        http.get('/api/v1/inventory/spools', ({ request }) => {
+          listRequests.push(new URL(request.url));
+          return HttpResponse.json({ items: [{
+            ...SPOOLS[0], group_count: 3, ids: [10, 20, 30], remaining_total: 1500, weight_used_total: 1500,
+            representative: members[1],
+          }], meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 } });
+        }),
+        http.get('/api/v1/inventory/spools/:id', ({ params }) =>
+          HttpResponse.json(members.find((m) => m.id === Number(params.id))),
+        ),
+      );
+      render(<InventoryPageRouter />);
+      fireEvent.click(await screen.findByTitle('#10, #20, #30'));
+      const header = screen.getByRole('columnheader', { name: label });
+      const memberIds = () => screen.getAllByRole('row').slice(2).map((row) =>
+        members.find((m) => within(row).queryByText(String(m.id), { exact: true }))?.id,
+      );
+      await waitFor(() => expect(memberIds()).toHaveLength(3));
+      const ascending = key === 'lot' || key === 'purchase_date' || key === 'net' || key === 'remaining'
+        ? [30, 20, 10] : [10, 20, 30];
+      fireEvent.click(header);
+      await waitFor(() => expect(memberIds()).toEqual(ascending));
+      fireEvent.click(header);
+      await waitFor(() => expect(memberIds()).toEqual([...ascending].reverse()));
+      // Sorting members must not replace the stable header's representative.
+      const lotColumn = screen.getAllByRole('columnheader').indexOf(screen.getByRole('columnheader', { name: 'Lot' }));
+      expect(within(screen.getAllByRole('row')[1]).getAllByRole('cell')[lotColumn]).toHaveTextContent(/^3$/);
+    },
+  );
+
+  it('orders Spoolman groups by total net weight rather than the first member weight', async () => {
+    localStorage.setItem('bamdude-inventory-group', 'true');
+    localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'net', direction: 'asc' }));
+    server.use(
+      http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: '' })),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([
+        { ...SPOOLS[0], id: 10, weight_used: 800 },
+        { ...SPOOLS[0], id: 20, weight_used: 800 },
+        { ...SPOOLS[1], id: 30, weight_used: 700 },
+      ])),
+      http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+    );
+    render(<InventoryPageRouter />);
+    const group = await screen.findByTitle(/#(?:10, #20|20, #10)/);
+    const single = screen.getByText('30', { exact: true });
+    expect(screen.getAllByRole('row').slice(1)).toEqual([single.closest('tr'), group.closest('tr')]);
+    fireEvent.click(screen.getByRole('columnheader', { name: 'Net' }));
+    await waitFor(() => expect(screen.getAllByRole('row').slice(1)).toEqual([group.closest('tr'), single.closest('tr')]));
   });
 
   it('"Select all N matching" rides the ids endpoint under the same filters and materializes the selection', async () => {

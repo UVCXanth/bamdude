@@ -10,6 +10,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -90,7 +91,14 @@ from backend.app.schemas.listing import (
     ProjectsNavBadges,
 )
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
+from backend.app.schemas.order_print_options import (
+    OrderPrintModel,
+    OrderPrintOptions,
+    OrderPrintOptionsResponse,
+    capabilities,
+)
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
+from backend.app.schemas.plate_fit import PlateFitPlate, PlateFitRequest, PlateFitResponse
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STAGES,
@@ -147,6 +155,7 @@ from backend.app.schemas.project import (
     StockMovedOut,
     StockOfferOut,
     StockPositionRefOut,
+    StockTakenOut,
     TakeStockIn,
     TakeStockOut,
     TimelineEvent,
@@ -163,7 +172,9 @@ from backend.app.services import (
     order_from_files,
     order_fulfilment,
     order_journal,
+    part_images,
     part_stock,
+    plate_fit,
     product_delete,
     product_gate as product_gate_module,
     queue_rebalance,
@@ -177,7 +188,7 @@ from backend.app.services.configuration_views import configuration_out, groups_b
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.line_composition import LineConfig, default_options, load_line_configs
+from backend.app.services.line_composition import LineConfig, default_options, extra_parts_for_line, load_line_configs
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -196,6 +207,7 @@ from backend.app.services.order_metrics import (
     procurement_totals,
     project_figures,
 )
+from backend.app.services.order_print_options import inherited_options, override_options
 from backend.app.services.order_queue import (
     RUNNING_STATUS,
     awaiting_auto_row_conditions,
@@ -213,6 +225,7 @@ from backend.app.services.product_files import (
 )
 from backend.app.services.product_gate import product_gate
 from backend.app.services.queue_batch import enqueue_batch_copies
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +416,11 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     variant=p.part_id in variant_parts,
                     queued=queued.get(line.id, {}).get(p.part_id, 0),
                     bankable=p.bankable,
+                    allocated_qty=p.allocated_qty,
+                    stock_used_qty=p.stock_used_qty,
+                    extra_qty=p.extra_qty,
+                    extra_percent=p.extra_percent,
+                    extra_received_qty=p.extra_received_qty,
                 )
                 for p in figs[line.id].parts
             ],
@@ -430,6 +448,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         select(func.count()).select_from(StockIssue).where(StockIssue.project_id == project.id)
     )
     return ProjectResponse(
+        auto_eject_enabled=bool(project.auto_eject_enabled),
+        auto_eject_settings=project.auto_eject_settings or {},
         id=project.id,
         code=code_for("order", project.id),
         name=project.name,
@@ -1134,6 +1154,7 @@ def _consumed_its_stock(status: str | None) -> bool:
 
 @router.post("", response_model=ProjectResponse)
 @router.post("/", response_model=ProjectResponse)
+@part_images.attach
 async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
@@ -1175,6 +1196,7 @@ async def create_project(
 
 
 @router.post("/from-files", response_model=ProjectResponse)
+@part_images.attach
 async def create_project_from_files(
     data: OrderFromFilesRequest,
     request: Request,
@@ -1323,6 +1345,7 @@ async def get_orders_filament(
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
+@part_images.attach
 async def get_project(
     project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
@@ -1340,6 +1363,7 @@ _JOURNAL_FIELDS = {
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_project(
     project_id: int,
     data: ProjectUpdate,
@@ -1414,8 +1438,11 @@ async def update_project(
     status_before = project.status
     # Every field keys off model_fields_set: an explicit null CLEARS, an absent
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
-    for field_name in data.model_fields_set:
-        setattr(project, field_name, getattr(data, field_name))
+    for field_name in data.model_fields_set - {"auto_eject_skip_acknowledged"}:
+        value = getattr(data, field_name)
+        if field_name == "auto_eject_settings":
+            value = value.model_dump()
+        setattr(project, field_name, value)
     if moves_customer and "contact_id" not in data.model_fields_set:
         # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
         project.contact_id = None
@@ -1469,6 +1496,7 @@ async def update_project(
 
 
 @router.put("/{project_id}/stage", response_model=ProjectResponse)
+@part_images.attach
 async def set_project_stage(
     project_id: int,
     data: ProjectStageUpdate,
@@ -1526,6 +1554,7 @@ async def _line_positions(db: AsyncSession, lines) -> dict[int, StockPositionRef
 
 
 @router.get("/{project_id}/fulfilment", response_model=FulfilmentStateOut)
+@part_images.attach
 async def get_fulfilment(
     project_id: int,
     db: AsyncSession = Depends(get_db),
@@ -1575,6 +1604,7 @@ async def get_fulfilment(
 
 
 @router.post("/{project_id}/fulfilment", response_model=FulfilmentOut)
+@part_images.attach
 async def fulfil_order(
     project_id: int,
     data: FulfilmentIn,
@@ -1659,6 +1689,7 @@ async def get_stock_offers(
 
 
 @router.post("/{project_id}/take-stock", response_model=TakeStockOut)
+@part_images.attach
 async def take_stock(
     project_id: int,
     request: Request,
@@ -1671,14 +1702,14 @@ async def take_stock(
     project = await _get_project(db, project_id)
     shown = None
     if data is not None and data.lines is not None:
-        shown = {row.line_id: (row.from_finished, row.kits) for row in data.lines}
+        shown = {row.line_id: (row.from_finished, row.kits, row.parts) for row in data.lines}
     try:
         taken = await stock_offers.take(db, project, shown, actor=await acting_user(request, db, current_user))
     except (stock_offers.StockOfferError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    return TakeStockOut(order=await _response(db, project.id), results=[LineIntakeOut(**asdict(t)) for t in taken])
+    return TakeStockOut(order=await _response(db, project.id), results=[StockTakenOut(**asdict(t)) for t in taken])
 
 
 @router.delete("/{project_id}")
@@ -1866,6 +1897,7 @@ async def _intake(
 
 
 @router.post("/{project_id}/lines/batch", response_model=BatchLinesOut)
+@part_images.attach
 async def add_lines_batch(
     project_id: int,
     data: BatchLinesIn,
@@ -1897,6 +1929,7 @@ async def add_lines_batch(
 
 
 @router.post("/{project_id}/lines", response_model=ProjectResponse)
+@part_images.attach
 async def add_line(
     project_id: int,
     data: ProjectLineCreate,
@@ -1920,7 +1953,73 @@ async def _get_line(db: AsyncSession, project_id: int, line_id: int, *, fresh: b
     return line
 
 
+def _fit_error(error: plate_fit.FitError) -> HTTPException:
+    return HTTPException(
+        status_code=error.status,
+        detail={
+            "error": "plate_fit_" + error.code,
+            "message": "The whole-plate quantity proposal is unavailable or has changed",
+        },
+    )
+
+
+_plate_fit_slot = asyncio.Semaphore(1)
+_plate_fit_queue_gate = require_permission(Permission.QUEUE_DELETE_ALL, Permission.QUEUE_READ)
+
+
+@router.post("/{project_id}/lines/{line_id}/plate-fit", response_model=PlateFitResponse)
+async def preview_plate_fit(
+    project_id: int,
+    line_id: int,
+    data: PlateFitRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(
+        Permission.ORDERS_READ, Permission.ORDERS_UPDATE, Permission.PRODUCTS_READ, Permission.STOCK_READ
+    ),
+    creds: RequestCredentials = Depends(request_credentials),
+):
+    """Read only. Never reserve stock, edit a line, enqueue or command hardware."""
+    if _plate_fit_slot.locked():
+        raise _fit_error(plate_fit.FitError("busy", 429))
+    if data.replace_pending:
+        await creds.check(_plate_fit_queue_gate)
+    async with _plate_fit_slot:
+        try:
+            snapshot = await plate_fit.load(
+                db, project_id, line_id, data.plate_ids, replace_pending=data.replace_pending
+            )
+            result = await plate_fit.proposals(snapshot, data)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
+    scope = await library_name_scope(request, db, user)
+    file_names = await _plan_file_names(db, {f.id for _p, f, _r in snapshot.candidates}, user, scope)
+    return PlateFitResponse(
+        line_id=line_id,
+        current_quantity=snapshot.quantity,
+        around=data.around,
+        basis=snapshot.basis,
+        removable_auto_ids=[item.id for item in snapshot.removable],
+        plate_ids=[p.id for p in snapshot.plates],
+        plates=[
+            PlateFitPlate(
+                plate_id=p.id,
+                library_file_id=f.id,
+                plate_index=p.plate_index,
+                print_time_seconds=r.print_time_seconds,
+                filament_used_grams=r.filament_used_grams,
+                filename=file_names.get(f.id),
+                hidden=f.id not in file_names,
+                printer_model=r.printer_model,
+            )
+            for p, f, r in snapshot.candidates
+        ],
+        **result,
+    )
+
+
 @router.patch("/{project_id}/lines/{line_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_line(
     project_id: int,
     line_id: int,
@@ -1930,6 +2029,14 @@ async def update_line(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     line = await _get_line(db, project_id, line_id)
+    if data.plate_fit is not None:
+        await ensure(creds, Permission.ORDERS_READ)
+        await ensure(creds, Permission.PRODUCTS_READ)
+        await ensure(creds, Permission.STOCK_READ)
+        # The shared-stock offer visits all lines. Acquire their canonical
+        # position -> line -> part locks together before the ordinary edit.
+        project = await _get_project(db, project_id)
+        await finished_stock.lock_lines_with_parts(db, project.lines)
     if line.mode == "parts":
         # Rules 15–16: one set of parts, never kits.
         if "quantity" in data.model_fields_set and data.quantity != 1:
@@ -1944,6 +2051,27 @@ async def update_line(
             await finished_stock.lock_line(db, line)
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
+    fit_snapshot = None
+    fit_selection = None
+    if data.plate_fit is not None:
+        if data.plate_fit.replace_pending:
+            await creds.check(_plate_fit_queue_gate)
+        if data.quantity is None or data.model_fields_set - {"quantity", "plate_fit"}:
+            raise _fit_error(plate_fit.FitError("invalid_plan", 422))
+        try:
+            fit_snapshot = await plate_fit.load(
+                db,
+                project_id,
+                line_id,
+                data.plate_fit.plate_ids,
+                replace_pending=data.plate_fit.replace_pending,
+                lock_pending=data.plate_fit.replace_pending,
+            )
+            fit_selection = await plate_fit.disk(lambda: plate_fit.confirm(fit_snapshot, data.quantity, data.plate_fit))
+            if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+                await ensure(creds, Permission.STOCK_MOVE)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
     if line.mode != "parts" and finished_stock.moved(line):
         # After the first movement the ready units are only added to — through «take from
         # stock» — the kits only come DOWN (spec workshop-order-issue-followups, rule 42: back
@@ -1963,6 +2091,16 @@ async def update_line(
                     status_code=409,
                     detail=f"The quantity cannot go below what is issued and held for this order ({floor})",
                 )
+    if line.extra_percentages and data.quantity is not None:
+        # A smaller BOM must still contain every extra part already issued or held.
+        comp = await part_stock.line_composition_of(db, line)
+        from types import SimpleNamespace
+
+        proposed = SimpleNamespace(mode=line.mode, quantity=data.quantity, extra_percentages=line.extra_percentages)
+        wanted = extra_parts_for_line(proposed, comp)
+        counters = (await part_stock.line_part_stock(db, [line.id])).get(line.id, {})
+        if any(wanted.get(pid, 0) < row.issued + part_stock.part_held(row) for pid, row in counters.items()):
+            raise HTTPException(status_code=409, detail="Additional parts already issued or held cannot be removed")
     wants_finished = data.from_finished is not None
     if wants_finished:
         # Ready units are taken only by an ACTIVE order (spec workshop-add-to-order,
@@ -1984,7 +2122,7 @@ async def update_line(
     )
     if takes_more:
         await ensure(creds, Permission.STOCK_MOVE)
-    for field_name in data.model_fields_set - {"from_stock_units", "from_finished"}:
+    for field_name in data.model_fields_set - {"from_stock_units", "from_finished", "plate_fit"}:
         setattr(line, field_name, getattr(data, field_name))
     try:
         if wants_finished:
@@ -2025,8 +2163,45 @@ async def update_line(
         # written off (it is needed again — spec workshop-order-issue-followups, rule 47): the
         # same room both «take from stock» doors fill (final review I1).
         fitted = max(0, line.quantity - finished_stock.covered_units(line))
-        if kits > fitted:
+        if line.extra_percentages and data.model_fields_set & {"quantity", "from_finished"}:
+            await part_stock.fit_reservation_for_line(db, line, fitted)
+        elif kits > fitted:
             await _reserve(db, line, fitted, current_user)
+        elif data.model_fields_set & {"quantity", "from_finished"}:
+            await part_stock.fit_reservation_for_line(db, line, fitted)
+    if fit_snapshot is not None:
+        # The ordinary writer may fit reservations down. Accept only if its
+        # actual result still has exactly the reviewed whole-plate solution.
+        try:
+            await plate_fit.remove_reviewed_pending(db, fit_snapshot)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
+        if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+            try:
+                taken = await stock_offers.take(
+                    db,
+                    project,
+                    {line_id: (fit_selection.from_finished, fit_selection.from_kits, fit_selection.stock_parts)},
+                    actor=current_user,
+                )
+                if len(taken) != 1 or (taken[0].got_finished, taken[0].got_kits, taken[0].got_parts) != (
+                    fit_selection.from_finished,
+                    fit_selection.from_kits,
+                    fit_selection.stock_parts,
+                ):
+                    raise plate_fit.FitError("stale")
+            except (stock_offers.StockOfferError, finished_stock.FinishedStockError, part_stock.PartStockError) as e:
+                raise _fit_error(plate_fit.FitError("stale")) from e
+            except plate_fit.FitError as e:
+                raise _fit_error(e) from e
+        await db.flush()
+        try:
+            after_fit = await plate_fit.load(db, project_id, line_id, data.plate_fit.plate_ids)
+            runs = {r.plate_id: r.count for r in data.plate_fit.runs}
+            if plate_fit.option(after_fit, line.quantity, [runs.get(p.id, 0) for p in after_fit.plates]) is None:
+                raise plate_fit.FitError("stale")
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
     stock_after = await part_stock.reserved_units_for_line(db, line)
     if stock_after != stock_before:
@@ -2043,6 +2218,19 @@ async def update_line(
             {"line_id": line.id, "product": product.name if product else None, "changes": changes},
             actor=current_user,
         )
+    if fit_snapshot is not None and fit_snapshot.removable:
+        product = await db.get(Product, line.product_id)
+        await order_journal.record(
+            db,
+            project_id,
+            "line_rebalanced",
+            {
+                "line_id": line.id,
+                "product": product.name if product else None,
+                "removed_auto_ids": [item.id for item in fit_snapshot.removable],
+            },
+            actor=current_user,
+        )
     return await _response(db, project_id)
 
 
@@ -2050,6 +2238,7 @@ async def update_line(
     "/{project_id}/lines/{line_id}/configuration",
     response_model=ProjectResponse | LineConfigurationImpact,
 )
+@part_images.attach
 async def configure_line(
     project_id: int,
     line_id: int,
@@ -2095,7 +2284,7 @@ async def configure_line(
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
     finished_before = await finished_stock.held_for_line(db, line.id)
-    if not data.dry_run and (finished_before or await part_stock.reserved_units_for_line(db, line)):
+    if not data.dry_run and (finished_before or await part_stock.reserved_parts_for_line(db, line)):
         await ensure(creds, Permission.STOCK_MOVE)
     try:
         outcome = await line_config.set_configuration(
@@ -2152,6 +2341,7 @@ async def configure_line(
 
 
 @router.delete("/{project_id}/lines/{line_id}", response_model=ProjectResponse)
+@part_images.attach
 async def delete_line(
     project_id: int,
     line_id: int,
@@ -2296,6 +2486,7 @@ async def bank_surplus(
 
 
 @router.patch("/{project_id}/procurement/{part_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_procurement(
     project_id: int,
     part_id: int,
@@ -3343,6 +3534,7 @@ async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
 
 
 @router.post("/{project_id}/duplicate", response_model=ProjectResponse)
+@part_images.attach
 async def duplicate_project(
     project_id: int,
     data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
@@ -3360,6 +3552,7 @@ async def duplicate_project(
         raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
     taken = set((await db.execute(select(Project.name))).scalars().all())
     copy = Project(
+        order_print_options=deepcopy(source.order_print_options),
         name=data.name or _duplicate_name(source.name, taken),
         customer_id=source.customer_id,
         contact_id=source.contact_id,
@@ -3543,6 +3736,7 @@ async def _pending_auto_prints(db: AsyncSession, line_ids: list[int]) -> dict[in
 
 
 @router.get("/{project_id}/plan", response_model=OrderPlanResponse)
+@part_images.attach
 async def get_order_plan(
     project_id: int,
     request: Request,
@@ -3566,6 +3760,64 @@ async def get_order_plan(
         await _pending_auto_prints(db, [line.line_id for line in plan.lines]),
         await _plan_file_names(db, _plan_file_ids(plan), user, scope),
     )
+
+
+async def _order_print_options_response(db, project, user) -> OrderPrintOptionsResponse:
+    products = (
+        (
+            await db.execute(
+                select(Product)
+                .options(selectinload(Product.parts), selectinload(Product.plates))
+                .where(Product.id.in_({line.product_id for line in project.lines}))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recipes = await recipes_for_products(db, products) if products else {}
+    overrides = project.order_print_options or {}
+    models = set(overrides)
+    for rows in recipes.values():
+        for _plate, _file, recipe in rows:
+            if recipe.sliced and recipe.printer_model:
+                models.add(normalize_model_name(recipe.printer_model))
+    contexts = []
+    for model in sorted(m for m in models if m):
+        inherited = await inherited_options(db, user, model)
+        contexts.append(
+            OrderPrintModel(
+                model=model,
+                capabilities=capabilities(model),
+                inherited=inherited,
+                options=overrides.get(model, inherited),
+                custom=model in overrides,
+            )
+        )
+    return OrderPrintOptionsResponse(overrides=overrides, models=contexts)
+
+
+@router.get("/{project_id}/print-options", response_model=OrderPrintOptionsResponse)
+async def get_order_print_options(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    return await _order_print_options_response(db, await _get_project(db, project_id), user)
+
+
+@router.put("/{project_id}/print-options", response_model=OrderPrintOptionsResponse)
+async def put_order_print_options(
+    project_id: int,
+    data: OrderPrintOptions,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+):
+    await order_fulfilment.lock_order(db, project_id)
+    project = await _get_project(db, project_id, fresh=True)
+    await order_filing.resolve_link(db, project_id, None)
+    project.order_print_options = data.model_dump()["overrides"] or None
+    await db.flush()
+    return await _order_print_options_response(db, project, user)
 
 
 @router.get("/{project_id}/queue", response_model=OrderQueueOut)
@@ -3600,8 +3852,11 @@ async def get_order_queue(
     if scope is not None:
         printing_q = printing_q.where(PrintArchive.printer_id.in_(scope))
         pending_q = pending_q.where(PrintQueueItem.queue_id.in_(scope))
+    from backend.app.services.order_auto_eject import archive_mode
+
     printing = [
         OrderQueuePrinting(
+            auto_eject=archive_mode(archive),
             archive_id=archive.id,
             printer_id=archive.printer_id,
             printer_name=printer_name,
@@ -3695,8 +3950,6 @@ class _ResolvedPlate(NamedTuple):
     #: The resolved slicer plate; the recipe can still name the whole file.
     plate_number: int
     count: int
-    #: The source file already carries swap macros (``LibraryFile.swap_compatible``).
-    baked_swap_macros: bool
     #: The printer model the 3MF was sliced for, in the spelling the auto-queue
     #: routes on. ``None`` when the file names none.
     sliced_for_model: str | None
@@ -3733,12 +3986,11 @@ async def enqueue_order_plan(
     is named, otherwise the model each plate's file was sliced for, which is the
     same model the auto-queue will route it by.
 
-    ⚠️ **Order of application, when a request body eventually carries its own
-    options block: profile, then body, then the mute.** The body is somebody's
-    explicit answer and outranks a saved default; the mute is not a default at
-    all but a statement about what the machine and the file can physically do,
-    so nothing sent over the wire may talk it out of firing. Today the body
-    carries no such block, and the code is already shaped for one.
+    ⚠️ **Order of application: profile, saved order override, then the mute.**
+    Explicit order options are selected by the model the plate was sliced for
+    and outrank the operator's default. Validate every override against the
+    named printer before writing anything. The mute describes what the machine
+    and file can physically do and still applies to the resolved result.
 
     Each item is one call to the existing writer with ``quantity = count``, and
     **the writers commit per call**: ``add_items_to_auto_queue`` and
@@ -3750,12 +4002,15 @@ async def enqueue_order_plan(
     The target's shape is the schema's business (``PlanEnqueueTarget``): a
     printer kind without an id, or an auto kind with one, never reaches here.
     """
-    lines_by_id = {line.id: line for line in (await _get_project(db, project_id)).lines}
+    project = await _get_project(db, project_id)
+    lines_by_id = {line.id: line for line in project.lines}
+    # Plain validated values BEFORE any writer commits. This is the order's
+    # snapshot at job creation, not a reference to its future settings.
+    order_options = OrderPrintOptions(overrides=project.order_print_options or {}).model_dump()["overrides"]
     await order_filing.resolve_link(db, project_id, None)
 
     printer_id: int | None = None
     printer_model: str | None = None
-    printer_swap_on = False
     if data.target.kind == "printer":
         printer = await db.get(Printer, data.target.printer_id)
         # Exists and is not archived. That is the whole of it — see the warning
@@ -3764,7 +4019,6 @@ async def enqueue_order_plan(
             raise HTTPException(status_code=404, detail="Printer not found")
         printer_id = printer.id
         printer_model = printer.model
-        printer_swap_on = bool(printer.swap_mode_enabled)
 
     # ⚠️ ONE load for the whole request, before the loop — this used to fetch a
     # product AND build its recipes inside it, per distinct product of the
@@ -3827,7 +4081,6 @@ async def enqueue_order_plan(
                 # Recipe index zero remains unchanged; only the job is resolved.
                 plate_number=requirements.resolved_plate_id,
                 count=item.count,
-                baked_swap_macros=bool(source_file.swap_compatible),
                 sliced_for_model=requirements.model or recipe.printer_model,
             )
         )
@@ -3846,6 +4099,14 @@ async def enqueue_order_plan(
         model: await preference_options(db, current_user, model)
         for model in ({printer_model} if printer_id is not None else {p.sliced_for_model for p in resolved})
     }
+
+    try:
+        explicit_options = {
+            model: override_options(order_options, model, printer_model if printer_id is not None else None)
+            for model in {p.sliced_for_model for p in resolved}
+        }
+    except ValueError as exc:
+        raise HTTPException(422, "Order print options do not fit the target printer") from exc
 
     created: list[PlanEnqueueCreated] = []
 
@@ -3868,23 +4129,12 @@ async def enqueue_order_plan(
             options = profile.for_auto_queue() if profile else {}
         else:
             options = profile.for_printer_queue() if profile else {}
-        # ⚠️ A request body carrying its own options block merges HERE — the
-        # explicit answer wins over the saved profile — and the mute below then
-        # applies to the RESULT. That order is the point: the gate is about what
-        # the machine and the file can physically do, so nothing anybody sends
-        # may talk it out of muting. Today the body carries no such block.
-        #
-        # The rule every other queue door applies (``services/queue_add.py`` and
-        # the two print-now routes): swap macros are meaningful only on a printer
-        # with swap mode ON and a source file that does not already carry them
-        # baked in by third-party tooling — otherwise the plate change fires
-        # twice. ⚠️ UNCONDITIONAL, not "only when a profile turned them on":
-        # ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
-        # ``swap_compatible`` file with no preference behind it would double-fire
-        # on the auto target through the writer's own default.
-        if plate.baked_swap_macros or (printer_id is not None and not printer_swap_on):
-            options["execute_swap_macros"] = False
-            options["swap_macro_events"] = None
+        options.update(explicit_options[plate.sliced_for_model])
+        # Explicit order choices win over the profile. Swap macros are NOT decided
+        # here from the library row: the printer branch's writer decides them from
+        # the declaration its capture confirms and that printer's swap mode, and an
+        # auto row's swap fields are inert -- the assignment decides per candidate
+        # from the row's snapshot (swap-source-lifecycle spec r4 §8).
         try:
             if printer_id is None:
                 rows = await add_items_to_auto_queue(
@@ -3899,6 +4149,7 @@ async def enqueue_order_plan(
                     ),
                     current_user,
                     requirements_cache=requirements_cache,
+                    order_print_options=order_options or None,
                 )
             else:
                 rows, _batch_id = await enqueue_batch_copies(

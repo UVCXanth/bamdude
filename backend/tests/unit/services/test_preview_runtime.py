@@ -62,7 +62,9 @@ async def test_preview_service_cleanup_failure_preserves_primary_outcome(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_admission(tmp_path, monkeypatch, caplog):
+async def test_main_cleanup_failure_preserves_preview_result_explains_and_quarantines(tmp_path, monkeypatch, caplog):
+    """Spec r5 §4.2 replaced 'a denied cleanup blocks every later admission': the failure is still logged, the
+    proven-dead attempt dir moves to quarantine (counted against the limits), and the next admission proceeds."""
     import trimesh
 
     from backend.app.services import preview_runtime
@@ -88,9 +90,10 @@ async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_a
                 assert result.outcome == "ok" and result.files["preview"].exists()
             assert denied
             assert "staging_cleanup_failed: phase=main_attempt" in caplog.text
+            assert "staging_quarantined: side=main" in caplog.text
             async with runtime.attempt({"mesh": (mesh, "stl")}) as result:
-                assert result.outcome == "resource_limit"
-            assert "staging_residue_blocks_admission" in caplog.text
+                assert result.outcome == "ok"
+            assert "staging_residue_blocks_admission" not in caplog.text
     finally:
         monkeypatch.setattr(preview_runtime, "cleanup_owned", original)
         await runtime.stop()
@@ -141,9 +144,12 @@ async def test_post_retire_filesystem_failure_is_not_ownership_uncertain(tmp_pat
     )
     with caplog.at_level(logging.INFO, logger="backend.app.services.preview_runtime"):
         await runtime._retire()
-    assert runtime.service is None and not runtime.uncertain and attempt.exists()
+    assert runtime.service is None and not runtime.uncertain
     assert "service_residue_after_retire" in caplog.text
     assert "staging_cleanup_failed: phase=service_residue_after_retire" in caplog.text
+    # spec r5 §4.2: the stopped service's residue moves whole into quarantine instead of staying in staging
+    moved = runtime.quarantine / runtime.generation / attempt.name / "service"
+    assert not attempt.exists() and (moved / "mesh.stl").read_bytes() == b"residue"
 
 
 @pytest.fixture
@@ -161,7 +167,7 @@ async def local_runtime(tmp_path):
 async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkeypatch):
     service = PreviewRuntime(tmp_path / "failed readiness")
 
-    async def failed():
+    async def failed(attempt=None):
         raise PreviewError("unavailable")
 
     monkeypatch.setattr(service, "_launch", failed)
@@ -170,6 +176,9 @@ async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkey
     async with service.attempt({"mesh": (b"x", "stl")}) as result:
         assert result.outcome == "unavailable"
     assert not service.slot.locked()
+    # A failed first start is tried again in the background now (its cleanup was proven); the stop ends that,
+    # and what the failed runtime held must not keep a new one on the same root from starting.
+    await service.stop()
     replacement = PreviewRuntime(service.root)
     await replacement.start()
     try:
@@ -489,18 +498,64 @@ async def test_real_obj_and_source_checkpoint_preserve_gcode(local_runtime, tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("repeat_cancel", [False, True])
-async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, repeat_cancel):
+async def test_a_cancel_before_any_command_leaves_the_healthy_service_running(local_runtime, monkeypatch):
+    """A STEP job's Cancel can land while its input is still being copied or sent — before the service was told
+    anything. Nothing of it runs there, so there is nothing to prove ended and no reason to retire a healthy
+    service (three retires a minute would open the circuit for every preview)."""
     import backend.app.services.preview_runtime as module
 
     entered = asyncio.Event()
-    original = module.put
 
-    async def held(*args):
+    async def held(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(module, "put", held)
+    retired = []
+    retire = local_runtime._retire
+
+    async def recorded_retire():
+        retired.append(True)
+        await retire()
+
+    monkeypatch.setattr(local_runtime, "_retire", recorded_retire)
+    service = local_runtime.service
+
+    async def caller():
+        async with local_runtime.attempt({"mesh": (b"test", "stl")}) as result:
+            return result.outcome
+
+    task = asyncio.create_task(caller())
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 15)
+    assert retired == []
+    assert local_runtime.service is service and service.process.poll() is None
+    assert not local_runtime.slot.locked()
+    assert local_runtime.ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_cancel", [False, True])
+async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, repeat_cancel):
+    # Cancelled while its run is out at the service, and the cancel that follows gets no reply: no proof of end,
+    # so the service is retired — and a second cancel during that retire is joined.
+    entered = asyncio.Event()
+
+    async def held(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(local_runtime, "_run_or_revoke", held)
+    rpc = local_runtime._rpc
+
+    async def unanswered_cancel(command, operation=None, timeout=None):
+        if operation == "cancel":
+            raise TimeoutError
+        return await rpc(command, operation, timeout=timeout)
+
+    monkeypatch.setattr(local_runtime, "_rpc", unanswered_cancel)
     reaping = asyncio.Event()
     release = asyncio.Event()
     retire = local_runtime._retire
@@ -528,7 +583,6 @@ async def test_cancellation_reaps_and_releases_slot(local_runtime, monkeypatch, 
         await asyncio.wait_for(task, 15)
     assert not local_runtime.slot.locked()
     assert local_runtime.service is None
-    monkeypatch.setattr(module, "put", original)
 
 
 @pytest.mark.asyncio
@@ -793,8 +847,31 @@ print('EMBEDDED_PREVIEW_OK')
     assert "EMBEDDED_PREVIEW_OK" in result.stdout
 
 
+async def _loop_heartbeat(gaps, stopped):
+    previous = time.perf_counter()
+    while not stopped.is_set():
+        await asyncio.sleep(0.02)
+        now = time.perf_counter()
+        gaps.append(now - previous)
+        previous = now
+
+
 @pytest.mark.asyncio
-async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime, tmp_path):
+async def test_loop_heartbeat_still_detects_a_blocked_loop():
+    gaps, stopped = [], asyncio.Event()
+    heartbeat = asyncio.create_task(_loop_heartbeat(gaps, stopped))
+    try:
+        await asyncio.sleep(0)  # heartbeat is waiting before the deliberate loop block
+        time.sleep(0.08)
+    finally:
+        stopped.set()
+        await heartbeat
+    assert max(gaps) >= 0.08
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic_delay", [0, 1.1], ids=["normal-sample", "slow-sample"])
+async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime, tmp_path, diagnostic_delay):
     import json
     import statistics
     from types import SimpleNamespace
@@ -858,6 +935,23 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                 continue
         return total
 
+    def sample_resources():
+        # These are diagnostic system calls, not application work. Never block the
+        # loop being measured, or count an awaited disk sample as a loop stall.
+        time.sleep(diagnostic_delay)
+        process = psutil.Process()
+        try:
+            tree = [process, *process.children(recursive=True)]
+            memory.append(sum(p.memory_info().rss for p in tree))
+            for p in tree:
+                times = p.cpu_times()
+                current = times.user + times.system
+                first, _ = cpu.get(p.pid, (current if p.pid == process.pid else 0, current))
+                cpu[p.pid] = (first, current)
+            disks.append(disk_bytes())
+        except psutil.NoSuchProcess:
+            pass
+
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for _ in range(10):
             before = time.perf_counter()
@@ -869,15 +963,23 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
             async with local_runtime.attempt({"mesh": (mesh, "stl")}) as result:
                 assert result.outcome == "ok"
 
+        stopped = asyncio.Event()
+        heartbeat = asyncio.create_task(_loop_heartbeat(gaps, stopped))
+
+        async def resources():
+            while not stopped.is_set():
+                await disk(sample_resources)
+                await asyncio.sleep(0.02)
+
+        sampling = asyncio.create_task(resources())
+        await asyncio.sleep(0)
         tasks = [
             asyncio.create_task(render()),
             *[asyncio.create_task(get_print_file_analysis(manager, 77, 123, archive_path, None)) for _ in range(100)],
         ]
         try:
-            previous = time.perf_counter()
             while not all(task.done() for task in tasks):
                 before = time.perf_counter()
-                gaps.append(before - previous)
                 assert (await client.get("/health")).status_code == 200
                 latencies.append(time.perf_counter() - before)
                 delivered.clear()
@@ -885,21 +987,11 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                 await sockets.broadcast({"type": "probe"})
                 await asyncio.wait_for(delivered.wait(), 0.2)
                 ws_latencies.append(time.perf_counter() - sent)
-                process = psutil.Process()
-                try:
-                    tree = [process, *process.children(recursive=True)]
-                    memory.append(sum(p.memory_info().rss for p in tree))
-                    for p in tree:
-                        times = p.cpu_times()
-                        current = times.user + times.system
-                        first, _ = cpu.get(p.pid, (current if p.pid == process.pid else 0, current))
-                        cpu[p.pid] = (first, current)
-                    disks.append(await disk(disk_bytes))
-                except psutil.NoSuchProcess:
-                    pass
-                previous = before
                 await asyncio.sleep(0.02)
             _, *analyses = await asyncio.gather(*tasks)
+            stopped.set()
+            await sampling  # join the diagnostic thread before reading its last sample
+            await heartbeat
             assert analyses[0] is not None
             assert all(analysis is analyses[0] for analysis in analyses)
             assert manager._print_file_analysis_contexts[77].state == "ready"
@@ -910,6 +1002,8 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
             assert p95 < 0.2
             assert max(gaps) < 1
         finally:
+            stopped.set()
+            await asyncio.gather(sampling, heartbeat, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -923,7 +1017,15 @@ def test_async_production_does_not_call_renderers():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3] / "app"
-    forbidden = {"generate_stl_thumbnail", "inject_plate_thumbnails_if_missing", "_inject_preview"}
+    forbidden = {
+        "generate_stl_thumbnail",
+        "inject_plate_thumbnails_if_missing",
+        "_inject_preview",
+        # part render: only the disposable child renders (spec §15)
+        "render_attempt",
+        "run_frames",
+        "top_mask",
+    }
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             if isinstance(node, ast.AsyncFunctionDef):

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Loader2, Send } from 'lucide-react';
-import { api } from '../../api/client';
+import { AlertTriangle, Calculator, Loader2, Send } from 'lucide-react';
+import { api, ApiError } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { canFileFuturePrint } from '../../utils/workshopRights';
@@ -10,14 +10,18 @@ import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
 import { Button } from '../Button';
+import { ActionConfirm } from '../workshop/ActionConfirm';
 import { FilamentNeeds } from './FilamentNeeds';
 import { PlanLine } from './PlanLine';
+import { OrderPrintOptions } from './OrderPrintOptions';
+import { lineConfigLabel } from './lineConfigLabel';
 import { MAX_PER_PLATE } from './PlanRow';
 import { projectPlan, rowDistribution, splitIsOff, type ChosenByRow, type SplitByRow } from './planMath';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import type { PlateFitDraft } from './PlateFitDialog';
 
 /**
  * What to print next for this order, per line.
@@ -50,6 +54,13 @@ export function PlanBlock({
   variant = 'page',
   onEnqueued,
   onDraftChanged,
+  queueRequest,
+  onQueueRequestClose,
+  queueOrderReady = true,
+  onQueueRequestRetry,
+  fitDraft,
+  onPlateSelection,
+  onPlateFit,
 }: {
   order: Order;
   canEdit: boolean;
@@ -60,6 +71,15 @@ export function PlanBlock({
   /** The page uses this to keep its order-level ETA from describing an edited
    * draft. The dialog relies on this block's own notice. */
   onDraftChanged?: (changed: boolean) => void;
+  /** A shortcut requests a fresh review of this editor's current plan, optionally one line. */
+  queueRequest?: { lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean } | null;
+  onQueueRequestClose?: () => void;
+  /** The view owns order captions and must finish its fresh detail read too. */
+  queueOrderReady?: boolean;
+  onQueueRequestRetry?: () => void;
+  fitDraft?: PlateFitDraft | null;
+  onPlateSelection?: (selected: Record<number, number[]>) => void;
+  onPlateFit?: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -67,8 +87,10 @@ export function PlanBlock({
   const queryClient = useQueryClient();
 
   const active = order.status === 'active';
+  const [optionsBlocked, setOptionsBlocked] = useState(false);
+  const [uncertainRequest, setUncertainRequest] = useState<typeof queueRequest>(null);
 
-  const { data: plan, isLoading, isError, refetch } = useOrderPlan(order.id, active);
+  const { data: plan, isLoading, isFetching, isError, dataUpdatedAt, refetch } = useOrderPlan(order.id, active);
 
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
@@ -228,7 +250,7 @@ export function PlanBlock({
       invalidate();
       onEnqueued?.();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => { if (!queueRequest) showToast(e.message, 'error'); },
   });
 
   // The line's Rebalance button (spec 2026-09-10): the same procedure the tick
@@ -328,6 +350,62 @@ export function PlanBlock({
 
   const items = useMemo(() => lines.flatMap((line) => itemsFor(line)), [lines, itemsFor]);
 
+  useEffect(() => {
+    const selected: Record<number, number[]> = {};
+    for (const line of lines) {
+      const ids = new Set<number>();
+      for (const row of line.rows) {
+        const count = Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count));
+        if (!count) continue;
+        const picked = chosen[line.line_id]?.[row.plate_id];
+        const distribution = split[line.line_id]?.[row.plate_id];
+        // An untouched grouped row offers ALL equivalent files to the fleet.
+        // Explicit file/split choices still narrow that set; zero rows stay out.
+        if (picked == null && distribution == null) {
+          [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)].forEach(id => ids.add(id));
+        } else {
+          rowDistribution(row, count, picked, distribution).forEach(item => ids.add(item.plate_id));
+        }
+      }
+      if (ids.size) selected[line.line_id] = [...ids];
+    }
+    onPlateSelection?.(selected);
+  }, [lines, counts, chosen, split, onPlateSelection]);
+
+  const appliedFit = useRef<PlateFitDraft | null>(null);
+  useEffect(() => {
+    if (!fitDraft || fitDraft === appliedFit.current || fitDraft.orderId !== order.id || !plan) return;
+    if (order.lines.find(l => l.id === fitDraft.lineId)?.quantity !== fitDraft.quantity) return;
+    const baseline = plan.lines.find(l => l.line_id === fitDraft.lineId);
+    if (!baseline) return;
+    appliedFit.current = fitDraft;
+    if (JSON.stringify(baseline) !== fitDraft.planSignature) {
+      showToast(t('plateFit.errors.stale'), 'warning');
+      return;
+    }
+    const byPlate = new Map(fitDraft.rows.map(row => [row.plate_id, row.count]));
+    const represented = new Set<number>();
+    const nextCounts: Record<number, number> = {};
+    const nextSplit: SplitByRow = {};
+    for (const row of baseline.rows) {
+      const ids = [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)];
+      ids.forEach(id => represented.add(id));
+      nextCounts[row.plate_id] = ids.reduce((sum, id) => sum + (byPlate.get(id) ?? 0), 0);
+      // The fleet may use equal-yield files on several models. Preserve those
+      // exact runs in the existing split editor, rather than merging everything
+      // onto the first file or adding a duplicate row for an alternative.
+      if (ids.slice(1).some(id => (byPlate.get(id) ?? 0) > 0)) {
+        nextSplit[row.plate_id] = Object.fromEntries(ids.map(id => [id, byPlate.get(id) ?? 0]));
+      }
+    }
+    const extraRows = fitDraft.rows.filter(row => !represented.has(row.plate_id));
+    for (const row of extraRows) nextCounts[row.plate_id] = row.count;
+    setCounts(prev => ({ ...prev, [fitDraft.lineId]: nextCounts }));
+    setAdded(prev => ({ ...prev, [fitDraft.lineId]: extraRows }));
+    setChosen(prev => ({ ...prev, [fitDraft.lineId]: {} }));
+    setSplit(prev => ({ ...prev, [fitDraft.lineId]: nextSplit }));
+  }, [fitDraft, order.id, order.lines, plan, showToast, t]);
+
   // A forecast belongs to the exact server plan. Compare effective enqueue
   // items rather than the editor's state maps: setting a count back to its
   // planned value is fresh again, and an added row is naturally included.
@@ -371,10 +449,81 @@ export function PlanBlock({
   const setRowSplit = (lineId: number, rowPlateId: number, next: Record<number, number>) =>
     setSplit((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [rowPlateId]: next } }));
 
-  // No heading of its own: on the order page the «Print plan» tab names it (WS-13
-  // E3 F05), and the dialog has its own title. What the block is, it says in one
-  // sentence above the lines (E4 E01).
-  const heading = null;
+  // Shortcuts use the SAME edited rows and writer as the plan, scoped by line id:
+  // two lines may name the same product but ask for different configurations.
+  const selectedLines = queueRequest
+    ? lines.filter((line) => queueRequest.lineId == null || line.line_id === queueRequest.lineId)
+    : [];
+  const selectedItems = selectedLines.flatMap((line) => itemsFor(line));
+  const selectedSplitOff = selectedLines.some((line) => line.rows.some((row) => splitIsOff(
+    split[line.line_id]?.[row.plate_id],
+    Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count)),
+  )));
+  const waitingForPlan = queueRequest?.refreshing || !queueOrderReady
+    || isLoading || isFetching || !plan || dataUpdatedAt < (queueRequest?.requestedAt ?? 0);
+  const reviewMismatch = selectedLines.some((line) => !order.lines.some(
+    (detail) => detail.id === line.line_id && detail.product_id === line.product_id,
+  ));
+  const invalidDraft = selectedItems.some((item) => item.count > MAX_PER_PLATE) || selectedSplitOff;
+  const queueBlocked = !active || !canQueue || waitingForPlan || queueRequest?.refreshFailed || reviewMismatch || isError || optionsBlocked || invalidDraft
+    || selectedItems.length === 0 || enqueue.isPending || uncertainRequest === queueRequest;
+  const queueConfirmation = queueRequest && onQueueRequestClose ? (
+    <ActionConfirm
+      title={t('orders.plan.queueConfirm.title')}
+      subtitle={order.name}
+      primaryLabel={t('orders.plan.queueConfirm.send')}
+      primaryDisabled={queueBlocked}
+      onClose={onQueueRequestClose}
+      send={async () => {
+        if (queueBlocked) throw new Error(t('orders.plan.queueConfirm.notReady'));
+        try {
+          await enqueue.mutateAsync(selectedItems);
+        } catch (error) {
+          // A writer commits each item. A 5xx or lost response may have filed some
+          // work: do not resend this review. Reopening reads the remaining plan.
+          if (!(error instanceof ApiError) || error.status >= 500) {
+            setUncertainRequest(queueRequest);
+            invalidate();
+          }
+          throw error;
+        }
+      }}
+      body={<div className="space-y-3" data-testid="plan-queue-review">
+        <p>{t(queueRequest.lineId == null ? 'orders.plan.queueConfirm.orderScope' : 'orders.plan.queueConfirm.lineScope')}</p>
+        {queueRequest.refreshFailed || (!waitingForPlan && reviewMismatch) ? <div role="alert">
+          <p>{t('orders.plan.queueConfirm.refreshFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={onQueueRequestRetry}>{t('orders.plan.retry')}</Button>
+        </div> : isError ? <div role="alert">
+          <p>{t('orders.plan.loadFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={() => onQueueRequestRetry ? onQueueRequestRetry() : void refetch()}>{t('orders.plan.retry')}</Button>
+        </div> : waitingForPlan ? <p role="status">{t('common.loading')}</p> : <>
+          <ul className="space-y-1">
+            {[...order.lines].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+              .map((line, index) => ({ line, position: index + 1 }))
+              .filter(({ line }) => selectedItems.some((item) => item.line_id === line.id))
+              .map(({ line, position }) => <li key={line.id}>
+                {t('orders.plan.queueConfirm.position', { position })} · {line.product_name} — {t('orders.plan.queueConfirm.runs', {
+                  count: selectedItems.filter((item) => item.line_id === line.id).reduce((sum, item) => sum + item.count, 0),
+                })}
+                <small className="block text-bambu-gray">{lineConfigLabel(line.configuration, line.mode, t) || t('orders.lines.standardConfig')}</small>
+              </li>)}
+          </ul>
+          <p className="font-medium">{t('orders.plan.queueConfirm.total', {
+            count: selectedItems.reduce((sum, item) => sum + item.count, 0),
+          })}</p>
+          {selectedItems.length === 0 && <p>{t('orders.plan.nothingOutstanding')}</p>}
+          {(plan?.truncated || selectedLines.some((line) => line.unsatisfiable.length > 0 || line.not_sliced.length > 0))
+            && <p className="text-amber-700 dark:text-amber-300">{t('orders.plan.queueConfirm.incomplete')}</p>}
+        </>}
+        {optionsBlocked && <p role="alert">{t('orderPrintOptions.unsaved')}</p>}
+        {uncertainRequest === queueRequest && <p role="status">{t('orders.plan.queueConfirm.uncertain')}</p>}
+        {invalidDraft && <p role="alert">{t('orders.plan.queueConfirm.invalidDraft')}</p>}
+        {!active && <p role="alert">{t('orders.plan.closedText')}</p>}
+        {!canQueue && <p role="alert">{t('orders.plan.queueConfirm.notReady')}</p>}
+        <p className="text-xs text-bambu-gray">{t('orders.plan.queueConfirm.explanation')}</p>
+      </div>}
+    />
+  ) : null;
   const intro = (
     <p className="text-xs leading-[18px] text-bambu-gray" data-testid="plan-intro">
       {t('orders.plan.intro')}
@@ -388,7 +537,7 @@ export function PlanBlock({
   if (!active) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="py-8 text-center" data-testid="plan-closed">
           <p className="text-sm font-medium text-white">{t('orders.plan.closedTitle')}</p>
           <p className="mt-1 text-sm text-bambu-gray">{t('orders.plan.closedText')}</p>
@@ -400,7 +549,7 @@ export function PlanBlock({
   if (isLoading) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-2 text-bambu-gray text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />
           {t('common.loading')}
@@ -420,7 +569,7 @@ export function PlanBlock({
   if (isError && !plan) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-3 flex-wrap text-sm">
           <p className="text-red-600 dark:text-red-400" data-testid="plan-error">
             {t('orders.plan.loadFailed')}
@@ -444,7 +593,7 @@ export function PlanBlock({
   if (!plan) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
-        {heading}
+        {queueConfirmation}
         <div className="flex items-center gap-2 text-bambu-gray text-sm" data-testid="plan-idle">
           <Loader2 className="w-4 h-4 animate-spin" />
           {t('common.loading')}
@@ -453,10 +602,20 @@ export function PlanBlock({
     );
   }
 
+  const fitAction = onPlateFit && order.lines.some(l => l.mode !== 'parts') ? (
+    <Button variant="secondary" className="ring-1 ring-bambu-green/60" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
+      <Calculator className="w-5 h-5 shrink-0 text-bambu-green" aria-hidden="true" />
+      {t('plateFit.nearest')}
+    </Button>
+  ) : null;
+
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
-      {heading}
+      {queueConfirmation}
       {intro}
+      <OrderPrintOptions key={order.id} orderId={order.id}
+        canEdit={canEdit && hasPermission('orders:update')} busy={enqueue.isPending}
+        onBlocked={setOptionsBlocked} />
 
       {/* The engine's iteration guard stopped covering, so what follows is a
           PREFIX of the plan — rows, totals and no unsatisfiable part all look
@@ -477,14 +636,15 @@ export function PlanBlock({
         </div>
       )}
 
-      {lines.length === 0 ? (
+      {lines.length === 0 ? (<>
         <p
           className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm text-white"
           data-testid="plan-empty"
         >
           {t('orders.plan.nothingOutstanding')}
         </p>
-      ) : (
+        {fitAction && <div className="flex justify-end">{fitAction}</div>}
+      </>) : (
         <>
           <div className="space-y-3">
             {lines.map((line) => (
@@ -501,7 +661,7 @@ export function PlanBlock({
                 showCost={showCost}
                 canQueue={canQueue}
                 canPrint={canPrint}
-                busy={enqueue.isPending || rebalance.isPending}
+                busy={enqueue.isPending || rebalance.isPending || optionsBlocked}
                 canRebalance={canRebalance}
                 onRebalance={() => rebalance.mutate(line.line_id)}
                 ratePerGram={ratePerGram}
@@ -543,10 +703,11 @@ export function PlanBlock({
               )}
             </p>
 
+            {fitAction}
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"
-                disabled={enqueue.isPending || overCap || splitOff}
+                disabled={enqueue.isPending || optionsBlocked || overCap || splitOff}
                 // A disabled button with no reason on it is a dead end. `overCap`
                 // is checked first because it names a row's number, which is the
                 // more specific of the two complaints.

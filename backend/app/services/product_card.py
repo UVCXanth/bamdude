@@ -74,7 +74,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
-from backend.app.services import product_variants
+from backend.app.services import part_images, product_variants
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
 from backend.app.services.order_metrics import grouped_figures, units_delivered
 from backend.app.services.part_names import canonicalize, name_key
@@ -627,12 +627,13 @@ def imported_mark(raw: dict, kind: str, qty: int) -> bool:
     return bool(raw["ignored"]) if "ignored" in raw else True
 
 
-def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
+def _part_manifest(part: Any, variant: list[str] | None = None, exported_photos: frozenset | set = frozenset()) -> dict:
     return {
         "kind": part.kind,
         "name": part.name,
         "name_key": part.name_key,
         "qty_per_unit": part.qty_per_unit,
+        "extra_percent": getattr(part, "extra_percent", 0) or 0,
         "ignored": bool(getattr(part, "ignored", False)),
         "aliases": list(part.aliases) if part.aliases is not None else None,
         "auto": bool(part.auto),
@@ -641,6 +642,7 @@ def _part_manifest(part: Any, variant: list[str] | None = None) -> dict:
         "remarks": part.remarks,
         "sort_order": part.sort_order,
         "variant": variant,
+        "image": part_images.manifest_entry(part, exported_photos),  # spec part-thumbnails §10.3
     }
 
 
@@ -652,6 +654,7 @@ def _write_export(
     card: dict,
     parts: list[dict],
     variant_groups: list[dict],
+    part_photos: list[tuple[str, Path]] = (),
 ) -> tuple[str, dict]:
     """Build the archive on disk and return ``(temp path, manifest)``.
 
@@ -720,6 +723,13 @@ def _write_export(
             else:
                 cover = _safe_member_name(f"{_COVER_ROOT}{os.path.splitext(stored)[1].lower()}")
                 members[f"{_ATTACHMENTS_ROOT}/{_COVER_ROOT}/{cover}"] = source
+
+        # ``photo_name``, never ``name``: that is the archive's own temp path, returned below
+        for photo_name, source in part_photos:
+            members[f"{_ATTACHMENTS_ROOT}/{part_images.PHOTO_MEMBER_ROOT}/{photo_name}"] = source
+        for entry in parts:  # a pin names its file by the hash this export computed (plan E4, D10)
+            if "image" in entry:
+                entry["image"] = part_images.exported_choice(entry["image"], hash_by_file)
 
         manifest = {
             "format": EXPORT_FORMAT,
@@ -807,6 +817,14 @@ async def export_zip(db: AsyncSession, product: Any, *, visible=None) -> ExportA
         if source.is_file():
             cover_source = (explicit, source)
 
+    # The parts' photos travel beside the attachments; a photo whose file is gone travels as auto.
+    part_photos: list[tuple[str, Path]] = []
+    for part in product.parts:
+        found = part_images.photo_for_export(part)
+        if found is not None and found[1].is_file():
+            part_photos.append(found)
+    exported_photos = {name for name, _path in part_photos}
+
     variant_groups, pair_of = _variant_manifest(await _variant_groups(db, product.id))
     path, _manifest_written = await asyncio.to_thread(
         _write_export,
@@ -827,10 +845,11 @@ async def export_zip(db: AsyncSession, product: Any, *, visible=None) -> ExportA
             "design_id": product.design_id,
         },
         [
-            _part_manifest(p, pair_of.get(p.variant_option_id))
+            _part_manifest(p, pair_of.get(p.variant_option_id), exported_photos)
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
         ],
         variant_groups,
+        part_photos,
     )
     date = datetime.now(timezone.utc).date().isoformat()
     return ExportArchive(
@@ -1015,7 +1034,7 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
 
 
 async def import_zip(
-    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any
+    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any, authority: Any = None
 ) -> tuple[Product, list[CardNote]]:
     """Rebuild a product from an export. Returns it and every note.
 
@@ -1109,6 +1128,7 @@ async def import_zip(
                             content=data,
                             target_folder=destination,
                             user=user,
+                            authority=authority,
                         )
                     ).file
                 except HTTPException as e:
@@ -1145,6 +1165,7 @@ async def import_zip(
         # the sync a no-op for them, so the operator's own quantities, aliases
         # and purchased rows survive instead of a fresh set of auto guesses.
         seen: set[str] = set()
+        pairs: list[tuple[ProductPart, object]] = []  # each part with its manifest image entry
         for position, raw in enumerate(manifest.get("parts") or []):
             if not isinstance(raw, dict):
                 continue
@@ -1166,23 +1187,36 @@ async def import_zip(
             # whose whole job is to change nothing.
             qty = max(0, _whole(raw.get("qty_per_unit"), 1))
             ignored = imported_mark(raw, kind, qty)
-            db.add(
-                ProductPart(
-                    product_id=product.id,
-                    kind=kind,
-                    name=name,
-                    name_key=key,
-                    qty_per_unit=qty,
-                    ignored=ignored,
-                    aliases=aliases,
-                    auto=bool(raw.get("auto", False)),
-                    unit_price=_price(raw.get("unit_price")),
-                    sourcing_url=_text(raw.get("sourcing_url"), 512),
-                    remarks=_text(raw.get("remarks")),
-                    sort_order=_whole(raw.get("sort_order"), position),
-                    variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
-                )
+            from math import isfinite
+
+            extra = raw.get("extra_percent", 0)
+            if (
+                isinstance(extra, bool)
+                or not isinstance(extra, (int, float))
+                or not isfinite(extra)
+                or not 0 <= extra <= 1000
+            ):
+                raise HTTPException(status_code=400, detail="Invalid additional-part percentage")
+            if kind != "printed" and extra:
+                raise HTTPException(status_code=400, detail="Additional parts must be printed parts")
+            new = ProductPart(
+                product_id=product.id,
+                kind=kind,
+                name=name,
+                name_key=key,
+                qty_per_unit=qty,
+                extra_percent=extra,
+                ignored=ignored,
+                aliases=aliases,
+                auto=bool(raw.get("auto", False)),
+                unit_price=_price(raw.get("unit_price")),
+                sourcing_url=_text(raw.get("sourcing_url"), 512),
+                remarks=_text(raw.get("remarks")),
+                sort_order=_whole(raw.get("sort_order"), position),
+                variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
             )
+            db.add(new)
+            pairs.append((new, raw.get("image")))
         await db.flush()
 
         # ---- the links, through the one door that owns them ----
@@ -1206,6 +1240,11 @@ async def import_zip(
             if written.cover:
                 product.cover_image_filename = written.cover
             await db.flush()
+
+            # The links exist now: a pin is checked against the plates the new product really links (D22).
+            await part_images.import_choices(
+                db, zf, names, product.id, pairs, {digest: file_id for file_id, digest in hash_by_file.items()}
+            )
 
             # ---- what the manifest promised and the files no longer carry ----
             carried = set(hash_by_file.values())
@@ -1299,7 +1338,9 @@ def _variant_of(raw: Any, option_by_pair: dict[tuple[str, str], int]) -> int | N
     return option_by_pair.get((variant_key(raw[0]), variant_key(raw[1])))
 
 
-async def _ingest_into_library(db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any):
+async def _ingest_into_library(
+    db: AsyncSession, *, filename: str, content: bytes, target_folder: Any, user: Any, authority: Any = None
+):
     """The library's own upload path, called with the import's bytes.
 
     The function-local ``store_library_upload`` import is the same concession
@@ -1318,6 +1359,7 @@ async def _ingest_into_library(db: AsyncSession, *, filename: str, content: byte
         content=content,
         target_folder=target_folder,
         created_by_id=getattr(user, "id", None),
+        authority=authority,  # the importer (user or API key) — no privileged import actor
     )
 
 

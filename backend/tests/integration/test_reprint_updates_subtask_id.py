@@ -55,6 +55,8 @@ def _clear_active_print_state():
     ):
         _d.clear()
     for attribute in (
+        "_print_start_admissions",
+        "_print_effect_generations",
         "_print_run_bindings",
         "_print_run_finishing_bindings",
         "_print_start_resolutions",
@@ -72,6 +74,8 @@ def _clear_active_print_state():
     ):
         _d.clear()
     for attribute in (
+        "_print_start_admissions",
+        "_print_effect_generations",
         "_print_run_bindings",
         "_print_run_finishing_bindings",
         "_print_start_resolutions",

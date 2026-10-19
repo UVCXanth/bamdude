@@ -58,7 +58,14 @@ def fake_printer():
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state(monkeypatch):
+    from backend.app.services.print_run_binding import bind_print_run
+    from backend.app.services.printer_manager import PrinterManager
+
+    manager = PrinterManager()
+    for printer_id in (3, 7):
+        bind_print_run(manager, printer_id=printer_id, archive_id=printer_id)
+    monkeypatch.setattr(main_module, "printer_manager", manager)
     """Don't leak event / cache dict entries across tests."""
     main_module._stage22_finish_in_flight.clear()
     main_module._stage22_finish_frames.clear()
@@ -93,7 +100,9 @@ async def test_event_registered_before_first_await(patched_env, monkeypatch):
     seen_during_capture = {}
 
     async def _slow_capture(_request):
-        seen_during_capture["registered"] = patched_env.id in main_module._stage22_finish_in_flight
+        seen_during_capture["registered"] = (
+            main_module._finish_photo_key(patched_env.id) in main_module._stage22_finish_in_flight
+        )
         await asyncio.sleep(0)
         return _captured(b"\xff\xd8frame")
 
@@ -112,9 +121,9 @@ async def test_event_set_after_successful_capture(patched_env, monkeypatch):
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
-    event = main_module._stage22_finish_in_flight[patched_env.id]
+    event = main_module._stage22_finish_in_flight[main_module._finish_photo_key(patched_env.id)]
     assert event.is_set()
-    assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8frame"
+    assert main_module._stage22_finish_frames[main_module._finish_photo_key(patched_env.id)] == b"\xff\xd8frame"
 
 
 async def test_event_set_when_capture_returns_no_frame(patched_env, monkeypatch):
@@ -128,9 +137,9 @@ async def test_event_set_when_capture_returns_no_frame(patched_env, monkeypatch)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
-    event = main_module._stage22_finish_in_flight[patched_env.id]
+    event = main_module._stage22_finish_in_flight[main_module._finish_photo_key(patched_env.id)]
     assert event.is_set()
-    assert patched_env.id not in main_module._stage22_finish_frames
+    assert main_module._finish_photo_key(patched_env.id) not in main_module._stage22_finish_frames
 
 
 async def test_event_set_even_when_capture_raises(patched_env, monkeypatch):
@@ -143,7 +152,7 @@ async def test_event_set_even_when_capture_raises(patched_env, monkeypatch):
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
-    event = main_module._stage22_finish_in_flight[patched_env.id]
+    event = main_module._stage22_finish_in_flight[main_module._finish_photo_key(patched_env.id)]
     assert event.is_set()
 
 
@@ -155,7 +164,7 @@ async def test_no_event_when_timelapse_was_active(patched_env):
         {"trigger": "stage_22", "timelapse_was_active": True},
     )
 
-    assert patched_env.id not in main_module._stage22_finish_in_flight
+    assert main_module._finish_photo_key(patched_env.id) not in main_module._stage22_finish_in_flight
 
 
 async def test_event_set_when_capture_setting_disabled(patched_env, monkeypatch):
@@ -169,7 +178,7 @@ async def test_event_set_when_capture_setting_disabled(patched_env, monkeypatch)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
-    event = main_module._stage22_finish_in_flight[patched_env.id]
+    event = main_module._stage22_finish_in_flight[main_module._finish_photo_key(patched_env.id)]
     assert event.is_set()
 
 
@@ -187,10 +196,10 @@ async def test_consumer_wait_unblocked_when_producer_completes(patched_env, monk
 
     await asyncio.sleep(0)  # let the producer register
 
-    event = main_module._stage22_finish_in_flight[patched_env.id]
+    event = main_module._stage22_finish_in_flight[main_module._finish_photo_key(patched_env.id)]
     await asyncio.wait_for(event.wait(), timeout=1.0)
 
-    assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8frame"
+    assert main_module._stage22_finish_frames[main_module._finish_photo_key(patched_env.id)] == b"\xff\xd8frame"
     await producer
 
 
@@ -203,7 +212,7 @@ async def test_consumer_wait_unblocked_when_producer_completes(patched_env, monk
 
 
 async def test_finish_state_prefers_banked_frame(patched_env, monkeypatch):
-    main_module._inprint_frame_bank[patched_env.id] = b"\xff\xd8banked"
+    main_module._inprint_frame_bank[main_module._finish_photo_key(patched_env.id)] = b"\xff\xd8banked"
     live_called = {"n": 0}
 
     async def _live(_request):
@@ -212,7 +221,7 @@ async def test_finish_state_prefers_banked_frame(patched_env, monkeypatch):
 
     monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
-    assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8banked"
+    assert main_module._stage22_finish_frames[main_module._finish_photo_key(patched_env.id)] == b"\xff\xd8banked"
     assert live_called["n"] == 0
 
 
@@ -222,20 +231,20 @@ async def test_finish_state_falls_back_to_live_when_no_bank(patched_env, monkeyp
 
     monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
-    assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8live"
+    assert main_module._stage22_finish_frames[main_module._finish_photo_key(patched_env.id)] == b"\xff\xd8live"
 
 
 async def test_last_layer_trigger_ignores_bank(patched_env, monkeypatch):
     """The last-layer edge fires before the End G-code, so a live grab there is
     better framed than anything banked mid-print."""
-    main_module._inprint_frame_bank[patched_env.id] = b"\xff\xd8banked"
+    main_module._inprint_frame_bank[main_module._finish_photo_key(patched_env.id)] = b"\xff\xd8banked"
 
     async def _live(_request):
         return _captured(b"\xff\xd8live")
 
     monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "last_layer"})
-    assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8live"
+    assert main_module._stage22_finish_frames[main_module._finish_photo_key(patched_env.id)] == b"\xff\xd8live"
 
 
 # --- the banking helper itself ----------------------------------------------
@@ -275,7 +284,7 @@ def _bank_env(
 async def test_bank_stores_frame_while_printing(monkeypatch):
     _bank_env(monkeypatch)
     await main_module._maybe_bank_inprint_frame(3, 5)
-    assert main_module._inprint_frame_bank[3] == b"frame-1"
+    assert main_module._inprint_frame_bank[main_module._finish_photo_key(3)] == b"frame-1"
 
 
 async def test_bank_throttles_within_interval(monkeypatch):
@@ -283,7 +292,7 @@ async def test_bank_throttles_within_interval(monkeypatch):
     await main_module._maybe_bank_inprint_frame(3, 5)
     await main_module._maybe_bank_inprint_frame(3, 6)
     assert counter["n"] == 1
-    assert main_module._inprint_frame_bank[3] == b"frame-1"
+    assert main_module._inprint_frame_bank[main_module._finish_photo_key(3)] == b"frame-1"
 
 
 async def test_bank_always_refreshes_on_last_layer(monkeypatch):
@@ -291,19 +300,19 @@ async def test_bank_always_refreshes_on_last_layer(monkeypatch):
     await main_module._maybe_bank_inprint_frame(3, 5)
     await main_module._maybe_bank_inprint_frame(3, 10)
     assert counter["n"] == 2
-    assert main_module._inprint_frame_bank[3] == b"frame-2"
+    assert main_module._inprint_frame_bank[main_module._finish_photo_key(3)] == b"frame-2"
 
 
 async def test_bank_skips_when_not_running(monkeypatch):
     _bank_env(monkeypatch, state="FINISH")
     await main_module._maybe_bank_inprint_frame(3, 10)
-    assert 3 not in main_module._inprint_frame_bank
+    assert main_module._finish_photo_key(3) not in main_module._inprint_frame_bank
 
 
 async def test_bank_skips_during_calibration_substage(monkeypatch):
     _bank_env(monkeypatch, sub_stage=14)
     await main_module._maybe_bank_inprint_frame(3, 2)
-    assert 3 not in main_module._inprint_frame_bank
+    assert main_module._finish_photo_key(3) not in main_module._inprint_frame_bank
 
 
 async def test_bank_skips_once_a_finish_photo_was_taken(monkeypatch):
@@ -315,15 +324,15 @@ async def test_bank_skips_once_a_finish_photo_was_taken(monkeypatch):
     counter = _bank_env(monkeypatch, finish_photo_captured=True)
     await main_module._maybe_bank_inprint_frame(3, 10)
     assert counter["n"] == 0
-    assert 3 not in main_module._inprint_frame_bank
+    assert main_module._finish_photo_key(3) not in main_module._inprint_frame_bank
 
 
 async def test_bank_skips_while_a_finish_grab_is_in_flight(monkeypatch):
     counter = _bank_env(monkeypatch)
-    main_module._stage22_finish_in_flight[3] = asyncio.Event()
+    main_module._stage22_finish_in_flight[main_module._finish_photo_key(3)] = asyncio.Event()
     await main_module._maybe_bank_inprint_frame(3, 10)
     assert counter["n"] == 0
-    assert 3 not in main_module._inprint_frame_bank
+    assert main_module._finish_photo_key(3) not in main_module._inprint_frame_bank
 
 
 async def test_bank_skips_when_viewer_attached_and_buffer_empty(monkeypatch):
@@ -335,4 +344,4 @@ async def test_bank_skips_when_viewer_attached_and_buffer_empty(monkeypatch):
     monkeypatch.setattr("backend.app.api.routes.camera.get_buffered_frame", lambda _pid: None)
     await main_module._maybe_bank_inprint_frame(3, 5)
     assert counter["n"] == 0
-    assert 3 not in main_module._inprint_frame_bank
+    assert main_module._finish_photo_key(3) not in main_module._inprint_frame_bank

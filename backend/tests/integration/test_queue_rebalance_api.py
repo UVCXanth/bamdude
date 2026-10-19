@@ -107,6 +107,10 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     farm.item.feed_policy = "external_only"
     farm.item.auto_off_after = True
     farm.item.require_previous_success = True
+    farm.item.auto_eject = True
+    farm.item.auto_eject_settings = {"difference_threshold": 2.5, "skip_check": True}
+    # Today's order policy must not replace the captured job policy.
+    farm.project.auto_eject_settings = {"difference_threshold": 1, "skip_check": False}
     await db_session.commit()
 
     p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
@@ -119,6 +123,8 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     rows = await _pending(db_session)
     assert len(rows) == 3
     for row in rows:
+        assert row.auto_eject is True
+        assert row.auto_eject_settings == {"difference_threshold": 2.5, "skip_check": True}
         assert (row.use_ams, row.feed_policy, row.auto_off_after, row.require_previous_success) == (
             False,
             "external_only",
@@ -302,6 +308,27 @@ async def _move(db_session, farm):
     p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
     with p_elig, p_sched:
         return await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+
+
+@pytest.mark.asyncio
+async def test_order_print_choices_survive_conversion_and_companions(db_session, printer_factory, tmp_path):
+    from backend.app.services.order_print_options import inherited_options, override_options
+
+    farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+    mini = (await inherited_options(db_session, None, "A1 Mini")).model_dump()
+    p1 = (await inherited_options(db_session, None, "P1S")).model_dump()
+    mini.update(flow_cali="off", preheat_override="off")
+    snapshot = {"A1 Mini": mini, "P1S": p1}
+    farm.item.order_print_options = snapshot
+    await db_session.commit()
+    result = await _move(db_session, farm)
+    assert (result.converted, result.created) == (1, 2), result.skipped
+    rows = await _pending(db_session)
+    assert len(rows) == 3
+    for row in rows:
+        assert row.order_print_options == snapshot
+        assert override_options(row.order_print_options, row.target_model)["flow_cali"] == "off"
+        assert override_options(row.order_print_options, row.target_model)["preheat_override"] == "off"
 
 
 @pytest.mark.asyncio

@@ -485,6 +485,7 @@ class TestACloneCarriesEveryPrintOption:
     # decision, which is the point of listing them by hand.
     NOT_COPIED = {
         "id",  # identity
+        "recovery_identity",  # a clone is a new row; an old recovery preview must never name it
         "created_at",
         "queue_id",  # the clone's queue is chosen by the caller
         "position",  # appended to the end
@@ -508,6 +509,9 @@ class TestACloneCarriesEveryPrintOption:
         # carrying both flips the same session twice.
         "is_calibration",
         "calibration_session_id",
+        # A clone is a new incarnation of the work (swap-source-declaration spec r3 §3): a refresh listed against
+        # the parent never reaches it.
+        "swap_declaration_identity",
     }
 
     def _distinctive(self, column):

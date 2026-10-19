@@ -12,3 +12,17 @@
 # entrypoint cannot exec, and install.sh copied from such a checkout fails
 # the same way. CI never saw it because Linux runners do not convert.
 *.sh text eol=lf
+
+# The part-render bundle is checked against the sha256 its build recorded
+# (spec §5.5): an EOL conversion on a Windows clone would make every install
+# report bundle_mismatch.
+backend/app/data/part_render/** -text
+
+# STEP-preview fixtures carry their own sha256 and byte counts in expected.json (independent oracle, plan S3), and
+# scripts/pin_step_runtime.py --check compares the committed catalog text: keep both byte-exact on every clone.
+backend/tests/fixtures/step/** -text
+backend/app/data/step_runtime_*.json -text
+# The probe's STEP fixture is a copy of an authored one, and the CAD component's licence texts must stay the bytes
+# their upstreams ship (a re-sync is diffed against them, as OFL.txt is).
+backend/app/data/step_probe/** -text
+backend/app/data/step_runtime_notices/** -text

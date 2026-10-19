@@ -7,8 +7,14 @@ a reference image of the empty plate.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
+
+from pydantic import TypeAdapter
+
+from backend.app.schemas.plate_detection import PlatePolygon
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +47,21 @@ class PlateDetectionResult:
         message: str,
         debug_image: bytes | None = None,
         needs_calibration: bool = False,
+        status: str | None = None,
+        source_image: bytes | None = None,
     ):
-        self.is_empty = is_empty
+        self.status = "unavailable" if needs_calibration else status or ("clear" if is_empty else "occupied")
+        self.is_empty = bool(is_empty and self.status == "clear")
         self.confidence = confidence  # 0.0 to 1.0
         self.difference_percent = difference_percent  # How different from reference
         self.message = message
         self.debug_image = debug_image  # Optional annotated image for debugging
         self.needs_calibration = needs_calibration  # True if no reference image exists
+        self.source_image = source_image  # Original frame for editing the detection area
 
     def to_dict(self) -> dict:
         return {
+            "status": self.status,
             "is_empty": bool(self.is_empty),
             "confidence": float(round(self.confidence, 2)),
             "difference_percent": float(round(self.difference_percent, 2)),
@@ -79,6 +90,7 @@ class PlateDetector:
         roi: tuple[float, float, float, float] | None = None,
         difference_threshold: float = DEFAULT_DIFFERENCE_THRESHOLD,
         blur_size: int = DEFAULT_BLUR_SIZE,
+        polygon: list[dict[str, float]] | None = None,
     ):
         """Initialize the plate detector.
 
@@ -86,10 +98,16 @@ class PlateDetector:
             roi: Region of interest as (x%, y%, w%, h%) - percentages of image size
             difference_threshold: Percentage of pixels that must differ to trigger "not empty"
             blur_size: Gaussian blur kernel size for noise reduction
+            polygon: Optional normalized contour overriding the rectangular ROI
         """
         if not OPENCV_AVAILABLE:
             raise RuntimeError("OpenCV is not installed. Install with: pip install opencv-python-headless")
 
+        self.polygon = (
+            [p.model_dump() for p in TypeAdapter(PlatePolygon).validate_python(polygon)]
+            if polygon is not None
+            else None
+        )
         self.roi = roi or self.DEFAULT_ROI
         self.difference_threshold = difference_threshold
         self.blur_size = blur_size if blur_size % 2 == 1 else blur_size + 1  # Must be odd
@@ -274,6 +292,15 @@ class PlateDetector:
             Tuple of (roi_frame, x_start, y_start, roi_width, roi_height)
         """
         height, width = frame.shape[:2]
+        if self.polygon is not None:
+            x_start, y_start, roi_width, roi_height = cv2.boundingRect(self._polygon_vertices(frame))
+            return (
+                frame[y_start : y_start + roi_height, x_start : x_start + roi_width],
+                x_start,
+                y_start,
+                roi_width,
+                roi_height,
+            )
         x_start = int(width * self.roi[0])
         y_start = int(height * self.roi[1])
         roi_width = int(width * self.roi[2])
@@ -281,7 +308,18 @@ class PlateDetector:
         roi_frame = frame[y_start : y_start + roi_height, x_start : x_start + roi_width]
         return roi_frame, x_start, y_start, roi_width, roi_height
 
-    def _preprocess_for_comparison(self, frame: np.ndarray) -> np.ndarray:
+    def _polygon_vertices(self, frame: np.ndarray) -> np.ndarray:
+        height, width = frame.shape[:2]
+        return np.array(
+            [[round(p["x"] * (width - 1)), round(p["y"] * (height - 1))] for p in self.polygon], dtype=np.int32
+        )
+
+    def _polygon_mask(self, frame: np.ndarray) -> np.ndarray:
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [self._polygon_vertices(frame)], 1)
+        return mask
+
+    def _preprocess_for_comparison(self, frame: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         """Preprocess a frame for comparison.
 
         Uses heavy blur to create "blob" representation - smooths out texture
@@ -289,6 +327,18 @@ class PlateDetector:
         to reduce lighting sensitivity.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if mask is not None:
+            # Weighted blur excludes outside pixels even near the contour. Zero
+            # filling alone would let background/black edges alter the score.
+            weights = cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+            blurred = cv2.GaussianBlur(gray.astype(np.float32) * mask, (51, 51), 0)
+            blurred = np.divide(blurred, weights, out=np.zeros_like(blurred), where=weights > 0)
+            values = blurred[mask > 0]
+            low, high = values.min(), values.max()
+            normalized = np.zeros_like(gray)
+            if high > low:
+                normalized[mask > 0] = np.clip((values - low) * 255 / (high - low), 0, 255).astype(np.uint8)
+            return normalized
         # Very heavy blur to smooth texture, keep only large shapes
         blurred = cv2.GaussianBlur(gray, (51, 51), 0)
         # Normalize to 0-255 range to reduce brightness sensitivity
@@ -390,7 +440,12 @@ class PlateDetector:
         return True
 
     def analyze_frame(
-        self, image_data: bytes, printer_id: int, plate_type: str | None = None, include_debug_image: bool = False
+        self,
+        image_data: bytes,
+        printer_id: int,
+        plate_type: str | None = None,
+        include_debug_image: bool = False,
+        strict_dimensions: bool = False,
     ) -> PlateDetectionResult:
         """Analyze a camera frame to detect if the plate is empty.
 
@@ -411,7 +466,7 @@ class PlateDetector:
             reference_paths = self._get_reference_paths(printer_id)
             if not reference_paths:
                 return PlateDetectionResult(
-                    is_empty=True,  # Default to empty when not calibrated
+                    is_empty=False,
                     confidence=0.0,
                     difference_percent=0.0,
                     message="No calibration - please calibrate with empty plate first",
@@ -424,15 +479,23 @@ class PlateDetector:
 
             if current_frame is None:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=False,
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to decode current image",
+                    status="unavailable",
                 )
 
             # Extract ROI from current frame
             current_roi, x_start, y_start, roi_width, roi_height = self._extract_roi(current_frame)
-            current_processed = self._preprocess_for_comparison(current_roi)
+            mask = None
+            if self.polygon is not None:
+                mask = self._polygon_mask(current_frame)[y_start : y_start + roi_height, x_start : x_start + roi_width]
+                if np.count_nonzero(mask) < 32:
+                    return PlateDetectionResult(
+                        False, 0, 0, "Detection polygon is too small at this resolution", status="unavailable"
+                    )
+            current_processed = self._preprocess_for_comparison(current_roi, mask)
 
             # Compare against all references, find best match (lowest difference)
             best_difference_percent = float("inf")
@@ -447,17 +510,26 @@ class PlateDetector:
 
                 # Ensure same dimensions
                 if current_frame.shape != reference_frame.shape:
+                    if strict_dimensions or self.polygon is not None:
+                        return PlateDetectionResult(
+                            False,
+                            0,
+                            0,
+                            "Camera dimensions changed; recalibrate",
+                            needs_calibration=True,
+                            status="unavailable",
+                        )
                     reference_frame = cv2.resize(reference_frame, (current_frame.shape[1], current_frame.shape[0]))
 
                 # Extract ROI and preprocess
                 reference_roi, _, _, _, _ = self._extract_roi(reference_frame)
-                reference_processed = self._preprocess_for_comparison(reference_roi)
+                reference_processed = self._preprocess_for_comparison(reference_roi, mask)
 
                 # Calculate absolute difference
                 diff = cv2.absdiff(current_processed, reference_processed)
 
                 # Calculate mean difference as percentage
-                mean_diff = np.mean(diff)
+                mean_diff = np.mean(diff[mask > 0]) if mask is not None else np.mean(diff)
                 difference_percent = (mean_diff / 255.0) * 100
 
                 if difference_percent < best_difference_percent:
@@ -467,7 +539,7 @@ class PlateDetector:
 
             if best_ref_idx == -1:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=False,
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to load any reference images - please recalibrate",
@@ -502,13 +574,16 @@ class PlateDetector:
                 debug_frame = current_frame.copy()
 
                 # Draw ROI rectangle
-                cv2.rectangle(
-                    debug_frame,
-                    (x_start, y_start),
-                    (x_start + roi_width, y_start + roi_height),
-                    (0, 255, 0),
-                    2,
-                )
+                if self.polygon is not None:
+                    cv2.polylines(debug_frame, [self._polygon_vertices(current_frame)], True, (0, 255, 0), 2)
+                else:
+                    cv2.rectangle(
+                        debug_frame,
+                        (x_start, y_start),
+                        (x_start + roi_width, y_start + roi_height),
+                        (0, 255, 0),
+                        2,
+                    )
 
                 # Create colored difference overlay
                 # Red = areas that are different from reference
@@ -521,7 +596,11 @@ class PlateDetector:
 
                 # Overlay difference on ROI
                 roi_overlay = debug_frame[y_start : y_start + roi_height, x_start : x_start + roi_width]
-                cv2.addWeighted(diff_colored, 0.5, roi_overlay, 0.5, 0, roi_overlay)
+                overlay = cv2.addWeighted(diff_colored, 0.5, roi_overlay, 0.5, 0)
+                if mask is None:
+                    roi_overlay[:] = overlay
+                else:
+                    roi_overlay[mask > 0] = overlay[mask > 0]
 
                 # Add status text
                 status_text = "EMPTY" if is_empty else "OBJECTS DETECTED"
@@ -561,10 +640,11 @@ class PlateDetector:
         except Exception as e:
             logger.exception("Error analyzing frame for plate detection")
             return PlateDetectionResult(
-                is_empty=True,  # Default to empty on error (don't block prints)
+                is_empty=False,
                 confidence=0.0,
                 difference_percent=0.0,
                 message=f"Analysis error: {e!s}",
+                status="unavailable",
             )
 
 
@@ -577,6 +657,7 @@ async def capture_camera_image(
     external_camera_type: str | None = None,
     use_external: bool = False,
     external_camera_snapshot_url: str | None = None,
+    fresh: bool = False,
 ) -> tuple[bytes | None, str]:
     """Capture an image from the printer camera.
 
@@ -593,14 +674,49 @@ async def capture_camera_image(
     image_data: bytes | None = None
     camera_source = "unknown"
 
+    if fresh and use_external and not (external_camera_url and external_camera_type):
+        return None, "Configured external camera is incomplete"
+
     # Reuse the live view's frame before touching ANY camera (#2707). The
     # buffered-frame check below used to sit in the built-in branch only, so the
     # docstring's promise not to compete with a viewer was true for one camera
     # kind and not the other — and a USB device allows exactly one handle, so
     # the external attempt did not degrade, it failed.
-    from backend.app.api.routes.camera import live_frame_for_capture
+    from backend.app.api.routes.camera import live_frame_for_capture, live_stream_generation
+    from backend.app.services.camera_runtime import CameraCaptureRequest
 
-    defer, buffered_live = live_frame_for_capture(printer_id)
+    expected_source = (
+        (
+            CameraCaptureRequest.external(
+                url=external_camera_url,
+                camera_type=external_camera_type,
+                snapshot_url=external_camera_snapshot_url,
+            )
+            if use_external
+            else CameraCaptureRequest.builtin(
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+            )
+        )
+        if fresh
+        else None
+    )
+    generation = live_stream_generation(printer_id) if fresh else None
+    live_options = {"expected_source": expected_source, "generation": generation} if fresh else {}
+    not_before = time.monotonic() if fresh else None
+    defer, buffered_live = (
+        live_frame_for_capture(printer_id, not_before=not_before, **live_options)
+        if fresh
+        else live_frame_for_capture(printer_id)
+    )
+    if fresh and defer:
+        # A viewer owns the camera socket. Wait for its next frame, never open
+        # a second reader or accept a frame from before this check.
+        deadline = time.monotonic() + 10
+        while buffered_live is None and defer and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            defer, buffered_live = live_frame_for_capture(printer_id, not_before=not_before, **live_options)
     if defer:
         if buffered_live is None:
             logger.debug(
@@ -619,22 +735,26 @@ async def capture_camera_image(
         try:
             from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            image_data = (
-                await capture(
-                    CameraCaptureRequest.external(
-                        url=external_camera_url,
-                        camera_type=external_camera_type,
-                        snapshot_url=external_camera_snapshot_url,
-                        purpose="plate_check",
-                        printer_id=printer_id,
-                    )
+            captured = await capture(
+                CameraCaptureRequest.external(
+                    url=external_camera_url,
+                    camera_type=external_camera_type,
+                    snapshot_url=external_camera_snapshot_url,
+                    purpose="plate_check",
+                    printer_id=printer_id,
                 )
-            ).frame
+            )
+            image_data = captured.frame if not fresh or captured.source == "fresh" else None
             if image_data:
                 camera_source = "external"
                 logger.debug("Captured frame from external camera for printer %s", printer_id)
         except Exception as e:
             logger.warning("Failed to capture from external camera: %s", e)
+
+        if fresh and image_data is None:
+            # The configured camera's reference must not be compared with a
+            # different camera after an error or an older coalesced capture.
+            return None, "Configured external camera did not provide a fresh frame"
 
     # Fall back to built-in camera
     if image_data is None:
@@ -643,7 +763,7 @@ async def capture_camera_image(
         try:
             from backend.app.api.routes.camera import get_buffered_frame
 
-            buffered = get_buffered_frame(printer_id)
+            buffered = None if fresh else get_buffered_frame(printer_id)
             if buffered:
                 image_data = buffered
                 camera_source = "built-in (buffered)"
@@ -655,18 +775,17 @@ async def capture_camera_image(
         if image_data is None:
             from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            image_data = (
-                await capture(
-                    CameraCaptureRequest.builtin(
-                        ip_address=ip_address,
-                        access_code=access_code,
-                        model=model,
-                        timeout=10,
-                        purpose="plate_check",
-                        printer_id=printer_id,
-                    )
+            captured = await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=ip_address,
+                    access_code=access_code,
+                    model=model,
+                    timeout=10,
+                    purpose="plate_check",
+                    printer_id=printer_id,
                 )
-            ).frame
+            )
+            image_data = captured.frame if not fresh or captured.source == "fresh" else None
             if image_data:
                 camera_source = "built-in"
                 logger.debug("Captured frame from built-in camera for printer %s", printer_id)
@@ -686,6 +805,9 @@ async def check_plate_empty(
     use_external: bool = False,
     roi: tuple[float, float, float, float] | None = None,
     external_camera_snapshot_url: str | None = None,
+    fresh: bool = False,
+    difference_threshold: float = PlateDetector.DEFAULT_DIFFERENCE_THRESHOLD,
+    polygon: list[dict[str, float]] | None = None,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -706,10 +828,11 @@ async def check_plate_empty(
     """
     if not OPENCV_AVAILABLE:
         return PlateDetectionResult(
-            is_empty=True,
+            is_empty=False,
             confidence=0.0,
             difference_percent=0.0,
             message="OpenCV not available - plate detection disabled",
+            status="unavailable",
         )
 
     image_data, camera_source = await capture_camera_image(
@@ -721,19 +844,22 @@ async def check_plate_empty(
         external_camera_type,
         use_external,
         external_camera_snapshot_url=external_camera_snapshot_url,
+        fresh=fresh,
     )
 
     if image_data is None:
         return PlateDetectionResult(
-            is_empty=True,  # Default to empty on error
+            is_empty=False,
             confidence=0.0,
             difference_percent=0.0,
             message="Failed to capture camera frame from any source",
+            status="unavailable",
         )
 
     # Analyze the captured frame
-    detector = PlateDetector(roi=roi)
-    result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image)
+    detector = PlateDetector(roi=roi, difference_threshold=difference_threshold, polygon=polygon)
+    result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image, strict_dimensions=fresh)
+    result.source_image = image_data if include_debug_image else None
 
     # Add camera source to message
     result.message = f"[{camera_source}] {result.message}"

@@ -19,10 +19,11 @@ Why a separate table (vs nullable queue_id on print_queue):
 See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 """
 
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -37,9 +38,15 @@ class AutoQueueItem(Base):
     __tablename__ = "auto_queue_items"
     # The order figures and the order's queue section read an order's
     # undistributed rows (spec workshop-order-queue); measured plan in m191.
-    __table_args__ = (Index("ix_auto_queue_items_project_status", "project_id", "status"),)
+    __table_args__ = (
+        Index("ix_auto_queue_items_project_status", "project_id", "status"),
+        Index("ix_auto_queue_items_swap_declaration_identity", "swap_declaration_identity", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable order choices copied at creation. Promotion/rebalance picks the
+    # sliced model's entry; NULL retains the existing operator-profile path.
+    order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
     #
@@ -61,7 +68,14 @@ class AutoQueueItem(Base):
     queue_source_id: Mapped[int | None] = mapped_column(
         ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    auto_eject: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # This job's incarnation for the swap-declaration refresh's compare-and-set (swap-source-declaration spec
+    # r3 §3): a new one for every new row -- a clone, a promotion, a reused integer id -- kept across updates.
+    swap_declaration_identity: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, default=lambda: str(uuid.uuid4())
+    )
 
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     project_line_id: Mapped[int | None] = mapped_column(

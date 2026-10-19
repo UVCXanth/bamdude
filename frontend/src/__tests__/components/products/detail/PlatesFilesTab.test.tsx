@@ -329,4 +329,44 @@ describe('PlatesFilesTab', () => {
       expect(await screen.findByTestId('product-file-30')).toBeInTheDocument();
     });
   });
+
+  describe('the plates’ pictures (spec part-thumbnails §12.2)', () => {
+    it('a yield chip shows its part; an object no part claims shows its own picture', async () => {
+      vi.spyOn(api, 'getProductFileGroups').mockResolvedValue({
+        files: [
+          file({
+            library_file_id: 9,
+            plates: [
+              plate({
+                id: 1,
+                library_file_id: 9,
+                plate_index: 1,
+                yield: [{ part_id: 3, name: 'Body', count: 2, image: { kind: 'render', status: 'ready', v: 'b3' } }],
+                unassigned: [
+                  {
+                    name_key: 'cube.stl',
+                    count: 1,
+                    identify_id: 44,
+                    image: { library_file_id: 9, plate_index: 1, identify_id: 44, status: 'ready', v: 'c44' },
+                  },
+                ],
+              }),
+            ],
+          }),
+        ],
+        hidden_files: 0,
+        folders: [],
+      } as never);
+      render(<Host />);
+      const row = await screen.findByTestId('plate-1');
+      const sources = within(row)
+        .getAllByTestId('part-thumb-img')
+        .map((img) => img.getAttribute('src'));
+      expect(sources).toEqual([
+        '/api/v1/product-parts/3/image?v=b3&size=sm',
+        '/api/v1/products/7/files/9/plates/1/objects/44/image?v=c44&size=sm',
+      ]);
+      expect(within(row).getByRole('button', { name: 'Show cube.stl larger' })).toBeInTheDocument();
+    });
+  });
 });

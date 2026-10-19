@@ -471,6 +471,189 @@ describe('PrintersPage', () => {
     }, 20_000);
   });
 
+  describe('GH54 compact toolbar', () => {
+    const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+    const scrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!;
+
+    beforeEach(() => {
+      Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => 320 });
+      Object.defineProperty(Element.prototype, 'scrollWidth', { configurable: true, get: () => 600 });
+      localStorage.removeItem('printerStatusFilter');
+      localStorage.removeItem('printerLocationFilter');
+      localStorage.removeItem('hideDisconnectedPrinters');
+    });
+    afterEach(() => {
+      Object.defineProperty(Element.prototype, 'clientWidth', clientWidth);
+      Object.defineProperty(Element.prototype, 'scrollWidth', scrollWidth);
+      localStorage.removeItem('printerStatusFilter');
+      localStorage.removeItem('printerLocationFilter');
+      localStorage.removeItem('hideDisconnectedPrinters');
+    });
+
+    it('GH54 opens status options and applies the chosen filter', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(screen.getByRole('button', { name: 'Filters' }));
+      await userEvent.click(screen.getByRole('button', { name: 'All statuses' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Offline' }));
+      expect(localStorage.getItem('printerStatusFilter')).toBe('offline');
+      expect(screen.getByRole('button', { name: 'Offline' })).toBeInTheDocument();
+    });
+
+    it('GH54 opens the location filter and keeps the parent panel usable', async () => {
+      server.use(http.get('/api/v1/printer-locations', () => HttpResponse.json({ locations: [
+        { id: 7, name: 'Workshop', parent_id: null, path: 'Workshop', depth: 1, printer_count: 1, sensor_count: 0, queued_count: 0 },
+      ] })));
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(screen.getByRole('button', { name: 'Filters' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'All locations' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Workshop' }));
+      expect(localStorage.getItem('printerLocationFilter')).toBe('7');
+      expect(screen.getByRole('button', { name: 'Workshop' })).toBeInTheDocument();
+    });
+
+    it('GH54 opens sort options and changes the order without closing View', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(screen.getByRole('button', { name: 'View' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Name' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Model' }));
+      expect(localStorage.getItem('printerSortBy')).toBe('model');
+      expect(screen.getByRole('button', { name: 'Model' })).toBeInTheDocument();
+    });
+
+    it('GH54 keeps the tag list open for two selections', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(screen.getByRole('button', { name: 'Filters' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Tags' }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 1' }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 2' }));
+      expect(localStorage.getItem('printerTagFilter')).toBe('[1,2]');
+      expect(screen.getByRole('checkbox', { name: 'Phase 2' })).toBeChecked();
+    });
+
+    it('GH54 gives Escape to the nested list before closing Filters', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const opener = screen.getByRole('button', { name: 'Filters' });
+      await userEvent.click(opener);
+      const status = screen.getByRole('button', { name: 'All statuses' });
+      await userEvent.click(status);
+      expect(screen.getByRole('button', { name: 'Offline' })).toBeInTheDocument();
+
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('button', { name: 'Offline' })).not.toBeInTheDocument();
+      expect(status).toHaveFocus();
+      expect(opener).toHaveAttribute('aria-expanded', 'true');
+
+      await userEvent.keyboard('{Escape}');
+      expect(opener).toHaveAttribute('aria-expanded', 'false');
+      expect(opener).toHaveFocus();
+      await userEvent.click(opener);
+      expect(screen.getByRole('button', { name: 'All statuses' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('GH54 closes the nested tag list first even after focus moves within Filters', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const opener = screen.getByRole('button', { name: 'Filters' });
+      await userEvent.click(opener);
+      await userEvent.click(screen.getByRole('button', { name: 'Tags' }));
+      screen.getByRole('button', { name: 'Hide offline' }).focus();
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('checkbox', { name: 'Phase 1' })).not.toBeInTheDocument();
+      expect(opener).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('GH54 lets one click outside close the outer and nested menus', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const opener = screen.getByRole('button', { name: 'Filters' });
+      await userEvent.click(opener);
+      await userEvent.click(screen.getByRole('button', { name: 'All statuses' }));
+      const backdrop = screen.getByRole('group', { name: 'Filters' }).previousElementSibling as HTMLElement;
+      await userEvent.click(backdrop);
+      expect(opener).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('button', { name: 'Offline' })).not.toBeInTheDocument();
+      await userEvent.click(opener);
+      expect(screen.getByRole('button', { name: 'All statuses' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('GH54 does not lose a click on another control inside Filters', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const opener = screen.getByRole('button', { name: 'Filters' });
+      await userEvent.click(opener);
+      await userEvent.click(screen.getByRole('button', { name: 'All statuses' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Hide offline' }));
+      expect(localStorage.getItem('hideDisconnectedPrinters')).toBe('true');
+      expect(opener).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('GH54 removes a wide dropdown backdrop when the toolbar becomes compact', async () => {
+      let width = 3000;
+      Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => width });
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const wideStatus = screen.getByRole('button', { name: 'All statuses' });
+      await userEvent.click(wideStatus);
+      expect(screen.getByRole('button', { name: 'Printing' })).toBeInTheDocument();
+
+      width = 320;
+      act(() => window.dispatchEvent(new Event('resize')));
+      await screen.findByRole('button', { name: 'Filters' });
+      expect(document.querySelectorAll('div.fixed.inset-0.z-10')).toHaveLength(0);
+      expect(wideStatus).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('GH54 opens Power On without a command and closes after the selected main plug', async () => {
+      localStorage.setItem('hideDisconnectedPrinters', 'true');
+      const calls: number[] = [];
+      server.use(
+        http.get('/api/v1/printers/:id/status', ({ params }) => HttpResponse.json({
+          ...mockPrinterStatus, connected: Number(params.id) !== 1,
+        })),
+        http.get('/api/v1/smart-plugs/', () => HttpResponse.json([
+          { id: 90, printer_id: 1, is_main_plug: true, name: 'Main plug' },
+          { id: 91, printer_id: 1, is_main_plug: false, name: 'Other plug' },
+        ])),
+        http.get('/api/v1/smart-plugs/:id/status', () => HttpResponse.json({ state: 'OFF', reachable: true })),
+        http.post('/api/v1/smart-plugs/:id/control', ({ params }) => {
+          calls.push(Number(params.id));
+          return HttpResponse.json({ success: true, action: 'on' });
+        }),
+      );
+      render(<PrintersPage />);
+      await screen.findByText('P1S Backup');
+      const actions = screen.getAllByRole('button', { name: 'Actions' }).find(button => button.getAttribute('aria-haspopup') !== 'menu')!;
+      await userEvent.click(actions);
+      await userEvent.click(await within(screen.getByRole('group', { name: 'Actions' })).findByRole('button', { name: 'Power On' }));
+      expect(calls).toEqual([]);
+      const powerRow = await within(screen.getByRole('group', { name: 'Actions' })).findByText('X1 Carbon');
+      await userEvent.click(within(powerRow.closest('div.flex.items-center.justify-between')!).getByRole('button', { name: 'On' }));
+      expect(calls).toEqual([90]);
+      expect(actions).toHaveAttribute('aria-expanded', 'false');
+      await userEvent.click(actions);
+      expect(screen.getByRole('button', { name: 'Power On' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('GH54 returns focus to the live Actions opener after Add Printer closes', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const actions = screen.getAllByRole('button', { name: 'Actions' }).find(button => button.getAttribute('aria-haspopup') !== 'menu')!;
+      await userEvent.click(actions);
+      await userEvent.click(within(screen.getByRole('group', { name: 'Actions' })).getByRole('button', { name: 'Add Printer' }));
+      expect(actions).toHaveAttribute('aria-expanded', 'false');
+      const dialog = await screen.findByRole('dialog', { name: 'Add Printer' });
+      expect(dialog).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog', { name: 'Add Printer' })).not.toBeInTheDocument();
+      expect(actions).toHaveFocus();
+    });
+  });
+
   describe('tags', () => {
     // jsdom measures every element as zero-wide, so the page's responsive
     // toolbar concludes its inline controls have overflowed and folds them

@@ -148,7 +148,10 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
  * BEFORE sending: a header click outside this set is ignored while grouped,
  * and toggling Group ON resets an incompatible sort (never fire the 400).
  */
-const GROUP_SORT_COLUMNS = new Set(['display_name', 'material', 'brand', 'color_name']);
+const GROUP_SORT_COLUMNS = new Set([
+  'display_name', 'material', 'brand', 'color_name',
+  'id', 'lot', 'purchase_date', 'location', 'label_weight', 'net', 'remaining',
+]);
 const CONDITION_SORT_COLUMNS = new Set(['temperature', 'humidity', 'battery']);
 
 /**
@@ -1899,7 +1902,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   /**
    * Whether a column header sorts right now. Server-driven grouped mode
-   * accepts only the group-key subset (task 3 400s on anything else) — the
+   * accepts only GROUP_SORT_COLUMNS (400s on anything else) — the
    * header must not offer what a click cannot deliver. Spoolman mode keeps
    * sorting everything client-side.
    */
@@ -1928,9 +1931,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     resetPage();
   };
 
-  // Sort filtered spools
-  const sortedSpools = useMemo(() => {
-    if (!sortState) return filteredSpools;
+  // Shared by the flat client list, group headers and expanded group members.
+  const compareSpools = useCallback((a: InventorySpool, b: InventorySpool): number => {
+    if (!sortState) return 0;
     // display_name sorts via the synthesised name (user-configurable template)
     // rather than any raw column — locale-aware so "Ясен" sorts cyrillically
     // and digits within a name (e.g. "100% PLA") compare numerically where
@@ -1938,23 +1941,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (sortState.column === 'display_name') {
       const nameFor = (s: InventorySpool) =>
         formatSpoolDisplayName(s, spoolDisplayTemplate).toLowerCase();
-      const sorted = [...filteredSpools].sort((a, b) => {
-        const cmp = nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true });
-        return sortState.direction === 'asc' ? cmp : -cmp;
-      });
-      return sorted;
+      const cmp = nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true });
+      return (sortState.direction === 'asc' ? cmp : -cmp) || b.id - a.id;
     }
     const extractor = columnSortValues[sortState.column];
-    if (!extractor) return filteredSpools;
-    const sorted = [...filteredSpools].sort((a, b) => {
-      const va = extractor(a, assignmentMap);
-      const vb = extractor(b, assignmentMap);
-      if (va < vb) return sortState.direction === 'asc' ? -1 : 1;
-      if (va > vb) return sortState.direction === 'asc' ? 1 : -1;
-      return 0;
-    });
-    return sorted;
-  }, [filteredSpools, sortState, assignmentMap, spoolDisplayTemplate]);
+    if (!extractor) return 0;
+    const va = extractor(a, assignmentMap);
+    const vb = extractor(b, assignmentMap);
+    if (va < vb) return sortState.direction === 'asc' ? -1 : 1;
+    if (va > vb) return sortState.direction === 'asc' ? 1 : -1;
+    return b.id - a.id;
+  }, [sortState, assignmentMap, spoolDisplayTemplate]);
+  const sortedSpools = useMemo(() => [...filteredSpools].sort(compareSpools), [filteredSpools, compareSpools]);
 
   // Group similar spools when toggle is active — Spoolman's CLIENT-side
   // grouping; the local mode receives ready-made group rows from the server
@@ -1983,7 +1981,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     const items: DisplayItem[] = [];
     const processedKeys = new Set<string>();
 
-    // Walk sortedSpools order so groups appear at the position of their first member
+    // Build groups from the sorted members; supported header sorts apply below.
     for (const spool of sortedSpools) {
       if (assignmentMap[spool.id]) {
         items.push({ type: 'single', spool });
@@ -2000,13 +1998,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           type: 'group',
           key,
           ids: members.map((m) => m.id),
-          representative: members[0],
+          representative: members.reduce((first, spool) => spool.id < first.id ? spool : first),
           spools: members,
         });
       }
     }
+    if (sortState && GROUP_SORT_COLUMNS.has(mapServerSortColumn(sortState.column))) {
+      const headers = new Map<DisplayItem, InventorySpool>(items.map((item) => {
+        if (item.type === 'single') return [item, item.spool] as const;
+        const header = aggregateGroupSpool(item.spools!);
+        const remaining = item.spools!.reduce((sum, s) => sum + Math.max(0, s.label_weight - s.weight_used), 0);
+        return [item, { ...header, weight_used: header.label_weight - remaining }] as const;
+      }));
+      items.sort((a, b) => compareSpools(headers.get(a)!, headers.get(b)!));
+    }
     return items;
-  }, [spoolmanMode, sortedSpools, groupSimilar, assignmentMap]);
+  }, [spoolmanMode, sortedSpools, groupSimilar, assignmentMap, sortState, compareSpools]);
 
   // Server rows → DisplayItems. A `group_count === 1` row renders as a
   // single — exactly how the old client rendered singleton groups, which is
@@ -2106,7 +2113,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const toggleGroupSimilar = () => {
     const next = !groupSimilar;
-    // Grouped server mode accepts only the group-key sorts (task 3 400s on
+    // Grouped server mode accepts only GROUP_SORT_COLUMNS (400s on
     // the rest) — turning Group ON with an incompatible sort active RESETS
     // it to the default order rather than letting the page fire a 400. The
     // header indicator follows, so the UI never claims a sort that is not
@@ -3077,6 +3084,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           dateFormat={dateFormat}
                           t={t}
                           spoolDisplayTemplate={spoolDisplayTemplate}
+                          compareSpools={compareSpools}
                         />
                       );
                     }
@@ -3606,16 +3614,15 @@ function SpoolTableRow({
 /**
  * Table-view group row wrapper — owns the lazy member fetch and the header
  * aggregate. Inline members (Spoolman) aggregate exactly (#1368); server
- * groups synthesize count × representative: the identity fields are the
- * group key (shared by construction), weight_used is 0 on every member (the
- * eligibility rule keeps used/assigned spools singletons), and core_weight
- * approximates by the representative's (not part of the key — divergence
+ * groups synthesize label weight as count × representative and take used
+ * weight and remaining from server totals. Only assigned spools stay single.
+ * Core weight approximates by the representative's (not part of the key — divergence
  * inside a purchase bundle is rare and only cosmetic in the header sums).
  */
 function SpoolTableGroupContainer({
   item, isExpanded, onToggle, selectedIds, onToggleSelected, onToggleGroupSelected,
   onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
-  visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate,
+  visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate, compareSpools,
 }: {
   item: Extract<DisplayItem, { type: 'group' }>;
   isExpanded: boolean;
@@ -3636,8 +3643,10 @@ function SpoolTableGroupContainer({
   dateFormat: DateFormat;
   t: TFn;
   spoolDisplayTemplate: string;
+  compareSpools: (a: InventorySpool, b: InventorySpool) => number;
 }) {
   const members = useGroupMembers(item.ids, item.spools, isExpanded);
+  const sortedMembers = useMemo(() => members ? [...members].sort(compareSpools) : undefined, [members, compareSpools]);
   // label_weight is a key field, so count × representative is exact; the used
   // weight is the server's sum (members may be started), and core_weight is
   // the one approximation left (not a key field — divergence within a group
@@ -3650,12 +3659,14 @@ function SpoolTableGroupContainer({
         weight_used: item.weightUsedTotal ?? item.representative.weight_used * item.ids.length,
         core_weight: item.representative.core_weight * item.ids.length,
       };
-  const remaining = Math.max(0, headerSpool.label_weight - headerSpool.weight_used);
+  const remaining = item.spools
+    ? item.spools.reduce((sum, s) => sum + Math.max(0, s.label_weight - s.weight_used), 0)
+    : (item.remainingTotal ?? Math.max(0, headerSpool.label_weight - headerSpool.weight_used));
   const pct = headerSpool.label_weight > 0 ? (remaining / headerSpool.label_weight) * 100 : 0;
   return (
     <SpoolTableGroup
       memberIds={item.ids}
-      spools={members}
+      spools={sortedMembers}
       headerSpool={headerSpool}
       remaining={remaining}
       pct={pct}

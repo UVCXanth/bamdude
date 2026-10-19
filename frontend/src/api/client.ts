@@ -12,11 +12,37 @@
  */
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata, PlateObjectsResponse } from '../types/plates';
 import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
+import type { PrintOptions as PrintDialogOptions } from '../components/PrintModal/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
+export type PrintStateAction = 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item';
+export interface PrintStateIssue {
+  printer_id: number; printer_name: string; queue_id: number; kind: 'item' | 'header' | 'archive'; target_id: number;
+  item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
+  blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';
+  observed_at: number | null; started_at: string | null; completed_at: string | null;
+}
+export interface PrintStateIssuePage {
+  issues: PrintStateIssue[]; next_cursor: string | null; truncated: boolean; checked_at: string;
+}
+export interface PrintStatePreviewInput {
+  kind: 'item' | 'header'; target_id: number; action: PrintStateAction; confirmed_completed: boolean; note: string;
+}
+export interface PrintStatePreview {
+  estimate?: { started_at: string; duration_seconds: number; completed_at: string } | null;
+  preview_token: string; action: PrintStateAction; archive_preserved: boolean; expires_in: number;
+  before: Record<'queue' | 'item' | 'archive', Record<string, unknown>>;
+  after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & { delete_item: boolean };
+}
+export interface PrintStateAudit {
+  id: string; action: PrintStateAction; printer_id: number; queue_id: number;
+  item_id: number | null; archive_id: number | null; note?: string; actor_label?: string; created_at?: string;
+}
+
 export class ApiError extends Error {
+  printerId?: number;
   status: number;
   retryAfterMs?: number;
   /**
@@ -39,6 +65,11 @@ export class ApiError extends Error {
    * means (WS-13 E11 A01).
    */
   refs?: { group?: number | string; option?: number | string; customer?: number };
+  /**
+   * The jobs a refusal is about, each with its own reason code (swap declaration refresh: `job_not_refreshable`,
+   * `jobs_changed`). A dialog marks those rows; the sentence stays prose.
+   */
+  jobs?: { kind: string; id: number; reason?: string }[];
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -224,6 +255,11 @@ export function withMediaToken(url: string): string {
   if (!mediaToken || !url.startsWith(`${API_BASE}/`)) return url;
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}token=${encodeURIComponent(mediaToken)}`;
+}
+
+/** `?v=…&size=…` for a part picture: the version first, so the token lands after both. */
+function partImageQuery(v: string | null, size: PartImageSize): string {
+  return v ? `?v=${encodeURIComponent(v)}&size=${size}` : `?size=${size}`;
 }
 
 /**
@@ -552,9 +588,28 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
     ? seconds * 1000
     : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
   const refusal = new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  if (code === 'active_claim' && Number.isInteger(error.detail?.printer_id) && error.detail.printer_id > 0) {
+    refusal.printerId = error.detail.printer_id;
+  }
   const refs = refusalRefs(error.detail);
   if (refs) refusal.refs = refs;
+  const jobs = refusalJobs(error.detail);
+  if (jobs) refusal.jobs = jobs;
   throw refusal;
+}
+
+/** The `jobs` list a refusal names -- only well-formed entries, never guessed. */
+function refusalJobs(detail: unknown): ApiError['jobs'] {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const raw = (detail as Record<string, unknown>).jobs;
+  if (!Array.isArray(raw)) return undefined;
+  const jobs = raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { kind, id, reason } = entry as Record<string, unknown>;
+    if (typeof kind !== 'string' || typeof id !== 'number') return [];
+    return [{ kind, id, ...(typeof reason === 'string' ? { reason } : {}) }];
+  });
+  return jobs.length ? jobs : undefined;
 }
 
 /** The `group` / `option` (an id or a temp id) and the `customer` (an id) a refusal names;
@@ -766,7 +821,8 @@ export interface Printer {
   // Chamber light for the camera: defer to the farm setting, or decide here
   camera_light_auto: CameraLightPolicy;
   plate_detection_enabled: boolean;  // Check plate before print
-  plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
+  plate_detection_roi?: PlateDetectionROI;
+  plate_detection_polygon?: PlatePoint[] | null;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // Automatic plate swapper (models with a swap profile)
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
@@ -807,7 +863,24 @@ export interface BackupCompatibilityPolicy {
 
 export interface AmsPolicies {
   backup_compatibility: BackupCompatibilityPolicy;
+  auto_stock_spool?: AutoStockSpoolPolicy;
 }
+
+export interface StockSpoolGroup {
+  material: string;
+  rgba: string;
+  brand: string;
+  subtype: string;
+  filament_family_id: string;
+  label_weight: number;
+}
+
+export interface AutoStockSpoolPolicy {
+  enabled: boolean;
+  group: StockSpoolGroup | null;
+}
+
+export const DEFAULT_AUTO_STOCK_SPOOL: AutoStockSpoolPolicy = { enabled: false, group: null };
 
 export const DEFAULT_BACKUP_COMPATIBILITY: BackupCompatibilityPolicy = {
   normalize_color: false,
@@ -1321,14 +1394,17 @@ export interface PrinterCreate {
   camera_light_auto?: CameraLightPolicy;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+  plate_detection_polygon?: PlatePoint[] | null;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
   require_plate_clear?: boolean;
-  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy };
+  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy; auto_stock_spool?: AutoStockSpoolPolicy };
 }
 
 // Plate Detection
+export interface PlatePoint { x: number; y: number; }
+
 export interface PlateDetectionROI {
   x: number;  // X start % (0.0-1.0)
   y: number;  // Y start % (0.0-1.0)
@@ -1337,6 +1413,7 @@ export interface PlateDetectionROI {
 }
 
 export interface PlateDetectionResult {
+  status?: 'clear' | 'occupied' | 'unavailable';
   is_empty: boolean;
   confidence: number;
   difference_percent: number;
@@ -1348,6 +1425,8 @@ export interface PlateDetectionResult {
   reference_count?: number;
   max_references?: number;
   roi?: PlateDetectionROI;
+  polygon?: PlatePoint[] | null;
+  source_image_url?: string;
 }
 
 export interface PlateDetectionStatus {
@@ -1421,7 +1500,93 @@ export interface WaitingPrint {
   repeat_order_open?: boolean | null;
 }
 
+/** A source a swap declaration is made for. */
+export type SwapSourceKind = 'archive' | 'library';
+
+/** A declaration as the wire carries it: never the local user id. */
+export interface SwapDeclarationSummary {
+  version: number;
+  value: boolean;
+  sha256: string;
+  origin: string;
+  declaration_id?: string;
+  declared_at?: string;
+  actor_label?: string;
+  actor_kind?: string;
+}
+
+/** What inspect read: the bytes a reprint would print, their current fact and the revision to declare against. */
+export interface SwapDeclarationInspect {
+  kind: SwapSourceKind;
+  id: number;
+  sha256: string;
+  size_bytes: number;
+  display_filename: string;
+  current: boolean | null;
+  known: boolean;
+  revision: string;
+  origin: string | null;
+  declaration_id: string | null;
+}
+
+export interface SwapDeclarationResult {
+  kind: SwapSourceKind;
+  id: number;
+  declaration_id: string;
+  value: boolean;
+  sha256: string;
+  revision: string;
+  replayed: boolean;
+}
+
+export interface SwapDeclarationHistoryEntry {
+  declaration_id: string;
+  action: string;
+  old_value: boolean | null;
+  new_value: boolean | null;
+  sha256: string | null;
+  actor_label: string;
+  actor_kind: string;
+  created_at: string | null;
+}
+
+export type SwapRefreshJobKind = 'queue' | 'auto_queue';
+
+export interface SwapRefreshCandidate {
+  kind: SwapRefreshJobKind;
+  id: number;
+  revision: string;
+  status: string;
+  eligible: boolean;
+  /** Why this job cannot take the declaration -- a code of the closed list, labelled by the dialog. */
+  reason: string | null;
+}
+
+export interface SwapRefreshListing {
+  kind: SwapSourceKind;
+  id: number;
+  declaration_id: string;
+  value: boolean;
+  sha256: string;
+  source_revision: string;
+  jobs: SwapRefreshCandidate[];
+  counts: { eligible: number; refused: number };
+}
+
+export interface SwapRefreshResult {
+  operation_id: string;
+  declaration_id: string;
+  value: boolean;
+  refreshed: { kind: SwapRefreshJobKind; id: number }[];
+  replayed: boolean;
+}
+
+function swapSourcePath(kind: SwapSourceKind, id: number): string {
+  return kind === 'archive' ? `/archives/${id}` : `/library/files/${id}`;
+}
+
 export interface Archive {
+  end_time_source?: 'slicer_estimate' | null;
   id: number;
   printer_id: number | null;
   project_id: number | null;
@@ -1501,6 +1666,15 @@ export interface Archive {
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
+  /**
+   * The SOURCE pair a future reprint reads -- an operator's declaration first -- apart from the executed run's
+   * pair above. Decode it with `decodeSourceSwapFact`; never mix the two.
+   */
+  source_swap_compatible?: boolean;
+  source_swap_compatibility_known?: boolean;
+  source_swap_declaration?: SwapDeclarationSummary | null;
   // Queue attribution (m019). Queue-driven archives carry the originating
   // queue_id + batch_id; external / direct-dispatch archives get queue_id
   // (the printer's default queue) but no batch_id.
@@ -1833,6 +2007,9 @@ export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
  * what was printed beyond the need — all server-computed, never derived here.
  */
 export interface PartFigures {
+  extra_qty?: number;
+  extra_percent?: number;
+  extra_received_qty?: number;
   part_id: number;
   name: string;
   qty_per_unit: number;
@@ -1848,6 +2025,12 @@ export interface PartFigures {
   queued: number;
   /** The part of `surplus` still to move — the number «bank surplus» moves (WS-13 E6 H01). */
   bankable: number;
+  /** Individual parts still allocated to this order, distinct from free stock. */
+  allocated_qty?: number;
+  /** Allocated loose parts already used in mixed receipts. */
+  stock_used_qty?: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
@@ -1858,6 +2041,8 @@ export interface LinePurchasedPart {
   per: number;
   need: number;
   variant: boolean;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** `product` — kits of the product; `parts` — a set of its parts, quantity 1 for
@@ -1902,6 +2087,8 @@ export interface DroppedPart {
   /** Already printed under this line / waiting in a queue for it. */
   printed: number;
   queued: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** What a configuration change would do — the server's dry run (rule 14). */
@@ -1985,6 +2172,7 @@ export interface ProjectLineCreate {
 }
 
 export interface ProjectLineUpdate {
+  plate_fit?: PlateFitConfirmation;
   quantity?: number;
   material?: string | null;
   color?: string | null;
@@ -1998,6 +2186,28 @@ export interface ProjectLineUpdate {
   /** Ready units — absent leaves them alone, a number rewrites them; only an
    *  ACTIVE order takes them (409 otherwise). */
   from_finished?: number | null;
+}
+
+export interface PlateFitConfirmation {
+  basis: string; plate_ids: number[]; runs: { plate_id: number; count: number }[];
+  acknowledge_large_change: boolean;
+  replace_pending?: boolean; acknowledge_queue_change?: boolean;
+}
+export interface PlateFitOption {
+  quantity: number;
+  from_finished?: number; from_kits?: number; stock_parts?: Record<string, number>;
+  runs: { plate_id: number; count: number }[];
+  parts: { part_id: number; name: string; required: number; allocated: number; completed: number; printing: number; queued: number; new_printed: number; other_coverage?: number; free_stock?: number }[];
+  print_time_seconds: number | null; filament_used_grams: number | null;
+}
+export interface PlateFitResponse {
+  line_id: number; current_quantity: number; around: number; basis: string; plate_ids: number[];
+  plates: { plate_id: number; library_file_id: number; plate_index: number; filename: string | null; hidden: boolean;
+    printer_model: string | null; print_time_seconds: number | null; filament_used_grams: number | null }[];
+  options: PlateFitOption[];
+  lower: 'found' | 'none' | 'limited'; upper: 'found' | 'none' | 'limited'; current: 'found' | 'none' | 'limited';
+  quantity_limit: number;
+  removable_auto_ids: number[];
 }
 
 /** A purchased part rolled up across every line of the order. */
@@ -2080,7 +2290,14 @@ export interface OrderContact {
   email: string | null;
 }
 
+export interface AutoEjectSettings {
+  difference_threshold: number;
+  skip_check: boolean;
+}
+
 export interface Order {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_enabled?: boolean;
   id: number;
   code: string;
   name: string;
@@ -2173,6 +2390,9 @@ export interface LineProduct {
 }
 
 export interface OrderCreate {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_skip_acknowledged?: boolean;
+  auto_eject_enabled?: boolean;
   name: string;
   customer_id?: number | null;
   contact_id?: number | null;
@@ -2189,6 +2409,9 @@ export interface OrderCreate {
 }
 
 export interface OrderUpdate {
+  auto_eject_settings?: AutoEjectSettings;
+  auto_eject_skip_acknowledged?: boolean;
+  auto_eject_enabled?: boolean;
   name?: string;
   description?: string | null;
   color?: string | null;
@@ -2302,6 +2525,8 @@ export interface OrderViewFilters {
 }
 /** An order's archive printing now — what the «Printing» tile counts (spec workshop-order-queue). */
 export interface OrderQueuePrinting {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   archive_id: number;
   printer_id: number | null;
   printer_name: string | null;
@@ -2378,6 +2603,8 @@ export interface PlanPartCount {
   part_id: number;
   name: string;
   count: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /**
@@ -2480,6 +2707,21 @@ export interface PlanTotals {
   cost: number | null;
   /** WS-13 E1 OR9 — Σ the lines' rows: the «Print plan» tab's badge. */
   rows: number;
+}
+
+export interface OrderPrintOptionsResponse {
+  overrides: Record<string, PrintDialogOptions>;
+  models: Array<{
+    model: string;
+    capabilities: {
+      known: boolean;
+      supported: Partial<Record<keyof PrintDialogOptions, boolean>>;
+      auto: { bed_levelling: boolean; flow_cali: boolean; nozzle_offset_cali: boolean };
+    };
+    inherited: PrintDialogOptions;
+    options: PrintDialogOptions;
+    custom: boolean;
+  }>;
 }
 
 export interface OrderPlan {
@@ -2729,7 +2971,57 @@ export interface ProductRef {
   is_active: boolean;
 }
 
+/** A part's effective picture (spec part-thumbnails §10.2). `v` is its identity; the URL carries it. */
+export interface PartImageRef {
+  kind: 'photo' | 'render';
+  status: 'ready' | 'pending';
+  v: string | null;
+}
+
+/** One plate object's picture — the editor's gallery and the unassigned chips (spec §11.3). */
+export interface InstanceImageRef {
+  library_file_id: number;
+  plate_index: number;
+  identify_id: number;
+  status: 'ready' | 'pending' | 'missing' | 'skipped';
+  v: string | null;
+}
+
+export interface PartImageInstanceKey {
+  library_file_id: number;
+  plate_index: number;
+  identify_id: number;
+}
+
+export type PartImagePinReason = 'file_unlinked' | 'file_trashed' | 'object_gone' | 'not_this_part' | 'not_rendered';
+
+/** What the operator chose and whether it still holds (spec §10.4) — on the editor's answers only. */
+export interface PartImageChoice {
+  source: 'auto' | 'instance' | 'photo';
+  instance: PartImageInstanceKey | null;
+  pin: { valid: boolean; reason: PartImagePinReason | null } | null;
+  photo: { present: boolean } | null;
+}
+
+/** An instance of the part on a linked plate (spec §11.2); `filename` is null for a file you may not see. */
+export interface PartImageCandidate {
+  library_file_id: number;
+  filename: string | null;
+  hidden: boolean;
+  plate_index: number;
+  identify_id: number;
+  method: string | null;
+  reason: string | null;
+  plate_status: 'none' | 'pending' | 'ready' | 'failed' | 'unavailable';
+  v: string | null;
+  pinned: boolean;
+}
+
+export type PartImageSize = 'sm' | 'lg';
+
 export interface ProductPart {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   id: number;
   kind: ProductPartKind;
   name: string;
@@ -2766,6 +3058,10 @@ export interface ProductPart {
   /** The option this part belongs to, or `null` for a part in every
    *  configuration (spec workshop-product-variants, rule 3). */
   variant_option_id: number | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
+  /** The editor's state (spec part-thumbnails §10.4) — on the product page and the part's doors only. */
+  image_choice?: PartImageChoice | null;
 }
 
 /** One option of a variant group, with what would refuse its delete. */
@@ -2843,6 +3139,8 @@ export interface KitsConfiguration {
 }
 
 export interface ProductPartCreate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   kind: ProductPartKind;
   name: string;
   qty_per_unit?: number;
@@ -2858,6 +3156,8 @@ export interface ProductPartCreate {
 }
 
 export interface ProductPartUpdate {
+  /** Additional printed parts, rounded up once over an order line. */
+  extra_percent?: number;
   name?: string;
   qty_per_unit?: number;
   unit_price?: number | null;
@@ -2875,12 +3175,18 @@ export interface PlateYieldEntry {
   part_id: number;
   name: string;
   count: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** An object on the plate that matches no part yet — the prompt to add one. */
 export interface PlateUnassignedEntry {
   name_key: string;
   count: number;
+  /** The first object of the name on this plate (part thumbnails E4, D2); null when the file has no ids. */
+  identify_id?: number | null;
+  /** That object's picture; always sent, optional until a surface reads it. */
+  image?: InstanceImageRef | null;
 }
 
 export interface PlateRecipe {
@@ -3148,6 +3454,7 @@ export const STOCK_REASONS = [
   'surplus_banked',
   'unfiled_print',
   'reserved_for_order',
+  'reserved_parts_for_order',
   'reservation_released',
   'manual',
   'assembled',
@@ -3221,6 +3528,8 @@ export interface StockBalance {
   /** WS-13 E1 ST4 — the option the part is bound to; null when it is none (or the
    *  row came from the flat stock answer, which does not read options). */
   variant?: { group: string; option: string } | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** WS-13 E1 ST4 / Q12 — the kits the free shelf makes with ONE option of one group,
@@ -3260,6 +3569,8 @@ export interface StockMovement {
   note: string | null;
   created_by: number | null;
   created_at: string;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /**
@@ -3445,6 +3756,7 @@ export interface FulfilmentRecipient {
 
 /** One part of a parts line in the issue dialog. */
 export interface FulfilmentPartState {
+  stock_qty?: number;
   part_id: number;
   name: string;
   wanted: number;
@@ -3454,6 +3766,8 @@ export interface FulfilmentPartState {
   issued: number;
   /** Written off under the order (spec workshop-order-issue-followups, rule 44). */
   written_off: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** What a line can assemble, receive and issue now — `order_fulfilment.state`, the
@@ -3543,17 +3857,18 @@ export interface StockOffer {
   product_name: string;
   from_finished: number;
   kits: number;
+  parts?: Record<number, number>;
 }
 
 /** `POST /projects/{id}/take-stock` — what the banner SHOWED per line; omitted, the
  *  current offers. The answer says what each line asked and got. */
 export interface TakeStockBody {
-  lines?: { line_id: number; from_finished: number; kits: number }[];
+  lines?: { line_id: number; from_finished: number; kits: number; parts?: Record<number, number> }[];
 }
 
 export interface TakeStockResult {
   order: Order;
-  results: LineIntake[];
+  results: (LineIntake & { asked_parts?: Record<number, number>; got_parts?: Record<number, number> })[];
 }
 
 /** One line of «what was issued» in a list row. */
@@ -3680,6 +3995,8 @@ export interface ProductPartRow extends PartSourcesSummary {
   product: { id: number; code: string; name: string; sku: string | null };
   /** WS-13 E1 K3 — the models THIS part's sliced sources are sliced for. */
   models: string[];
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface ProductPartsPage {
@@ -3781,6 +4098,8 @@ export interface StockItemPart {
   name: string;
   per: number;
   on_shelf: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface StockItemDetail extends StockItem {
@@ -3860,6 +4179,10 @@ export interface StockJournalRow {
   /** The dispatch note of an issue movement. */
   issue?: { id: number; code: string } | null;
   user: { id: number; username: string } | null;
+  /** A parts-book row's part (part thumbnails E4, D1). */
+  part_id?: number | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface StockJournalPage {
@@ -4409,6 +4732,10 @@ export interface AppSettings {
   // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
   forecast_upload_seconds: number;
   forecast_plate_clear_minutes: number;
+  forecast_operator_absence_enabled: boolean;
+  forecast_operator_absence_start: string;
+  forecast_operator_absence_end: string;
+  forecast_operator_timezone: string;
   // Staggered start by group (electrical phases). The id lists are JSON arrays
   // kept as strings on the wire, like every structured setting here.
   stagger_split_by_tags: boolean;
@@ -6007,6 +6334,8 @@ export type QueueSourceStorage = 'ready' | 'preparing' | 'legacy' | 'broken' | '
 
 // Print Queue types
 export interface PrintQueueItem {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   filament_routing?: FilamentRoutingSnapshot | null;
   id: number;
   queue_id: number;
@@ -6272,6 +6601,8 @@ export interface QueueCopySourceProfile {
   filename: string;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   plates: PlateMetadata[];
   is_multi_plate: boolean;
 }
@@ -6448,6 +6779,8 @@ export interface AutoQueueFilamentOverride {
 }
 
 export interface AutoQueueItem {
+  auto_eject?: boolean;
+  auto_eject_settings?: AutoEjectSettings;
   feed_policy?: FeedPolicy;
   id: number;
   archive_id: number | null;
@@ -7991,6 +8324,8 @@ export interface UpdateStatus {
   progress: number;
   message: string;
   error: string | null;
+  /** The STEP component's own result of a completed update: `ok`, `skipped` (not enabled) or a closed reason. */
+  step_preview?: string;
 }
 
 // Maintenance types
@@ -9899,8 +10234,20 @@ export const api = {
     request<{ removed: number }>(`/printers/${printerId}/mqtt-recording`, {
       method: 'DELETE',
     }),
-  mqttRecordingDownloadUrl: (printerId: number) =>
-    `/api/v1/printers/${printerId}/mqtt-recording/download`,
+  downloadMQTTRecording: async (printerId: number) => {
+    const blob = await fetchAuthorizedBlob(`${API_BASE}/printers/${printerId}/mqtt-recording/download`);
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mqtt-printer-${printerId}.log`;
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    }
+  },
 
   // Printer File Manager
   // ``storage`` is optional everywhere: omitted, the backend answers with the
@@ -10106,6 +10453,37 @@ export const api = {
     return request<ArchiveAggregate>(`/statistics/aggregate${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
+  // A source's swap declaration (swap-source-declaration spec r3 §4-§7): inspect copies the bytes, declare names
+  // the very bytes inspected, and the refresh applies it to jobs the operator selected.
+  inspectSwapDeclaration: (kind: SwapSourceKind, id: number) =>
+    request<SwapDeclarationInspect>(`${swapSourcePath(kind, id)}/swap-declaration/inspect`, { method: 'POST' }),
+  declareSwapSource: (
+    kind: SwapSourceKind,
+    id: number,
+    body: { value: boolean; expected_sha256: string; expected_revision: string; operation_id: string },
+  ) =>
+    request<SwapDeclarationResult>(`${swapSourcePath(kind, id)}/swap-declaration`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getSwapDeclarationHistory: (kind: SwapSourceKind, id: number) =>
+    request<SwapDeclarationHistoryEntry[]>(`${swapSourcePath(kind, id)}/swap-declaration/history`),
+  getSwapDeclarationJobs: (kind: SwapSourceKind, id: number) =>
+    request<SwapRefreshListing>(`${swapSourcePath(kind, id)}/swap-declaration/jobs`),
+  refreshSwapDeclarationJobs: (
+    kind: SwapSourceKind,
+    id: number,
+    body: {
+      declaration_id: string;
+      source_revision: string;
+      operation_id: string;
+      jobs: { kind: SwapRefreshJobKind; id: number; revision: string }[];
+    },
+  ) =>
+    request<SwapRefreshResult>(`${swapSourcePath(kind, id)}/swap-declaration/jobs/refresh`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   /**
    * Count one old order-less print into its product's free stock (pass 8).
    *
@@ -10748,10 +11126,16 @@ export const api = {
       headers,
       body: formData,
     });
-    return response.json() as Promise<{
-      success: boolean;
-      message: string;
-    }>;
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // A refusal is {detail: {error, message}} or {detail: "sentence"} — never the success shape.
+      const detail = (body as { detail?: unknown }).detail;
+      const structured = detail && typeof detail === 'object' ? (detail as { error?: unknown; message?: unknown }) : null;
+      const message = structured && typeof structured.message === 'string' ? structured.message : typeof detail === 'string' ? detail : '';
+      const code = structured && typeof structured.error === 'string' ? structured.error : undefined;
+      return { success: false, message, ...(code ? { code } : {}) } as { success: boolean; message: string; code?: string };
+    }
+    return body as { success: boolean; message: string; code?: string };
   },
   optimizeDatabase: () =>
     request<{ success: boolean; message: string; db_size: number; wal_size: number }>('/settings/optimize-db', { method: 'POST' }),
@@ -11879,6 +12263,8 @@ export const api = {
   // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
+  getAutoStockSpoolGroups: () =>
+    request<(StockSpoolGroup & { available_count: number })[]>('/inventory/spools/auto-stock-groups'),
   // Server-driven variants (task 4) — the ONLY callers allowed to set `page`.
   getSpoolsPaged: (params: SpoolListParams = {}) =>
     request<SpoolListPage>(`/inventory/spools?${spoolListSearchParams(params)}`),
@@ -12656,6 +13042,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  getPlateFit: (orderId: number, lineId: number, data: { around: number; plate_ids?: number[]; steps: number; replace_pending?: boolean }) =>
+    request<PlateFitResponse>(`/projects/${orderId}/lines/${lineId}/plate-fit`, { method: 'POST', body: JSON.stringify(data) }),
   deleteOrderLine: (orderId: number, lineId: number) =>
     request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),
   updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number) =>
@@ -12685,6 +13073,9 @@ export const api = {
   bankOrderSurplus: (orderId: number) =>
     request<BankSurplusResponse>(`/projects/${orderId}/bank-surplus`, { method: 'POST' }),
 
+  getOrderPrintOptions: (id: number) => request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`),
+  setOrderPrintOptions: (id: number, overrides: OrderPrintOptionsResponse['overrides']) =>
+    request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
   enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
     request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
@@ -13011,6 +13402,40 @@ export const api = {
       'PUT',
     );
   },
+  /** A part's picture (spec part-thumbnails §11.1). `v` and `size` go INTO the address, before the
+   *  token `withMediaToken` stamps: with the current `v` the server lets the browser keep it. */
+  partImageUrl: (partId: number, v: string | null, size: PartImageSize = 'sm') =>
+    withMediaToken(`${API_BASE}/product-parts/${partId}/image${partImageQuery(v, size)}`),
+  /** One object of a plate the product links — the editor's gallery, the unassigned chips. */
+  partInstanceImageUrl: (
+    productId: number,
+    libraryFileId: number,
+    plateIndex: number,
+    identifyId: number,
+    v: string | null,
+    size: PartImageSize = 'sm',
+  ) =>
+    withMediaToken(
+      `${API_BASE}/products/${productId}/files/${libraryFileId}/plates/${plateIndex}/objects/${identifyId}/image${partImageQuery(v, size)}`,
+    ),
+  getPartImageCandidates: (partId: number) =>
+    request<PartImageCandidate[]>(`/product-parts/${partId}/image-candidates`),
+  setPartImage: (
+    partId: number,
+    body: { source: 'auto' } | { source: 'instance'; instance: PartImageInstanceKey },
+  ) => request<ProductPart>(`/product-parts/${partId}/image`, { method: 'PUT', body: JSON.stringify(body) }),
+  uploadPartPhoto: (partId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<ProductPart>(`/product-parts/${partId}/image/photo`, formData);
+  },
+  deletePartPhoto: (partId: number) =>
+    request<ProductPart>(`/product-parts/${partId}/image/photo`, { method: 'DELETE' }),
+  rerenderPartImages: (productId: number, full = false) =>
+    request<{ queued: number }>(`/products/${productId}/part-images/rerender`, {
+      method: 'POST',
+      body: JSON.stringify({ full }),
+    }),
   /** `version` — the product page's cache-buster (the owner's F6, WS-13 E9): a cover set
    *  there shows at once. It goes INTO the address, before the token `withMediaToken`
    *  stamps; every other renderer passes none and keeps the bare, revalidated address. */
@@ -13187,6 +13612,20 @@ export const api = {
   // System Info
   getDatabaseHealth: () => request<DbHealth>('/system/database'),
   getSystemInfo: () => request<SystemInfo>('/system/info'),
+  getPrintStateIssues: (params: { printer_id?: number; cursor?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.printer_id) query.set('printer_id', String(params.printer_id));
+    if (params.cursor) query.set('cursor', params.cursor);
+    return request<PrintStateIssuePage>(`/system/print-state-issues?${query}`);
+  },
+  previewPrintState: (printerId: number, input: PrintStatePreviewInput) => request<PrintStatePreview>(
+    `/system/printers/${printerId}/print-state/preview`, { method: 'POST', body: JSON.stringify(input) }),
+  applyPrintState: (printerId: number, previewToken: string) => request<PrintStateAudit>(
+    `/system/printers/${printerId}/print-state/apply`, {
+      method: 'POST', body: JSON.stringify({ preview_token: previewToken, confirmed: true }),
+    }),
+  getPrintStateHistory: (printerId: number, before?: string) => request<{ actions: PrintStateAudit[]; next_cursor: string | null }>(
+    `/system/printers/${printerId}/print-state/history${before ? `?before=${encodeURIComponent(before)}` : ''}`),
   getSystemHealth: () => request<SystemHealthResult>('/system/health'),
   getStorageUsage: (options?: { refresh?: boolean }) => {
     const params = new URLSearchParams();
@@ -13523,6 +13962,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(options),
     }),
+  // STEP thumbnails are made in the background: a request gives receipts, never a picture. Exactly one mode —
+  // file ids, or a folder / all-missing selection read as a keyset page (`after_id` → `next_after_id`).
+  createThumbnailJobs: (body: {
+    file_ids?: number[];
+    folder_id?: number;
+    all_missing?: boolean;
+    after_id?: number;
+    limit?: number;
+  }) =>
+    request<ThumbnailJobResponse>('/library/thumbnail-jobs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getThumbnailJobs: (epoch: string, ids: string[]) => {
+    const params = new URLSearchParams({ epoch });
+    for (const id of ids) params.append('ids', id);
+    return request<ThumbnailJobStatus>(`/library/thumbnail-jobs?${params.toString()}`);
+  },
+  cancelThumbnailJob: (receiptId: string, epoch: string) =>
+    request<ThumbnailJobItem>(
+      `/library/thumbnail-jobs/${encodeURIComponent(receiptId)}?${new URLSearchParams({ epoch }).toString()}`,
+      { method: 'DELETE' },
+    ),
   printLibraryFile: (
     fileId: number,
     printerId: number,
@@ -14109,10 +14571,30 @@ export interface CameraWorkerHealth {
   next_retry_at: string | null;
 }
 
+export interface PartRenderWorkerHealth {
+  state: 'ready' | 'degraded' | 'unavailable';
+  reason: string | null;
+  runtime: { version: string; pinned_at: string | null } | null;
+  bundle: { sha256: string } | null;
+  queue: { pending: number; failed: number } | null;
+  last: { outcome: string; elapsed_ms: number } | null;
+}
+
+export interface StepPreviewState {
+  /** The administrator's recorded choice: `enabled` / `disabled` / `none`. */
+  choice: string;
+  /** What the receipt says (`installed`, `missing`, `unsupported`, `unknown` or a closed reason) — never `works`. */
+  bundle: string;
+  /** `native` / `docker` / `windows_installer`: only a native install has the administrator's commands. */
+  install_kind: string;
+}
+
 export interface SystemInfo {
   preview?: PreviewHealth;
+  step_preview?: StepPreviewState;
   analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   library_file_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
+  part_render_worker?: PartRenderWorkerHealth;
   camera_worker?: CameraWorkerHealth;
   app: {
     version: string;
@@ -14444,6 +14926,8 @@ export interface LibraryFile {
   mqtt_recording_bytes?: number;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
   // ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
   // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
@@ -14501,6 +14985,8 @@ export interface LibraryFileListItem {
    *  unsliced 3MF is eligible; «sliced» is `isPrintable` (the `gcode` tag), not this. */
   plan_eligible: boolean;
   swap_compatible: boolean;
+  /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
+  swap_compatibility_known: boolean;
   // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.
@@ -14655,6 +15141,8 @@ export interface LibraryFileUploadResponse {
   // The name the upload carried, when it differs from the row that was used.
   superseded_name: string | null;
   metadata: Record<string, unknown> | null;
+  // A new STEP file's background picture (additive — older servers send nothing).
+  thumbnail_job?: ThumbnailJobTicket | null;
 }
 
 export interface LibraryStats {
@@ -14671,6 +15159,7 @@ export interface ZipExtractResult {
   filename: string;
   file_id: number;
   folder_id: number | null;
+  thumbnail_job?: ThumbnailJobTicket | null;
 }
 
 export interface ZipExtractError {
@@ -14695,6 +15184,39 @@ export interface BatchThumbnailResult {
   filename: string;
   success: boolean;
   error?: string | null;
+  // Closed reason, additive: an older server sends none (`use_thumbnail_jobs` for a STEP id, `too_small`, …).
+  error_code?: string | null;
+}
+
+// STEP thumbnail jobs — a receipt per file, or the closed reason none was queued. Never another actor's identity.
+export type ThumbnailJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+
+export interface ThumbnailJobItem {
+  file_id: number;
+  receipt_id: string | null;
+  state: ThumbnailJobState | null;
+  error_code: string | null;
+}
+
+export interface ThumbnailJobResponse {
+  jobs_epoch: string;
+  results: ThumbnailJobItem[];
+  next_after_id: number | null;
+}
+
+export interface ThumbnailJobStatus {
+  jobs_epoch: string;
+  receipts: ThumbnailJobItem[];
+  // Unknown and not-yours-to-read look the same on purpose.
+  missing: string[];
+}
+
+// A new STEP file's background picture, on its upload answer (additive).
+export interface ThumbnailJobTicket {
+  jobs_epoch: string | null;
+  receipt_id: string | null;
+  state: ThumbnailJobState | null;
+  error_code: string | null;
 }
 
 export interface BatchThumbnailResponse {

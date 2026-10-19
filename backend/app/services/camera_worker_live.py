@@ -7,6 +7,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from backend.app.services.camera_worker_protocol import CameraWorkerProtocolError
 
@@ -18,6 +19,19 @@ MAX_LIVE_FRAME_BYTES = 2 * 1024 * 1024
 # valid JPEG is always non-empty and is validated again at the media boundary.
 LIVE_STREAM_ENDED = b""
 logger = logging.getLogger(__name__)
+
+
+class LiveAdmissionRejected(RuntimeError):
+    """An expected refusal to acquire a live lease, without changing its owner."""
+
+    def __init__(self, reason: Literal["busy", "subscriber_limit", "producer_limit"]) -> None:
+        messages = {
+            "busy": "camera worker raw lease is active",
+            "subscriber_limit": "camera worker live subscriber limit reached",
+            "producer_limit": "camera worker live producer limit reached",
+        }
+        super().__init__(messages[reason])
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -150,16 +164,17 @@ class LiveProducerRegistry:
     ) -> tuple[LiveLease, asyncio.Queue[bytes]]:
         async with self._lock:
             if identity in self._raw_leases or identity in self._probe_leases:
-                raise RuntimeError("camera worker raw lease is active")
-            subscribers = self._subscribers.setdefault(identity, {})
+                raise LiveAdmissionRejected("busy")
+            subscribers = self._subscribers.get(identity, {})
             if len(subscribers) >= MAX_LIVE_SUBSCRIBERS:
-                raise RuntimeError("camera worker live subscriber limit reached")
+                raise LiveAdmissionRejected("subscriber_limit")
             if identity not in self._producers:
                 if len(self._producers) >= MAX_LIVE_SUBSCRIBERS:
-                    raise RuntimeError("camera worker live producer limit reached")
+                    raise LiveAdmissionRejected("producer_limit")
                 task = asyncio.create_task(start(), name=f"camera-worker-live-{uuid.uuid4().hex[:12]}")
                 self._producers[identity] = task
                 task.add_done_callback(lambda completed, key=identity: self._producer_finished(key, completed))
+            self._subscribers[identity] = subscribers
             lease = LiveLease(identity, str(uuid.uuid4()))
             queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
             subscribers[lease.lease_id] = queue

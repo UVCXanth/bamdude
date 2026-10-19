@@ -58,6 +58,12 @@ describe('the order journal · prints of the order (WS-13 E13 O08, ARC-07)', () 
 });
 
 describe('the order journal · stock and issue', () => {
+  it('names loose parts from the stored snapshot in both languages', () => {
+    const taken = event('stock_taken', { product: 'Product A', parts: { 1: 30 }, parts_taken: [['Part A', 30]] });
+    expect(journalText(taken, t)).toBe('Taken from stock for Product A, parts from stock: Part A × 30');
+    expect(journalText(taken, i18n.getFixedT('uk'))).toBe('Взято зі складу для Product A, деталі зі складу: Part A × 30');
+  });
+
   it('says what was assembled, received, issued and taken', () => {
     expect(journalText(event('kits_assembled', { line_id: 1, product: 'Pipe', units: 3 }), t)).toBe(
       'Pipe: 3 kits assembled for the order',

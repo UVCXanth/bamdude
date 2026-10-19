@@ -44,6 +44,8 @@ class IngestResult:
     file: LibraryFile
     outcome: IngestOutcome
     superseded_name: str | None = None
+    #: a NEW STEP file's background picture: its receipt, or why none was queued (never a rollback)
+    thumbnail_job: dict | None = None
 
 
 async def _rows_with_hash(db: AsyncSession, content_hash: str) -> list[LibraryFile]:
@@ -243,4 +245,7 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
     await db.execute(
         update(LibraryFile).where(LibraryFile.id.in_(losers)).values(deleted_at=datetime.now(timezone.utc))
     )
+    from backend.app.services import part_images  # library_ingest sits below the product services
+
+    await part_images.mark_files_changed(db, losers)
     return len(grouped), len(losers)

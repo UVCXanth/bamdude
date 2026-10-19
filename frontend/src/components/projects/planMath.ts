@@ -248,7 +248,8 @@ export function projectPlan(
   let yieldsKnown = true;
 
   const made = new Map<number, number>();
-  const names = new Map<number, string>();
+  // A part's name and its picture travel together, from the same entry (plan E6, D4).
+  const known = new Map<number, { name: string; image?: PlanPartCount['image'] }>();
 
   for (const row of line.rows) {
     const count = Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count));
@@ -273,7 +274,7 @@ export function projectPlan(
     }
     for (const entry of perPrint) {
       made.set(entry.part_id, (made.get(entry.part_id) ?? 0) + projected.prints * entry.count);
-      names.set(entry.part_id, entry.name);
+      known.set(entry.part_id, { name: entry.name, image: entry.image });
     }
   }
 
@@ -282,12 +283,17 @@ export function projectPlan(
   // makes of it is surplus. That is the engine's own loop, which walks the
   // outstanding map INCLUDING its zeros.
   const want = new Map(line.outstanding_before.map((p) => [p.part_id, p.count]));
-  for (const p of line.outstanding_before) names.set(p.part_id, p.name);
+  for (const p of line.outstanding_before) {
+    known.set(p.part_id, { name: p.name, image: p.image ?? known.get(p.part_id)?.image });
+  }
 
   const surplusAfter: PlanPartCount[] = [];
   for (const [partId, total] of [...made.entries()].sort((a, b) => a[0] - b[0])) {
     const over = total - (want.get(partId) ?? 0);
-    if (over > 0) surplusAfter.push({ part_id: partId, name: names.get(partId) ?? '', count: over });
+    if (over > 0) {
+      const part = known.get(partId);
+      surplusAfter.push({ part_id: partId, name: part?.name ?? '', count: over, image: part?.image });
+    }
   }
 
   return {

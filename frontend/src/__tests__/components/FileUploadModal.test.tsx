@@ -218,7 +218,7 @@ describe('FileUploadModal', () => {
       await user.upload(fileInput, stlFile);
 
       await waitFor(() => {
-        expect(screen.getByText('STL thumbnail generation')).toBeInTheDocument();
+        expect(screen.getByText('Thumbnail generation')).toBeInTheDocument(); // STL, OBJ and STEP now
         expect(screen.getByText(/Thumbnails can be generated/i)).toBeInTheDocument();
       });
     });
@@ -232,7 +232,7 @@ describe('FileUploadModal', () => {
       await user.upload(fileInput, zipFile);
 
       await waitFor(() => {
-        expect(screen.getByText('STL thumbnail generation')).toBeInTheDocument();
+        expect(screen.getByText('Thumbnail generation')).toBeInTheDocument(); // STL, OBJ and STEP now
         expect(screen.getByText(/ZIP files may contain STL/i)).toBeInTheDocument();
       });
     });

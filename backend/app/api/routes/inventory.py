@@ -3,7 +3,7 @@ import io
 import json
 import logging
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
@@ -34,6 +34,7 @@ from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.auto_stock_spool import AvailableStockSpoolGroup
 from backend.app.schemas.forecast import (
     ForecastChartResponse,
     ForecastChartSeries,
@@ -262,7 +263,7 @@ async def apply_spool_to_slot_via_mqtt(
     # helper for all three assignment paths — the actual plan stays the spool's
     # truth, only what the printer is told changes.
     printer_row = await db.get(Printer, printer_id)
-    _, projection = await publish_projected_slot(
+    sent, projection = await publish_projected_slot(
         db,
         client,
         printer=printer_row,
@@ -317,7 +318,7 @@ async def apply_spool_to_slot_via_mqtt(
         spool.id,
         printer_id,
     )
-    return True
+    return bool(sent)
 
 
 # ── Spool Catalog Schemas ──────────────────────────────────────────────────
@@ -1334,9 +1335,9 @@ async def list_spools(
         False,
         description=(
             "Paged mode only: rows become GROUPS of similar spools "
-            "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
+            "(material|subtype|brand|color_name|rgba|label_weight) — "
             "see SpoolGroupItem. Requires page; restricts sort_by to the "
-            "group-key subset (400 otherwise)."
+            "supported group identity, representative and weight sorts (400 otherwise)."
         ),
     ),
     include_k_profiles: bool = Query(
@@ -1380,12 +1381,11 @@ async def list_spools(
     without ``page`` it's a 400, never a silent flat-shaped answer) makes the
     rows ``SpoolGroupItem`` GROUPS under the SAME filters: filters first,
     then grouping, then pagination over GROUPS — ``meta.total`` counts
-    groups. The key and the merge-eligibility rule (used/assigned spools
-    never merge) port the deleted client's ``spoolGroupKey`` + consumers
-    exactly — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
-    is restricted to the group-key subset (``display_name``, ``material``,
-    ``brand``, ``color_name`` — 400 otherwise, deliberately stricter than
-    the flat mode's permissive fallback).
+    groups. Only assigned spools stay singletons; started shelf spools can
+    merge — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
+    accepts group identity fields, representative id/lot/purchase date/location,
+    and group label/net/remaining totals; unsupported keys return 400 rather
+    than the flat mode's permissive fallback.
     """
     if page is None:
         if group_similar:
@@ -1928,6 +1928,16 @@ async def lookup_spool_by_tag(
         if spool:
             return spool
     raise HTTPException(404, "Spool not found")
+
+
+@router.get("/spools/auto-stock-groups", response_model=list[AvailableStockSpoolGroup])
+async def auto_stock_groups(
+    db: AsyncSession = Depends(get_db),
+    _=RequirePermission(Permission.INVENTORY_READ),
+):
+    from backend.app.services.auto_stock_spool import available_groups
+
+    return await available_groups(db)
 
 
 @router.get("/spools/{spool_id}", response_model=SpoolResponse)
@@ -2589,6 +2599,14 @@ async def assign_spool(
     current_user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
+    from backend.app.main import _get_ams_assignment_lock
+
+    # A manual answer must not race insertion/RFID reconciliation on this slot.
+    async with _get_ams_assignment_lock(data.printer_id):
+        return await _assign_spool(data, db, current_user)
+
+
+async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None):
     from backend.app.services.printer_manager import printer_manager
 
     # 1. Validate spool exists and is not archived
@@ -2700,6 +2718,7 @@ async def assign_spool(
         tray_id=data.tray_id,
         fingerprint_color=fingerprint_color,
         fingerprint_type=fingerprint_type,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(assignment)
     await db.commit()
@@ -3891,7 +3910,9 @@ async def get_inventory_forecast_chart(
         for offset in range(days + 1):
             raw = max(0.0, row.total_remaining_g - rate * offset)
             projection.append((today + timedelta(days=offset), _js_round(raw)))
-            if raw == 0:
+            # Not ``raw == 0``: a mean one ulp under its value leaves 1e-14 g on the
+            # empty day, and the series would run a day of zeros past it.
+            if forecast_engine._depleted(raw, rate):
                 break
         series.append(
             ForecastChartSeries(
@@ -3967,7 +3988,7 @@ async def get_inventory_forecast_logistics(
         arrival_g = item.quantity_spools * avg_spool_g
         stock_at_arrival = max(0.0, row.total_remaining_g - rate * lead)
         peak_g = stock_at_arrival + arrival_g
-        clamped_max = min(lead + math.ceil(peak_g / rate) + 5, 365)
+        clamped_max = min(lead + forecast_engine._whole_days_up(peak_g / rate) + 5, 365)
 
         series: list[tuple[date, int]] = []
         for offset in range(clamped_max + 1):
@@ -3990,7 +4011,7 @@ async def get_inventory_forecast_logistics(
         # headline show day 7 for a precise 400 g / 50 g-per-day boundary.
         # The tolerance is in days and only compensates representational noise;
         # it cannot promote a meaningful fractional day.
-        zero_day = math.floor((row.total_remaining_g / rate) + 1e-9)
+        zero_day = forecast_engine._whole_days(row.total_remaining_g / rate)
         stock_break_day = zero_day if zero_day < lead else None
 
         out.append(

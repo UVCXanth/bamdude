@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { LineMode, LinePurchasedPart, PartFigures } from '../../api/client';
 import { VARIANT_CHIP } from './chips';
+import { PartThumb } from '../PartThumb';
 
 /** The amber chip of a variant part and a bought part (mockup `.m-varchip`). */
 const CHIP_CLASS = `ml-1.5 ${VARIANT_CHIP}`;
@@ -59,8 +60,13 @@ export function LinePartsTable({
         {parts.map((part) => (
           <tr key={part.part_id} className="border-t border-bambu-dark-tertiary text-white">
             <td className={CELL}>
-              {part.name}
-              {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
+              <span className="flex items-center gap-2">
+                <PartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
+                <span className="min-w-0">
+                  {part.name}
+                  {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
+                </span>
+              </span>
             </td>
             <td className={`${CELL} tabular-nums`}>
               {!perUnit ? (
@@ -70,8 +76,12 @@ export function LinePartsTable({
               ) : (
                 `× ${part.qty_per_unit}`
               )}
+              {(part.extra_qty ?? 0) > 0 && <div className="text-xs text-amber-700 dark:text-amber-400">{t('orders.parts.extraParts', { percent: part.extra_percent, count: part.extra_qty })}</div>}
             </td>
-            <td className={`${CELL} tabular-nums`}>{part.need}</td>
+            <td className={`${CELL} tabular-nums`}>
+              {part.need}
+              {(part.allocated_qty ?? 0) > 0 && <div className="text-xs text-bambu-green">{t('orders.take.allocatedParts', { count: part.allocated_qty })}</div>}
+            </td>
             <td className={`${CELL} tabular-nums`}>{part.usable}</td>
             <td className={`${CELL} tabular-nums`}>{`${part.in_progress} / ${part.queued ?? 0}`}</td>
             <td
@@ -91,9 +101,14 @@ export function LinePartsTable({
         {purchased.map((part) => (
           <tr key={`bought-${part.part_id}`} className="border-t border-bambu-dark-tertiary text-bambu-gray-light">
             <td className={CELL}>
-              {part.name}
-              <span className={CHIP_CLASS}>{t('orders.parts.purchased')}</span>
-              {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
+              <span className="flex items-center gap-2">
+                <PartThumb partId={part.part_id} image={part.image} name={part.name} kind="purchased" size="sm" />
+                <span className="min-w-0">
+                  {part.name}
+                  <span className={CHIP_CLASS}>{t('orders.parts.purchased')}</span>
+                  {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
+                </span>
+              </span>
             </td>
             <td className={`${CELL} tabular-nums`}>{`× ${part.per}`}</td>
             <td className={`${CELL} tabular-nums`}>{part.need}</td>

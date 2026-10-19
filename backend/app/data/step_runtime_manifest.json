@@ -1,0 +1,251 @@
+{
+ "schema": 1,
+ "component": "step-preview",
+ "status": "release",
+ "pinned_at": "2026-10-19T16:26:21Z",
+ "min_age_days": 14,
+ "packages": [
+  {
+   "name": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0"
+  },
+  {
+   "name": "cadquery-ocp-proxy",
+   "version": "8.0.1.1.0"
+  }
+ ],
+ "requires": {
+  "cadquery-ocp-novtk": [
+   "cadquery-ocp-proxy==8.0.1.1.0"
+  ],
+  "cadquery-ocp-proxy": []
+ },
+ "artifacts": [
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp312-cp312-macosx_11_0_arm64.whl",
+   "key": "darwin-arm64-cp312",
+   "tags": [
+    "cp312-cp312-macosx_11_0_arm64"
+   ],
+   "sha256": "b76212dcda2ea19a501b26225f5d36ae1a5eed35e594c2af948a534e7f82a908",
+   "size": 63094149,
+   "upload_time": "2026-10-05T13:37:04Z",
+   "native_count": 78,
+   "closure_sha256": "ad0c91bd0c234ca57d71a47dc3fa14aba442584fc86ba91dab0645bdff5bfdea"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp312-cp312-macosx_11_0_x86_64.whl",
+   "key": "darwin-x64-cp312",
+   "tags": [
+    "cp312-cp312-macosx_11_0_x86_64"
+   ],
+   "sha256": "a8fe4d9d67eebec876eb213a03ff2b267060f7fe0661736555e6e71874331c56",
+   "size": 67955219,
+   "upload_time": "2026-10-05T13:37:09Z",
+   "native_count": 78,
+   "closure_sha256": "0947b5fc2e775b8c4f1d04eed1d600f9aa02454b8b2946b37454265676b3cd53"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp312-cp312-manylinux_2_28_aarch64.whl",
+   "key": "linux-arm64-cp312",
+   "tags": [
+    "cp312-cp312-manylinux_2_28_aarch64"
+   ],
+   "sha256": "dd5e239d0ba0863e3a2ca8de71c563d3375f1c075e493eb7650609de22d85240",
+   "size": 61507700,
+   "upload_time": "2026-10-05T13:37:12Z",
+   "native_count": 77,
+   "closure_sha256": "faa2d5a2d7a2cff01e5403d5d5849a57da37349461533345970bd9f12778cc5a"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+   "key": "linux-x64-cp312",
+   "tags": [
+    "cp312-cp312-manylinux_2_28_x86_64"
+   ],
+   "sha256": "9df1e3700016bee819c0a8627880f37de47540eef63e8adb368f659a0fdeff78",
+   "size": 66825837,
+   "upload_time": "2026-10-05T16:19:19Z",
+   "native_count": 77,
+   "closure_sha256": "9f30b23e91faf5a4ae4a91c418e53ee6695093cdf168a3223ff1446ddb30868e"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp312-cp312-win_amd64.whl",
+   "key": "win-x64-cp312",
+   "tags": [
+    "cp312-cp312-win_amd64"
+   ],
+   "sha256": "af3ecbeaf28ee4df17a07c8a3b88e3009bb820c7f4c7d7d1732745d064c96781",
+   "size": 47747323,
+   "upload_time": "2026-10-05T16:19:22Z",
+   "native_count": 72,
+   "closure_sha256": "c24fce80f18c879c63aaf1c2d080106a0f5c1a8074ba38bcdfa2797ca4e92a99"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp313-cp313-macosx_11_0_arm64.whl",
+   "key": "darwin-arm64-cp313",
+   "tags": [
+    "cp313-cp313-macosx_11_0_arm64"
+   ],
+   "sha256": "78b9033a47d72049b290c18e2c4c80bffc56c055b52eb60f49aca76550a9ddc8",
+   "size": 63092379,
+   "upload_time": "2026-10-05T16:19:26Z",
+   "native_count": 78,
+   "closure_sha256": "a46ec366c751c7f599156569b2f12026ad68e1a757f14c5031fa4bdfe21010a0"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp313-cp313-macosx_11_0_x86_64.whl",
+   "key": "darwin-x64-cp313",
+   "tags": [
+    "cp313-cp313-macosx_11_0_x86_64"
+   ],
+   "sha256": "d0f3747b7e486f315793d4d4166daf5146ad6088beae8ddc950193d2513b1ca8",
+   "size": 67945939,
+   "upload_time": "2026-10-05T16:19:29Z",
+   "native_count": 78,
+   "closure_sha256": "66117d83a41160257c9479d862f562e36556f7f149a9c10859ff9363453da020"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp313-cp313-manylinux_2_28_aarch64.whl",
+   "key": "linux-arm64-cp313",
+   "tags": [
+    "cp313-cp313-manylinux_2_28_aarch64"
+   ],
+   "sha256": "3f47080e5e4381f0ad8bed14cd19fd16f006550abec441db54f7ec417ebb1ac0",
+   "size": 61496158,
+   "upload_time": "2026-10-05T16:19:33Z",
+   "native_count": 77,
+   "closure_sha256": "df95056ef84a4417cdcc7dea4ca610c112516768a41315924103c5f0b381f22d"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+   "key": "linux-x64-cp313",
+   "tags": [
+    "cp313-cp313-manylinux_2_28_x86_64"
+   ],
+   "sha256": "65c56795870b1249a0ad9ef0814a38844be64bcdc2b86beaab01f9416edcc14b",
+   "size": 66809073,
+   "upload_time": "2026-10-05T16:19:36Z",
+   "native_count": 77,
+   "closure_sha256": "088df59e1ce9deb82ccefd9dd6ab1ad2d14f763eae8d8e6d811415c1e79f23db"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp313-cp313-win_amd64.whl",
+   "key": "win-x64-cp313",
+   "tags": [
+    "cp313-cp313-win_amd64"
+   ],
+   "sha256": "7dec43cd08a4600d970ee60a358a4c4e0f88a64261ac38e5fe55a29704f18f81",
+   "size": 47750971,
+   "upload_time": "2026-10-05T16:19:39Z",
+   "native_count": 72,
+   "closure_sha256": "82536692a423c0eb617b94076df46ac273be37bf11afbc49b86a6b41f3138ff6"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp314-cp314-macosx_11_0_arm64.whl",
+   "key": "darwin-arm64-cp314",
+   "tags": [
+    "cp314-cp314-macosx_11_0_arm64"
+   ],
+   "sha256": "b863fde071e8683611727c2eef5c8c45f3c7f385b1c47629d56219c46023ccdb",
+   "size": 63154852,
+   "upload_time": "2026-10-05T16:19:43Z",
+   "native_count": 78,
+   "closure_sha256": "040c99ee8e2025271854dc233c75a5ac69a9910795b80b08666ba43ca48e7db4"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp314-cp314-macosx_11_0_x86_64.whl",
+   "key": "darwin-x64-cp314",
+   "tags": [
+    "cp314-cp314-macosx_11_0_x86_64"
+   ],
+   "sha256": "bd40bbaf50162f374aa1f57c8208d3f78c434363ebf6b7299bb1777f2a37c2e2",
+   "size": 67941610,
+   "upload_time": "2026-10-05T16:19:46Z",
+   "native_count": 78,
+   "closure_sha256": "8ccc2273d7fed6bd282dc00e73581d745f6ad03b55f18bd7d5c33838ecc320e4"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp314-cp314-manylinux_2_28_aarch64.whl",
+   "key": "linux-arm64-cp314",
+   "tags": [
+    "cp314-cp314-manylinux_2_28_aarch64"
+   ],
+   "sha256": "92c20dd705d57decb65fb5906af246066f240177b09915644b80f59c3ab74455",
+   "size": 61689336,
+   "upload_time": "2026-10-05T16:19:49Z",
+   "native_count": 77,
+   "closure_sha256": "a08ad3b570731e771e9c0ce96131bd238c6b5a86fb98facea10746a6462944f3"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp314-cp314-manylinux_2_28_x86_64.whl",
+   "key": "linux-x64-cp314",
+   "tags": [
+    "cp314-cp314-manylinux_2_28_x86_64"
+   ],
+   "sha256": "7d6a6451950905bf19e9f369009f89ccf17287203a09cdaa028f010a8a23ca59",
+   "size": 66828425,
+   "upload_time": "2026-10-05T16:19:53Z",
+   "native_count": 77,
+   "closure_sha256": "e1df8230dbd39977ccb38916318299311584e2af3df3d17de175cbc621560c39"
+  },
+  {
+   "package": "cadquery-ocp-novtk",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_novtk-8.0.1.1.0-cp314-cp314-win_amd64.whl",
+   "key": "win-x64-cp314",
+   "tags": [
+    "cp314-cp314-win_amd64"
+   ],
+   "sha256": "246d595018e84642beaa77296bbaf0aa36257843895344f1387b6b956bb274f9",
+   "size": 47978790,
+   "upload_time": "2026-10-05T16:19:56Z",
+   "native_count": 72,
+   "closure_sha256": "33054c31fc22ac6bec6c69b295fcdadf2f466cdea5ecf7f8038fd3d7aebb17fb"
+  },
+  {
+   "package": "cadquery-ocp-proxy",
+   "version": "8.0.1.1.0",
+   "filename": "cadquery_ocp_proxy-8.0.1.1.0-py3-none-any.whl",
+   "key": null,
+   "tags": [
+    "py3-none-any"
+   ],
+   "sha256": "98c71bb60cfb651afe179b134ab88580fd75384fce0cc6d633f727002cd18abd",
+   "size": 3250,
+   "upload_time": "2026-10-05T16:23:45Z",
+   "native_count": 0,
+   "closure_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  }
+ ],
+ "closure_file": "step_runtime_closure.json",
+ "closure_sha256": "533f263356f9eae283d68c76468f89a7d02db17c8f2020ace511fa2bfdcd43aa"
+}

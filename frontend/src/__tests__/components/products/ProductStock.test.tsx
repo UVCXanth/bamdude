@@ -383,6 +383,7 @@ describe('ProductStock', () => {
       'surplus_banked',
       'unfiled_print',
       'reserved_for_order',
+      'reserved_parts_for_order',
       'reservation_released',
       'manual',
       'assembled',
@@ -425,5 +426,20 @@ describe('ProductStock · parts held for orders and parts out of the kit', () =>
     expect(within(group).getByText('Out of kit')).toBeInTheDocument();
     expect(within(group).getByText('handle')).toBeInTheDocument();
     expect(within(group).queryByText('shade')).not.toBeInTheDocument();
+  });
+
+  it('each counted part shows its picture beside its name (spec part-thumbnails §12.2)', async () => {
+    vi.spyOn(api, 'getProductStock').mockResolvedValue({
+      balances: [
+        { part_id: 3, name: 'Body', qty_per_unit: 1, balance: 4, held_for_orders: 0, image: { kind: 'render', status: 'ready', v: 'b3' } },
+        { part_id: 5, name: 'Cube', qty_per_unit: 0, balance: 1, held_for_orders: 0, image: null },
+      ],
+      kits_available: 4,
+      kits_by_option: [],
+      movements: [],
+    } as never);
+    render(<ProductStock productId={7} productName="Flask" canEdit={false} />);
+    expect(await screen.findByRole('button', { name: 'Show Body larger' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('stock-out-of-kit')).getByTestId('part-thumb')).toHaveAttribute('data-state', 'none');
   });
 });

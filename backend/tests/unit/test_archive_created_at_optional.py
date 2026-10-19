@@ -53,5 +53,7 @@ def test_archive_response_accepts_null_created_at():
         photos=None,
         failure_reason=None,
         created_at=None,
+        swap_compatibility_known=False,
+        source_swap_compatibility_known=False,
     )
     assert resp.created_at is None

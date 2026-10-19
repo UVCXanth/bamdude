@@ -22,6 +22,7 @@ from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.services import swap_compatibility
 from backend.app.services.bambu_cloud import BambuCloudService
 from backend.app.services.printer_manager import printer_manager
 
@@ -716,6 +717,11 @@ class GitBackupService:
                     # null" rule the restore applies, so a backup cannot claim an
                     # owner it cannot name.
                     "created_by_username": user_names.get(a.created_by_id),
+                    # The source's swap declaration -- its projection and its record,
+                    # nothing else of extra_data -- and the bytes' identity
+                    # (swap-source-lifecycle spec r4 §11).
+                    **swap_compatibility.backup_fields(a),
+                    "source_content_hash": a.source_content_hash,
                 }
             )
 

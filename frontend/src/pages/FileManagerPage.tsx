@@ -64,6 +64,7 @@ import {
   Tag as TagIcon,
   ClipboardList,
   FolderKanban,
+  ShieldCheck,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
@@ -76,7 +77,11 @@ import type {
   Permission,
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
+import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumbnailJobs';
+import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
+import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
+import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { usePersistedState, parseLibraryView, type LibraryView } from '../hooks/usePersistedState';
 import { Select } from '../components/Select';
@@ -734,8 +739,13 @@ interface FileCardProps {
   desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
+  onSwapDeclaration?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
+  /** Cancel this file's STEP thumbnail job — offered in the menu while one runs. */
+  onCancelThumbnail?: (file: LibraryFileListItem) => void;
+  /** A background STEP thumbnail job is running for this file (its old picture stays meanwhile). */
+  thumbnailJobActive?: boolean;
   onPlateGallery?: (file: LibraryFileListItem, plateIndex?: number) => void;
   /** «Add to order…» on this file (WS-13 E13 C01). */
   onAddToOrder?: (file: LibraryFileListItem) => void;
@@ -805,7 +815,49 @@ function offersSliceEntry(
   return desktopSlicerAccepts(file.file_type, desktopSlicer ?? 'bambu_studio');
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+/**
+ * The thumbnail entry of both per-file menus. STL/OBJ follow the file's own update right; a STEP picture is made in
+ * the background and its button is library:update_all's alone (spec §5). While a STEP job runs the entry cancels it.
+ */
+function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onCancel, jobActive, close }: {
+  file: LibraryFileListItem;
+  t: TFunction;
+  hasPermission: (permission: Permission) => boolean;
+  canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
+  onGenerate: (f: LibraryFileListItem) => void;
+  onCancel?: (f: LibraryFileListItem) => void;
+  jobActive?: boolean;
+  close: () => void;
+}) {
+  const cad = isCadThumbnailType(file.file_type);
+  if (!cad && !isLegacyThumbnailType(file.file_type)) return null;
+  if (cad && jobActive && onCancel && hasPermission('library:update_all')) {
+    return (
+      <button
+        className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+        onClick={() => { onCancel(file); close(); }}
+      >
+        <X className="w-3.5 h-3.5" />
+        {t('fileManager.stepThumbnail.cancel')}
+      </button>
+    );
+  }
+  const allowed = cad ? hasPermission('library:update_all') : canModify('library', 'update', file.created_by_id);
+  const refusal = cad ? t('fileManager.stepThumbnail.noPermission') : t('fileManager.noPermissionGenerateThumbnail');
+  return (
+    <button
+      className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${allowed ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+      onClick={() => { if (allowed) { onGenerate(file); close(); } }}
+      disabled={!allowed}
+      title={!allowed ? refusal : undefined}
+    >
+      <Image className="w-3.5 h-3.5" />
+      {t('fileManager.generateThumbnail')}
+    </button>
+  );
+}
+
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -821,7 +873,11 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
+  /** The file's swap declaration for future prints (swap-source-declaration spec r3 §7). */
+  onSwapDeclaration?: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
+  onCancelThumbnail?: (f: LibraryFileListItem) => void;
+  thumbnailJobActive?: boolean;
   onMove?: (f: LibraryFileListItem) => void;
   onTags?: (f: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   onDelete: (id: number) => void;
@@ -991,6 +1047,16 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
+            {onSwapDeclaration && (file.file_type === '3mf' || file.file_type === 'gcode') && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onSwapDeclaration(file); closeMenu(); } }}
+                disabled={!canModify('library', 'update', file.created_by_id)}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                {t('swapDeclaration.menu')}
+              </button>
+            )}
             {/* Move and Tags — the two actions that used to exist only in the
                 multi-select toolbar, so moving one file meant ticking its
                 checkbox first. Same permission gate as Rename above, so a
@@ -1022,16 +1088,16 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManager.tags.tagAction')}
               </button>
             )}
-            {(file.file_type === 'stl' || file.file_type === 'obj') && (
-              <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onGenerateThumbnail(file); closeMenu(); } }}
-                disabled={!canModify('library', 'update', file.created_by_id)}
-              >
-                <Image className="w-3.5 h-3.5" />
-                {t('fileManager.generateThumbnail')}
-              </button>
-            )}
+            <ThumbnailMenuEntry
+              file={file}
+              t={t}
+              hasPermission={hasPermission}
+              canModify={canModify}
+              onGenerate={onGenerateThumbnail}
+              onCancel={onCancelThumbnail}
+              jobActive={thumbnailJobActive}
+              close={closeMenu}
+            />
             <button
               className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'delete', file.created_by_id) ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
               onClick={() => { if (canModify('library', 'delete', file.created_by_id)) { onDelete(file.id); closeMenu(); } }}
@@ -1048,7 +1114,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1146,7 +1212,9 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-bambu-dark/70 backdrop-blur-sm pointer-events-none">
             <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
             <span className="text-xs text-white font-medium">
-              {t('fileManager.regeneratingThumbnail', { defaultValue: 'Regenerating…' })}
+              {thumbnailJobActive
+                ? t('fileManager.stepThumbnail.inBackground')
+                : t('fileManager.regeneratingThumbnail', { defaultValue: 'Regenerating…' })}
             </span>
           </div>
         )}
@@ -1477,6 +1545,18 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('common.rename')}
                 </button>
               )}
+              {onSwapDeclaration && (file.file_type === '3mf' || file.file_type === 'gcode') && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onSwapDeclaration(file); closeActions(); } }}
+                  disabled={!canModify('library', 'update', file.created_by_id)}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  {t('swapDeclaration.menu')}
+                </button>
+              )}
               {/* Move and Tags — same pair as the list menu, same gate. */}
               {onMove && (
                 <button
@@ -1506,18 +1586,17 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('fileManager.tags.tagAction')}
                 </button>
               )}
-              {onGenerateThumbnail && (file.file_type === 'stl' || file.file_type === 'obj') && (
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onGenerateThumbnail(file); closeActions(); } }}
-                  disabled={!canModify('library', 'update', file.created_by_id)}
-                  title={!canModify('library', 'update', file.created_by_id) ? t('fileManager.noPermissionGenerateThumbnail') : undefined}
-                >
-                  <Image className="w-3.5 h-3.5" />
-                  {t('fileManager.generateThumbnail')}
-                </button>
+              {onGenerateThumbnail && (
+                <ThumbnailMenuEntry
+                  file={file}
+                  t={t}
+                  hasPermission={hasPermission}
+                  canModify={canModify}
+                  onGenerate={onGenerateThumbnail}
+                  onCancel={onCancelThumbnail}
+                  jobActive={thumbnailJobActive}
+                  close={closeActions}
+                />
               )}
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1630,6 +1709,7 @@ export function FileManagerPage() {
   const [planFiles, setPlanFiles] = useState<number[] | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
+  const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
@@ -2272,9 +2352,78 @@ export function FileManagerPage() {
     },
   });
 
+  // The page's one owner of STEP thumbnail jobs: it polls only active receipts and reports through the ordinary
+  // library invalidation, so every other view learns from the same refetch. What one poll ended is told once per
+  // kind (a batch, a restart that drops every job), never one identical toast per file.
+  const stepJobCallbacks = useMemo(
+    () => ({
+      // A file whose job ended — or whose job the server no longer has, which may have finished meanwhile — shows
+      // its picture afresh; the list itself is read once per poll, in onSettled.
+      onSucceeded: (fileId: number) => setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() })),
+      onFailed: () => {},
+      onExpired: (fileId: number) => setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() })),
+      onSettled: ({ succeeded, failed, expired }: StepJobSummary) => {
+        if (succeeded.length + expired.length > 0) queryClient.invalidateQueries({ queryKey: ['library-files'] });
+        if (succeeded.length === 1) showToast(t('fileManager.stepThumbnail.ready'), 'success');
+        else if (succeeded.length > 1) showToast(t('fileManager.stepThumbnail.readyMany', { count: succeeded.length }), 'success');
+        for (const [code, count] of countByReason(failed.map((item) => item.code))) {
+          const reason = t(thumbnailReasonKey(code));
+          showToast(
+            count === 1
+              ? t('fileManager.stepThumbnail.failed', { reason })
+              : t('fileManager.stepThumbnail.failedMany', { count, reason }),
+            'error',
+          );
+        }
+        if (expired.length === 1) showToast(t('fileManager.stepThumbnail.expired'), 'info');
+        else if (expired.length > 1) showToast(t('fileManager.stepThumbnail.expiredMany', { count: expired.length }), 'info');
+      },
+    }),
+    [queryClient, showToast, t],
+  );
+  const stepJobs = useStepThumbnailJobs(stepJobCallbacks);
+  // The next keyset page of STEP files missing a picture; continuing is the operator's explicit press.
+  const [stepCursor, setStepCursor] = useState(0);
+
   const batchThumbnailMutation = useMutation({
-    mutationFn: () => api.batchGenerateStlThumbnails({ all_missing: true }),
-    onSuccess: (result) => {
+    mutationFn: async () => {
+      const legacy = await api.batchGenerateStlThumbnails({ all_missing: true });
+      const step = hasPermission('library:update_all')
+        ? await api.createThumbnailJobs({ all_missing: true, after_id: stepCursor }).then(
+            (answer) => ({ answer, refusal: null as string | null }),
+            // the STEP half refused (jobs not running, a rights change): said, never swallowed
+            (error: unknown) => ({ answer: null, refusal: stepRefusalCode(error) }),
+          )
+        : null;
+      return { legacy, step: step?.answer ?? null, stepRefusal: step?.refusal ?? null, stepAsked: step !== null };
+    },
+    onSuccess: ({ legacy: result, step, stepRefusal, stepAsked }) => {
+      if (stepRefusal) {
+        showToast(t('fileManager.stepThumbnail.notQueued', { reason: t(thumbnailReasonKey(stepRefusal)) }), 'error');
+      }
+      const queued = step?.results.filter((item) => item.receipt_id) ?? [];
+      const refused = step?.results.filter((item) => !item.receipt_id && item.error_code) ?? [];
+      if (step) {
+        if (queued.length > 0) {
+          stepJobs.track(step.jobs_epoch, queued);
+          showToast(t('fileManager.stepThumbnail.queuedMany', { count: queued.length }), 'info');
+        }
+        for (const [code, count] of countByReason(refused.map((item) => item.error_code))) {
+          const reason = t(thumbnailReasonKey(code));
+          showToast(
+            count === 1
+              ? t('fileManager.stepThumbnail.notQueued', { reason })
+              : t('fileManager.stepThumbnail.notQueuedMany', { count, reason }),
+            'error',
+          );
+        }
+        // A file the full queue turned away is asked again by the next press, not skipped by the cursor.
+        const turnedAway = refused.filter((item) => item.error_code === 'queue_full').map((item) => item.file_id);
+        const cursor = turnedAway.length > 0 ? Math.min(...turnedAway) - 1 : (step.next_after_id ?? 0);
+        setStepCursor(cursor);
+        if (cursor) showToast(t('fileManager.stepThumbnail.moreRemain'), 'info');
+      }
+      const stepAnswered = stepRefusal !== null || queued.length + refused.length > 0;
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       // Update thumbnail versions for cache busting
       if (result.succeeded > 0) {
@@ -2292,9 +2441,13 @@ export function FileManagerPage() {
       } else if (result.succeeded > 0 && result.failed > 0) {
         showToast(t('fileManager.toast.thumbnailsGeneratedPartial', { succeeded: result.succeeded, failed: result.failed }), 'success');
       } else if (result.processed === 0) {
-        showToast(t('fileManager.toast.noStlMissingThumbnails'), 'info');
+        // STEP files were not asked about for someone who may not make their pictures: say so only of STL and OBJ.
+        if (!stepAsked) showToast(t('fileManager.toast.noStlObjMissingThumbnails'), 'info');
+        else if (!stepAnswered) showToast(t('fileManager.toast.noStlMissingThumbnails'), 'info');
       } else {
-        showToast(t('fileManager.toast.failedToGenerateThumbnails', { error: result.results[0]?.error || 'Unknown error' }), 'error');
+        const first = result.results[0];
+        const error = first?.error_code ? t(thumbnailReasonKey(first.error_code)) : first?.error || 'Unknown error';
+        showToast(t('fileManager.toast.failedToGenerateThumbnails', { error }), 'error');
       }
     },
     onError: (error: Error) => showToast(error.message, 'error'),
@@ -2321,6 +2474,34 @@ export function FileManagerPage() {
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
+
+  // A STEP picture is made in the background: the button queues a job and the polling owner reports its end.
+  const stepThumbnailMutation = useMutation({
+    mutationFn: (fileId: number) => api.createThumbnailJobs({ file_ids: [fileId] }),
+    onSuccess: (response) => {
+      const item = response.results[0];
+      if (item?.receipt_id) {
+        stepJobs.track(response.jobs_epoch, response.results);
+        showToast(t('fileManager.stepThumbnail.queued'), 'info');
+      } else {
+        showToast(t('fileManager.stepThumbnail.notQueued', { reason: t(thumbnailReasonKey(item?.error_code)) }), 'error');
+      }
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const handleGenerateThumbnail = (file: LibraryFileListItem) =>
+    isCadThumbnailType(file.file_type) ? stepThumbnailMutation.mutate(file.id) : singleThumbnailMutation.mutate(file.id);
+  const handleCancelThumbnail = async (file: LibraryFileListItem) => {
+    const code = await stepJobs.cancel(file.id);
+    // The job had ended, or the server no longer has it: the hook already told which, as a poll would.
+    if (code === 'finished' || code === 'job_expired') return;
+    if (code) showToast(t('fileManager.stepThumbnail.cancelFailed', { reason: t(thumbnailReasonKey(code)) }), 'error');
+    else showToast(t('fileManager.stepThumbnail.canceled'), 'info');
+  };
+  const isThumbnailBusy = (fileId: number) =>
+    regeneratingFileId === fileId ||
+    stepJobs.activeFileIds.has(fileId) ||
+    (stepThumbnailMutation.isPending && stepThumbnailMutation.variables === fileId);
 
   // Derive the in-flight file id from the mutation directly. While
   // pending, ``variables`` is the file id passed to ``mutate(id)``;
@@ -2548,15 +2729,18 @@ export function FileManagerPage() {
       onPreview3d={setViewerFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+      onSwapDeclaration={setSwapDeclarationFile}
       onLink={setLinkFile}
-      onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+      onGenerateThumbnail={handleGenerateThumbnail}
+      onCancelThumbnail={handleCancelThumbnail}
+      thumbnailJobActive={stepJobs.activeFileIds.has(file.id)}
       onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
       onAddToOrder={openAddToOrder}
       onMove={setMoveFile}
       onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
       onTagClick={toggleTagFilter}
       thumbnailVersion={thumbnailVersions[file.id]}
-      isRegeneratingThumbnail={regeneratingFileId === file.id}
+      isRegeneratingThumbnail={isThumbnailBusy(file.id)}
       hasPermission={hasPermission}
       canModify={canModify}
       authEnabled={authEnabled}
@@ -3511,7 +3695,7 @@ export function FileManagerPage() {
                           )}
                           {/* Regen overlay — list-mode variant; smaller
                               spinner (w-4 h-4) to fit the 40px thumb. */}
-                          {regeneratingFileId === file.id && (
+                          {isThumbnailBusy(file.id) && (
                             <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/70 backdrop-blur-sm pointer-events-none">
                               <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
                             </div>
@@ -3769,7 +3953,10 @@ export function FileManagerPage() {
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
-                        onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                        onSwapDeclaration={setSwapDeclarationFile}
+                        onGenerateThumbnail={handleGenerateThumbnail}
+                        onCancelThumbnail={handleCancelThumbnail}
+                        thumbnailJobActive={stepJobs.activeFileIds.has(file.id)}
                         onMove={setMoveFile}
                         onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
                         onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
@@ -3946,6 +4133,7 @@ export function FileManagerPage() {
             setDroppedFiles([]);
           }}
           onUploadComplete={handleUploadComplete}
+          onThumbnailJobs={stepJobs.track}
           initialFiles={droppedFiles.length > 0 ? droppedFiles : undefined}
         />
       )}
@@ -4102,6 +4290,16 @@ export function FileManagerPage() {
                 }
               : undefined
           }
+        />
+      )}
+
+      {swapDeclarationFile && (
+        <SwapDeclarationModal
+          kind="library"
+          id={swapDeclarationFile.id}
+          name={swapDeclarationFile.filename}
+          canDeclare={canModify('library', 'update', swapDeclarationFile.created_by_id)}
+          onClose={() => setSwapDeclarationFile(null)}
         />
       )}
 

@@ -554,6 +554,10 @@ async def produce_for_line(db: AsyncSession, line: ProjectLine, units: int, *, a
     _at_least_one(units)
     await lock_line(db, line)
     item = await position_for_line(db, line, create=True)
+    await lock_item(db, item.id)
+    await part_stock.consume_partial_reservation(
+        db, line, units, stock_item_id=item.id, created_by=actor.id if actor is not None else None
+    )
     await _record(db, item, "produced", units, units, note=None, actor=actor, line=line, counters={"received": units})
 
 

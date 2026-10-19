@@ -127,3 +127,31 @@ describe('MergePartDialog', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe('the pictures of the two parts (plan E5, D13)', () => {
+  it('shows the source and, once chosen, the target', () => {
+    const source = part({ id: 1, name: 'Body', image: { kind: 'render', status: 'ready', v: 'r1' } });
+    const target = part({ id: 2, name: 'Lid', image: { kind: 'render', status: 'ready', v: 'r2' } });
+    render(<MergePartDialog product={{ ...product, parts: [source, target] } as Product} source={source} onClose={noop} />);
+    expect(screen.getByRole('button', { name: 'Show Body larger' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show Lid larger' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Target part'), { target: { value: '2' } });
+    expect(screen.getByRole('button', { name: 'Show Lid larger' })).toBeInTheDocument();
+  });
+
+  it('says the source’s photo goes only when it has one', () => {
+    const withPhoto = part({
+      id: 1,
+      name: 'Body',
+      image_choice: { source: 'photo', instance: null, pin: null, photo: { present: true } },
+    });
+    const target = part({ id: 2, name: 'Lid' });
+    const { rerender } = render(
+      <MergePartDialog product={{ ...product, parts: [withPhoto, target] } as Product} source={withPhoto} onClose={noop} />,
+    );
+    expect(screen.getByText('Its photo is deleted; the target keeps its own picture.')).toBeInTheDocument();
+    const plain = part({ id: 1, name: 'Body' });
+    rerender(<MergePartDialog product={{ ...product, parts: [plain, target] } as Product} source={plain} onClose={noop} />);
+    expect(screen.queryByText('Its photo is deleted; the target keeps its own picture.')).not.toBeInTheDocument();
+  });
+});

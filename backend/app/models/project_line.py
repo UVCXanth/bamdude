@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -36,6 +36,8 @@ class ProjectLine(Base):
     # ``config_key`` is written only by services/line_config.py.
     mode: Mapped[str] = mapped_column(String(8), nullable=False, default="product", server_default="product")
     config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
+    # Snapshot on creation: editing catalog percentages never rewrites an existing order.
+    extra_percentages: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     # spec workshop-add-to-order, rule 1: finished units this line took off the
     # finished-goods shelf, issued ones included (an issue does not lower it —
     # a completed order stays covered). Written only by services/finished_stock.py,

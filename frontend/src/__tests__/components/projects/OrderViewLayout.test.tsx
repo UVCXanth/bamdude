@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { Routes, Route } from 'react-router';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
@@ -31,6 +31,25 @@ describe('OrderView composition', () => {
   });
   afterEach(() => {
     window.history.pushState({}, '', '/');
+  });
+
+  it('connects the single quantity-calculator action through the REAL page host without writing or enqueueing', async () => {
+    const order = makeOrder();
+    const line = order.lines[0];
+    const mocks = mockOrderDetailApi(order);
+    mocks.getOrderPlan.mockResolvedValue({ lines: [{ line_id: line.id, product_id: line.product_id,
+      product_name: line.product_name, material: null, outstanding_before: [{ part_id: 1, name: 'Part A', count: 1 }], rows: [], surplus_after: [],
+      unsatisfiable: [], candidates: [], not_sliced: [] }],
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null }, truncated: false });
+    const write = vi.spyOn(api, 'updateOrderLine');
+    const send = vi.spyOn(api, 'enqueueOrderPlan');
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus' }));
+    expect(await screen.findByRole('dialog', { name: 'Adjust without surplus' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getAllByRole('button', { name: 'Adjust without surplus' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Plate quantities' })).not.toBeInTheDocument();
+    expect(write).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
   });
 
   it('lays the zones out as head → banners → grid, and the grid as main before side', async () => {
@@ -83,13 +102,18 @@ describe('OrderView composition', () => {
     expect(within(region).getByRole('table')).toBeInTheDocument();
   });
 
-  it('stacks the side panels as forecast → filament → queue → activity (G01)', async () => {
+  it('puts the forecast above the plan and supporting panels in the side column', async () => {
     mockOrderDetailApi(makeOrder());
     renderPage();
 
     const side = await screen.findByTestId('order-side');
     const titles = await within(side).findAllByRole('heading', { level: 2 });
-    expect(titles.map((h) => h.textContent)).toEqual(['Forecast', 'Filament', 'Queue', 'Activity']);
+    expect(titles.map((h) => h.textContent)).toEqual(['Filament', 'Queue', 'Activity']);
+    const main = screen.getByTestId('order-main');
+    const forecast = await within(main).findByRole('heading', { level: 2, name: 'Forecast' });
+    const options = await within(main).findByText('Print parameters for this order');
+    expect(precedes(forecast, options)).toBe(true);
+    expect(screen.getAllByRole('heading', { name: 'Forecast' })).toHaveLength(1);
   });
 
   it('has no forecast for a closed order — three panels', async () => {
@@ -108,4 +132,19 @@ describe('OrderView composition', () => {
     const view = await screen.findByTestId('order-view');
     expect(view.closest('.workshop')).not.toBeNull();
   });
+  it('opens a fresh plan review from an unvisited tab without sending anything', async () => {
+    mockOrderDetailApi(makeOrder());
+    const planRead = vi.spyOn(api, 'getOrderPlan').mockResolvedValue({ lines: [], truncated: false, totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
+    const send = vi.spyOn(api, 'enqueueOrderPlan');
+    renderPage('/projects/1?section=prints');
+    const shortcut = await screen.findByRole('button', { name: 'Whole order to auto queue…' });
+    expect(planRead).not.toHaveBeenCalled();
+    fireEvent.click(shortcut);
+    const review = await screen.findByRole('dialog');
+    await waitFor(() => expect(review).toHaveTextContent('Total: 0 print runs'));
+    expect(planRead).toHaveBeenCalled();
+    expect(within(review).getByRole('button', { name: 'Send to auto queue' })).toBeDisabled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
 });

@@ -1,4 +1,6 @@
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
+import { PlateDetectionAreaEditor } from '../components/PlateDetectionAreaEditor';
+import type { PlateDetectionROI, PlatePoint, PlateDetectionResult } from '../api/client';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
@@ -98,8 +100,10 @@ import {
 import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
-import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
-import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
+import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY, DEFAULT_AUTO_STOCK_SPOOL } from '../api/client';
+import { AutoStockSpoolFields } from '../components/AutoStockSpoolFields';
+import { BulkPrinterToolbar, type BulkAction } from '../components/BulkPrinterToolbar';
+import { BulkPrinterActionDialog } from '../components/BulkPrinterActionDialog';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
@@ -1279,31 +1283,74 @@ function ToolbarDropdown<T extends string>({
   options,
   onChange,
   fullWidth = false,
+  inactive = false,
 }: {
   value: T;
   options: ToolbarDropdownOption<T>[];
   onChange: (value: T) => void;
   fullWidth?: boolean;
+  inactive?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listId = useId();
   const selectedOption = options.find((option) => option.value === value) ?? options[0];
 
+  useEffect(() => {
+    if (inactive) setIsOpen(false);
+  }, [inactive]);
+
+  useEffect(() => {
+    if (!isOpen || !fullWidth || inactive) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || rootRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setIsOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isOpen, fullWidth, inactive]);
+
   return (
-    <div className={`relative ${fullWidth ? 'w-full min-w-0' : ''}`}>
+    <div
+      ref={rootRef}
+      data-toolbar-nested-open={(isOpen && !inactive) || undefined}
+      className={`relative ${fullWidth ? 'w-full min-w-0' : ''}`}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !isOpen) return;
+        event.stopPropagation();
+        event.preventDefault();
+        setIsOpen(false);
+        buttonRef.current?.focus();
+      }}
+    >
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setIsOpen((open) => !open)}
+        aria-expanded={isOpen && !inactive}
+        aria-controls={isOpen && !inactive ? listId : undefined}
         className={`h-8 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white text-sm font-medium transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:border-bambu-green flex items-center justify-between gap-2 ${fullWidth ? 'w-full' : 'min-w-28'}`}
       >
         <span className="truncate">{selectedOption?.label}</span>
         <ChevronDown className={`w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-bambu-gray transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
+      {isOpen && !inactive && (
         <>
           {/* not-a-modal: menu */}
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-1 shadow-xl">
+          {!fullWidth && <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />}
+          <div id={listId} className="absolute left-0 top-full z-20 mt-1 min-w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-1 shadow-xl">
             {options.map((option) => (
               <button
                 key={option.value}
@@ -1330,18 +1377,51 @@ function ToolbarMenu({
   label,
   icon,
   children,
+  onClose,
 }: {
   label: string;
   icon: React.ReactNode;
-  children: React.ReactNode;
+  children: (close: () => void) => React.ReactNode;
+  onClose?: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  const close = () => {
+    setIsOpen(false);
+    onClose?.();
+    buttonRef.current?.focus();
+  };
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !isOpen) return;
+        const nested = panelRef.current?.querySelector<HTMLElement>('[data-toolbar-nested-open="true"]');
+        if (nested) {
+          // A child handles Escape while focused. If focus moved to a sibling,
+          // close that child here before the key reaches document listeners.
+          if (nested.contains(event.target as Node)) return;
+          event.stopPropagation();
+          event.preventDefault();
+          const trigger = nested.querySelector<HTMLButtonElement>('button');
+          trigger?.click();
+          trigger?.focus();
+          return;
+        }
+        event.stopPropagation();
+        event.preventDefault();
+        close();
+      }}
+    >
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => isOpen ? close() : setIsOpen(true)}
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? panelId : undefined}
         className="h-8 w-8 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center justify-center"
         aria-label={label}
         title={label}
@@ -1352,12 +1432,15 @@ function ToolbarMenu({
       {isOpen && (
         <>
           {/* not-a-modal: menu */}
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div className="fixed inset-0 z-10" onClick={close} />
           <div
+            ref={panelRef}
+            id={panelId}
+            role="group"
+            aria-label={label}
             className="absolute right-0 top-full z-20 mt-1 min-w-40 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-2 shadow-xl"
-            onClick={() => setIsOpen(false)}
           >
-            {children}
+            {children(close)}
           </div>
         </>
       )}
@@ -2147,18 +2230,7 @@ const PrinterCard = memo(function PrinterCard({
     savedPresetId?: string;
   } | null>(null);
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
-  const [plateCheckResult, setPlateCheckResult] = useState<{
-    is_empty: boolean;
-    confidence: number;
-    difference_percent: number;
-    message: string;
-    debug_image_url?: string;
-    needs_calibration: boolean;
-    light_warning?: boolean;
-    reference_count?: number;
-    max_references?: number;
-    roi?: { x: number; y: number; w: number; h: number };
-  } | null>(null);
+  const [plateCheckResult, setPlateCheckResult] = useState<PlateDetectionResult | null>(null);
   const [isCheckingPlate, setIsCheckingPlate] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [editingRoi, setEditingRoi] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -2449,7 +2521,9 @@ const PrinterCard = memo(function PrinterCard({
   // commands), so both calibration kebab entries are gated on the printer
   // being online and not mid-print.
   const calibrationAvailable = isConnected === true && !isPrintingOrPaused;
-  const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
+  // The setting controls future holds. An existing hold (including an
+  // auto-eject run) must remain visible and manually answerable when it is off.
+  const needsPlateClear = status?.awaiting_plate_clear === true;
   // Repeat needs a finished queue row to re-arm, and the gate can be armed
   // over nothing — then the button only ever answered "nothing is waiting".
   // An older backend does not send the field; then the button stays as before.
@@ -2475,10 +2549,10 @@ const PrinterCard = memo(function PrinterCard({
   // run dry, and the only pair the compact card ever draws.
   const plateDefects = usePlateDefects(
     printer.id,
-    showClearPlateButton && (status?.state === 'FINISH' || status?.state === 'FAILED'),
+    showClearPlateButton,
   );
   const plateStatus = (() => {
-    if (!requirePlateClear || !status?.connected) return null;
+    if ((!requirePlateClear && !needsPlateClear) || !status?.connected) return null;
     if (isPrintingOrPaused) {
       return {
         label: t('printers.plateStatus.inUse'),
@@ -3168,11 +3242,10 @@ const PrinterCard = memo(function PrinterCard({
   };
 
   // Save ROI settings
-  const handleSaveRoi = async () => {
-    if (!editingRoi) return;
+  const handleSaveRoi = async (roi: PlateDetectionROI, polygon: PlatePoint[] | null) => {
     setIsSavingRoi(true);
     try {
-      await api.updatePrinter(printer.id, { plate_detection_roi: editingRoi });
+      await api.updatePrinter(printer.id, { plate_detection_roi: roi, plate_detection_polygon: polygon });
       showToast(t('printers.toast.detectionAreaSaved'), 'success');
       setEditingRoi(null);
       // Re-check to see new ROI in action
@@ -6757,7 +6830,7 @@ const PrinterCard = memo(function PrinterCard({
               <>
                 <div className={`p-3 rounded-lg ${plateCheckResult.is_empty ? 'bg-green-100 dark:bg-green-500/20 border border-green-300 dark:border-green-500/50' : 'bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-500/50'}`}>
                   <p className={`font-medium ${plateCheckResult.is_empty ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}`}>
-                    {plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
+                    {plateCheckResult.status === 'unavailable' ? t('autoEject.checkUnavailable') : plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
                   </p>
                   <p className="text-sm text-bambu-gray mt-1">
                     {t('printers.plateDetection.confidence')}: {Math.round(plateCheckResult.confidence * 100)}% | {t('printers.plateDetection.difference')}: {plateCheckResult.difference_percent.toFixed(1)}%
@@ -6844,106 +6917,23 @@ const PrinterCard = memo(function PrinterCard({
               </div>
             )}
 
-            {/* ROI Editor */}
-            {!plateCheckResult.needs_calibration && (
+            {/* Both shapes use source-image coordinates, never the debug overlay. */}
+            {plateCheckResult.source_image_url && (
               <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-medium text-white">{t('printers.roi.title')}</p>
-                  {!editingRoi ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditingRoi(plateCheckResult.roi || { x: 0.15, y: 0.35, w: 0.70, h: 0.55 })}
-                    >
-                      <Pencil className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] mr-1" />
-                      {t('common.edit')}
-                    </Button>
-                  ) : (
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEditingRoi(null)}
-                        disabled={isSavingRoi}
-                      >
-                        {t('common.cancel')}
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={handleSaveRoi}
-                        disabled={isSavingRoi}
-                      >
-                        {isSavingRoi ? <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" /> : t('common.save')}
-                      </Button>
-                    </div>
-                  )}
+                  {!editingRoi && <Button variant="ghost" size="sm"
+                    onClick={() => setEditingRoi(plateCheckResult.roi ?? { x: 0.15, y: 0.35, w: 0.70, h: 0.55 })}>
+                    <Pencil className="w-3 h-3 mr-1" />{t('common.edit')}
+                  </Button>}
                 </div>
-                {editingRoi ? (
-                  <div className="space-y-3 bg-bambu-dark-tertiary/50 p-3 rounded-lg">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.roi.xStart')}</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.9"
-                          step="0.01"
-                          value={editingRoi.x}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, x: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.x * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.roi.yStart')}</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.9"
-                          step="0.01"
-                          value={editingRoi.y}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, y: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.y * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.width')}</label>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1"
-                          step="0.01"
-                          value={editingRoi.w}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, w: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.w * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.height')}</label>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1"
-                          step="0.01"
-                          value={editingRoi.h}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, h: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.h * 100)}%</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray">
-                      {t('printers.roi.instruction')}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-bambu-gray">
-                    Current: X={Math.round((plateCheckResult.roi?.x || 0.15) * 100)}%, Y={Math.round((plateCheckResult.roi?.y || 0.35) * 100)}%,
-                    W={Math.round((plateCheckResult.roi?.w || 0.70) * 100)}%, H={Math.round((plateCheckResult.roi?.h || 0.55) * 100)}%
-                  </p>
-                )}
+                {editingRoi ? <PlateDetectionAreaEditor
+                  imageUrl={plateCheckResult.source_image_url}
+                  roi={editingRoi} polygon={plateCheckResult.polygon}
+                  saving={isSavingRoi} onSave={handleSaveRoi} onCancel={() => setEditingRoi(null)}
+                /> : <p className="text-xs text-bambu-gray">
+                  {t(plateCheckResult.polygon ? 'printers.roi.polygon' : 'printers.roi.rectangle')}
+                </p>}
               </div>
             )}
           </div>
@@ -8790,6 +8780,7 @@ export function EditPrinterModal({
     require_plate_clear: printer.require_plate_clear ?? true,
     // An older backend sends no `ams_policies` at all, hence the optional read.
     ams_compat: printer.ams_policies?.backup_compatibility ?? DEFAULT_BACKUP_COMPATIBILITY,
+    auto_stock_spool: printer.ams_policies?.auto_stock_spool ?? DEFAULT_AUTO_STOCK_SPOOL,
   });
 
   // Swap profile catalog for the dropdown (same query as add-form).
@@ -8832,7 +8823,7 @@ export function EditPrinterModal({
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
       require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
       // PATCH replaces the whole namespace, so the policy always travels in full.
-      ams_policies: backupCompatibilityPatch(form.ams_compat),
+      ams_policies: { ...backupCompatibilityPatch(form.ams_compat), auto_stock_spool: form.auto_stock_spool },
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -9124,6 +9115,8 @@ export function EditPrinterModal({
                   </>
                 );
               })()}
+              <AutoStockSpoolFields value={form.auto_stock_spool}
+                onChange={auto_stock_spool => setForm({ ...form, auto_stock_spool })} />
               {!form.swap_mode_enabled && (
               <div>
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -9257,6 +9250,8 @@ export function PrintersPage() {
     return localStorage.getItem('hideDisconnectedPrinters') === 'true';
   });
   const [showPowerDropdown, setShowPowerDropdown] = useState(false);
+  const powerDropdownRef = useRef<HTMLDivElement>(null);
+  const powerDropdownId = useId();
   const [poweringOn, setPoweringOn] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>(() => {
     // Validated on read, as the status filter is: a cast would take whatever
@@ -9339,8 +9334,8 @@ export function PrintersPage() {
   // the current visual order; plain Ctrl/Cmd-click both selects and updates
   // the anchor. Cleared whenever the selection set is emptied.
   const [lastSelectedId, setLastSelectedId] = useState<number | null>(null);
-  const [bulkConfirmAction, setBulkConfirmAction] = useState<'stop' | 'pause' | 'clearPlate' | null>(null);
-  const [bulkActionPending, setBulkActionPending] = useState(false);
+  const [bulkSelection, setBulkSelection] = useState<{ action: BulkAction; printers: Printer[] } | null>(null);
+
   const selectionMode = selectedPrinterIds.size > 0;
   // Compact-card "expand into popup" — single printer id, null = closed.
   // The popup re-mounts <PrinterCard> with viewMode='expanded' cardSize=2
@@ -9733,6 +9728,30 @@ export function PrintersPage() {
   const expandedToolbarControlsRef = useRef<HTMLDivElement | null>(null);
   const [compactToolbar, setCompactToolbar] = useState(false);
 
+  useEffect(() => {
+    setShowPowerDropdown(false);
+  }, [compactToolbar]);
+
+  useEffect(() => {
+    if (!showPowerDropdown) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!powerDropdownRef.current?.contains(event.target as Node)) setShowPowerDropdown(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || powerDropdownRef.current?.contains(event.target as Node)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setShowPowerDropdown(false);
+      powerDropdownRef.current?.querySelector('button')?.focus();
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [showPowerDropdown]);
+
   const measureToolbar = useCallback(() => {
     const toolbar = toolbarRef.current;
     const expanded = expandedToolbarControlsRef.current;
@@ -9786,43 +9805,11 @@ export function PrintersPage() {
     setSelectedPrinterIds(new Set(ids));
   }, [printers, queryClient]);
 
-  const executeBulkAction = useCallback(async (action: string) => {
-    const ids = Array.from(selectedPrinterIds);
-    setBulkActionPending(true);
-    setBulkConfirmAction(null);
-    let successCount = 0;
-    for (const id of ids) {
-      try {
-        if (action === 'stop') await api.stopPrint(id);
-        else if (action === 'pause') await api.pausePrint(id);
-        else if (action === 'resume') await api.resumePrint(id);
-        else if (action === 'clearPlate') {
-          // The bulk tool still answers one held run per printer. Fetching it
-          // immediately before the mutation gives it the same stale-card guard
-          // as the individual card instead of silently clearing a newer run.
-          const waiting = await api.getWaitingPrint(id);
-          await api.clearPlate(id, {
-            expected_archive_id: waiting.archive_id,
-            expected_gate_token: waiting.gate_token ?? undefined,
-          });
-        }
-        else if (action === 'clearHMS') await api.clearHMSErrors(id);
-        successCount++;
-      } catch { /* skip failed */ }
-    }
-    setBulkActionPending(false);
-    showToast(t('printers.bulk.actionComplete', { count: successCount }), 'success');
-    clearSelection();
-  }, [selectedPrinterIds, showToast, t, clearSelection]);
-
-  const handleBulkAction = useCallback((action: string) => {
-    if (action === 'stop' || action === 'pause' || action === 'clearPlate') {
-      setBulkConfirmAction(action as 'stop' | 'pause' | 'clearPlate');
-    } else {
-      executeBulkAction(action);
-    }
-  }, [executeBulkAction]);
-
+  const handleBulkAction = useCallback((action: BulkAction) => {
+    // Snapshot names and IDs at the click: background selection changes cannot
+    // add a printer to an already-open confirmation.
+    setBulkSelection({ action, printers: (printers ?? []).filter(p => selectedPrinterIds.has(p.id)).map(p => ({ ...p })) });
+  }, [printers, selectedPrinterIds]);
   // Increment version counter whenever a printerStatus cache entry is updated so
   // filteredPrinters re-computes reactively on WebSocket-driven status changes (#852).
   // Only the status-filter branch of filteredPrinters actually reads this
@@ -10216,15 +10203,16 @@ export function PrintersPage() {
   // viewports and grouped under 3 overflow menus on narrow viewports. The
   // ``inMenu`` flag flips per-control styling so dropdowns and buttons go
   // full-width inside the menu but stay compact in the inline ribbon.
-  const renderFilterControls = (inMenu = false) => (
+  const renderFilterControls = (inMenu = false, onComplete?: () => void) => (
     <>
-      <OpenMonitorButton view="printers" sort={sortBy} />
+      <OpenMonitorButton view="printers" sort={sortBy} onOpened={onComplete} />
       {/* Status filter */}
       {printers && printers.length > 0 && (
         <ToolbarDropdown
           value={statusFilter}
           onChange={handleStatusFilterChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={STATUS_FILTER_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
         />
       )}
@@ -10235,6 +10223,7 @@ export function PrintersPage() {
           value={locationFilter}
           onChange={handleLocationFilterChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={[
             { value: 'all', label: t('printers.filter.allLocations') },
             ...availableLocations.map((loc) => ({
@@ -10250,7 +10239,7 @@ export function PrintersPage() {
           the search box and both dropdowns go away, and a lone Tags button
           left standing over "No printers configured yet" filters nothing. */}
       {printers && printers.length > 0 && (tagRows?.tags.length ?? 0) > 0 && (
-        <TagFilterMenu tags={tagRows!.tags} selected={tagFilter} onChange={handleTagFilterChange} fullWidth={inMenu} />
+        <TagFilterMenu tags={tagRows!.tags} selected={tagFilter} onChange={handleTagFilterChange} fullWidth={inMenu} inactive={!inMenu && compactToolbar} />
       )}
 
       <button
@@ -10276,6 +10265,7 @@ export function PrintersPage() {
           value={sortBy}
           onChange={handleSortChange}
           fullWidth={inMenu}
+          inactive={!inMenu && compactToolbar}
           options={SORT_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
         />
         <button
@@ -10318,7 +10308,7 @@ export function PrintersPage() {
     </>
   );
 
-  const renderActionControls = (inMenu = false) => (
+  const renderActionControls = (inMenu = false, onComplete?: () => void) => (
     <>
       {/* Bulk select — BamDude 2-stage flow: "Select all" → "N selected" + clearSelection.
           Only shown when more than one printer exists (single-printer farms have no use for bulk). */}
@@ -10327,7 +10317,7 @@ export function PrintersPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={clearSelection}
+            onClick={() => { clearSelection(); onComplete?.(); }}
             className={`!h-8 !min-h-8 !bg-bambu-green/20 !border-bambu-green/50 !text-bambu-green ${inMenu ? 'w-full' : ''}`}
           >
             {t('printers.bulk.selected', { count: selectedPrinterIds.size })}
@@ -10336,7 +10326,7 @@ export function PrintersPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map((p) => p.id))); }}
+            onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map((p) => p.id))); onComplete?.(); }}
             disabled={!hasPermission('printers:control')}
             className={`!h-8 !min-h-8 ${inMenu ? 'w-full' : ''}`}
           >
@@ -10347,22 +10337,35 @@ export function PrintersPage() {
 
       {/* Power dropdown — only shown when offline printers with smart plugs are filtered out */}
       {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
-        <div className={`relative ${inMenu ? 'w-full' : ''}`}>
+        <div
+          ref={inMenu || !compactToolbar ? powerDropdownRef : undefined}
+          data-toolbar-nested-open={(showPowerDropdown && (inMenu || !compactToolbar)) || undefined}
+          className={`relative ${inMenu ? 'w-full' : ''}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !showPowerDropdown) return;
+            event.stopPropagation();
+            event.preventDefault();
+            setShowPowerDropdown(false);
+            powerDropdownRef.current?.querySelector('button')?.focus();
+          }}
+        >
           <Button
             variant="outline"
             size="sm"
             onClick={() => setShowPowerDropdown(!showPowerDropdown)}
+            aria-expanded={showPowerDropdown && (inMenu || !compactToolbar)}
+            aria-controls={showPowerDropdown && (inMenu || !compactToolbar) ? powerDropdownId : undefined}
             className={`!h-8 !min-h-8 ${inMenu ? 'w-full justify-between' : ''}`}
           >
             <Power className="w-4 h-4" />
             {t('printers.powerOn')}
             <ChevronDown className={`w-3 h-3 transition-transform ${showPowerDropdown ? 'rotate-180' : ''}`} />
           </Button>
-          {showPowerDropdown && (
+          {showPowerDropdown && (inMenu || !compactToolbar) && (
             <>
               {/* not-a-modal: menu */}
-              <div className="fixed inset-0 z-10" onClick={() => setShowPowerDropdown(false)} />
-              <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
+              {!inMenu && <div className="fixed inset-0 z-10" onClick={() => setShowPowerDropdown(false)} />}
+              <div id={powerDropdownId} className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
                 <div className="px-3 py-2 text-xs text-gray-500 dark:text-bambu-gray border-b border-gray-200 dark:border-bambu-dark-tertiary">
                   {t('printers.offlinePrintersWithPlugs')}
                 </div>
@@ -10374,6 +10377,8 @@ export function PrintersPage() {
                     onPowerOn={(plugId) => {
                       setPoweringOn(plugId);
                       powerOnMutation.mutate(plugId);
+                      setShowPowerDropdown(false);
+                      onComplete?.();
                     }}
                     isPowering={poweringOn === smartPlugByPrinter[printer.id]?.id}
                   />
@@ -10390,7 +10395,7 @@ export function PrintersPage() {
       )}
 
       <Button
-        onClick={() => setShowAddModal(true)}
+        onClick={() => { onComplete?.(); setShowAddModal(true); }}
         disabled={!hasPermission('printers:create')}
         title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
         className={`!h-8 !min-h-8 px-2 py-0 ${inMenu ? 'w-full' : ''}`}
@@ -10509,13 +10514,13 @@ export function PrintersPage() {
           {compactToolbar && (
             <div className="ml-auto flex items-center justify-end gap-1">
               <ToolbarMenu label={t('printers.toolbar.filters')} icon={<Filter className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderFilterControls(true)}</div>
+                {(close) => <div className="flex w-48 flex-col gap-2">{renderFilterControls(true, close)}</div>}
               </ToolbarMenu>
               <ToolbarMenu label={t('printers.toolbar.view')} icon={<SlidersHorizontal className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderViewControls(true)}</div>
+                {() => <div className="flex w-48 flex-col gap-2">{renderViewControls(true)}</div>}
               </ToolbarMenu>
-              <ToolbarMenu label={t('printers.toolbar.actions')} icon={<MoreHorizontal className="w-4 h-4" />}>
-                <div className="flex w-48 flex-col gap-2">{renderActionControls(true)}</div>
+              <ToolbarMenu label={t('printers.toolbar.actions')} icon={<MoreHorizontal className="w-4 h-4" />} onClose={() => setShowPowerDropdown(false)}>
+                {(close) => <div className="flex w-48 flex-col gap-2">{renderActionControls(true, close)}</div>}
               </ToolbarMenu>
             </div>
           )}
@@ -10640,34 +10645,13 @@ export function PrintersPage() {
         />
       )}
 
-      {/* Bulk confirm modals */}
-      {bulkConfirmAction === 'stop' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.stop')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          confirmText={t('printers.bulk.actions.stop')}
-          variant="danger"
-          onConfirm={() => executeBulkAction('stop')}
-          onCancel={() => setBulkConfirmAction(null)}
+      {bulkSelection && (
+        <BulkPrinterActionDialog
+          action={bulkSelection.action}
+          printers={bulkSelection.printers}
+          onClose={() => setBulkSelection(null)}
         />
       )}
-      {bulkConfirmAction === 'pause' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.pause')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          onConfirm={() => executeBulkAction('pause')}
-          onCancel={() => setBulkConfirmAction(null)}
-        />
-      )}
-      {bulkConfirmAction === 'clearPlate' && (
-        <ConfirmModal
-          title={t('printers.bulk.actions.clearPlate')}
-          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-          onConfirm={() => executeBulkAction('clearPlate')}
-          onCancel={() => setBulkConfirmAction(null)}
-        />
-      )}
-
       {/* Compact-card "expand into popup": re-mount the same PrinterCard
           with M-size sizing for the picked printer. The shell draws no
           header (``hideClose`` + no title): the card already shows the
@@ -10744,7 +10728,7 @@ export function PrintersPage() {
           onSelectByLocation={selectByLocation}
           onSelectByState={selectByState}
           onAction={handleBulkAction}
-          actionPending={bulkActionPending}
+          actionPending={bulkSelection !== null}
         />
       )}
     </div>

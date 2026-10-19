@@ -1318,7 +1318,6 @@ async def download_file_async(
     return False
 
 
-@_ftp_serialized
 async def download_file_try_paths_async(
     ip_address: str,
     access_code: str,
@@ -1328,7 +1327,37 @@ async def download_file_try_paths_async(
     printer_model: str | None = None,
     timeout: float = 90.0,
 ) -> bool:
-    """Try downloading a file from multiple paths using a single connection.
+    """Whether :func:`download_file_first_path_async` found any of the paths -- the old bool contract.
+
+    Deliberately NOT serialized itself: the call below holds the printer's FTP lock for its one session, and a
+    second acquisition of the same lock here would never be granted.
+    """
+    found = await download_file_first_path_async(
+        ip_address,
+        access_code,
+        remote_paths,
+        local_path,
+        socket_timeout=socket_timeout,
+        printer_model=printer_model,
+        timeout=timeout,
+    )
+    return found is not None
+
+
+@_ftp_serialized
+async def download_file_first_path_async(
+    ip_address: str,
+    access_code: str,
+    remote_paths: list[str],
+    local_path: Path,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+    timeout: float = 90.0,
+) -> str | None:
+    """Try downloading a file from multiple paths using a single connection; the path that worked, or None.
+
+    The remote path is the one name the transport has proved: which of the candidates the bytes in
+    ``local_path`` really came from (swap-source-lifecycle spec r4 §7). The local file's own name proves nothing.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
@@ -1351,7 +1380,7 @@ async def download_file_try_paths_async(
         started.set()
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if not client.connect():
-            return False
+            return None
 
         try:
             # FileNotOnPrinterError signals "try the next path", not "give up" —
@@ -1360,10 +1389,10 @@ async def download_file_try_paths_async(
             for remote_path in remote_paths:
                 try:
                     if client.download_to_file(remote_path, local_path):
-                        return True
+                        return remote_path
                 except FileNotOnPrinterError:
                     continue
-            return False
+            return None
         finally:
             client.disconnect()
 
@@ -1386,7 +1415,7 @@ async def download_file_try_paths_async(
             timeout,
             ip_address,
         )
-        return False
+        return None
     return await future
 
 
@@ -1601,6 +1630,8 @@ async def delete_file_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
     timeout: float = 60.0,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> DeleteResult:
     """Async wrapper for deleting a file.
 
@@ -1617,9 +1648,13 @@ async def delete_file_async(
     loop = asyncio.get_event_loop()
 
     def _delete() -> DeleteResult:
+        if may_run is not None and not may_run():
+            return DeleteResult.FAILED
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return DeleteResult.FAILED
                 return client.delete_file(remote_path)
             finally:
                 client.disconnect()
@@ -1673,14 +1708,20 @@ async def rename_file_async(
     to_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> bool | None:
     """Async wrapper for renaming/moving a file. Returns True on success, None if not found, False on error."""
     loop = asyncio.get_event_loop()
 
     def _rename():
+        if may_run is not None and not may_run():
+            return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return False
                 return client.rename_file(from_path, to_path)
             finally:
                 client.disconnect()
@@ -1735,14 +1776,20 @@ async def upload_bytes_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> bool:
     """Async wrapper for uploading bytes to a file on the printer."""
     loop = asyncio.get_event_loop()
 
     def _upload():
+        if may_run is not None and not may_run():
+            return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
+                if may_run is not None and not may_run():
+                    return False
                 return client.upload_bytes(data, remote_path)
             finally:
                 client.disconnect()

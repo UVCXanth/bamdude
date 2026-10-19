@@ -106,6 +106,7 @@ async def get_settings(
                 "user_notifications_enabled",
                 "prefer_lowest_filament",
                 "queue_shortest_first",
+                "forecast_operator_absence_enabled",
                 "auto_queue_rebalance_models",
                 "auto_queue_compatible_models",
                 "auto_order_for_batches",
@@ -203,6 +204,22 @@ async def update_settings(
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
+    if any(key.startswith("forecast_operator_") for key in update_data):
+        current = (await get_settings(db, None)).model_dump()
+        operator = {**current, **update_data}
+        if (
+            any(
+                operator[key] is None
+                for key in (
+                    "forecast_operator_absence_enabled",
+                    "forecast_operator_absence_start",
+                    "forecast_operator_absence_end",
+                    "forecast_operator_timezone",
+                )
+            )
+            or operator["forecast_operator_absence_start"] == operator["forecast_operator_absence_end"]
+        ):
+            raise HTTPException(status_code=422, detail="Operator absence start and end must differ.")
 
     # #1589: safety refusals on disabling local login. Two failure modes would
     # otherwise lock everyone out of the install:
@@ -618,6 +635,21 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+PICTURE_PAUSE_DRAIN = 30.0  # an attach is one short transaction and one PNG copy
+
+
+async def _stage_files_and_pictures(data_dir: Path, staging: Path) -> None:
+    """Every managed directory strictly, the library's pictures delegated; then those pictures, last and strictly,
+    under a short pause of the library preview publications (Codex A-R5). The database snapshot was taken before:
+    a picture it names is never deleted by an attach, so it is among those copied."""
+    from backend.app.core.db_portable import _file_work
+    from backend.app.services import backup_files, library_preview
+
+    await _file_work(backup_files.stage_files, app_settings, data_dir, staging)
+    async with library_preview.publication.pause(PICTURE_PAUSE_DRAIN):
+        await _file_work(backup_files.stage_library_thumbnails, Path(app_settings.library_dir), staging / "library")
+
+
 async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
     """Portable DB plus verified files; manual and scheduled backups share a lock."""
     from backend.app.services.backup_files import exclusive_operation
@@ -634,7 +666,6 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     from backend.app.core.paths import resolve_data_dir
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import (
-        stage_files,
         stage_queue_spool,
         stage_zigbee_db,
         write_manifest,
@@ -650,7 +681,7 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
         async with queue_sources.pin_backup():
             await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
             data_dir = resolve_data_dir()
-            await _file_work(stage_files, app_settings, data_dir, staging)
+            await _stage_files_and_pictures(data_dir, staging)
             await _file_work(stage_zigbee_db, data_dir, staging)
             await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
             await _file_work(write_manifest, staging)
@@ -724,6 +755,31 @@ async def restore_backup(
         raise HTTPException(409, "A backup or restore is already running") from exc
 
 
+async def _quiesce_part_render() -> None:
+    """Spec §9.6 and consilium E3-R4: the part render queue is stopped and its last attempt proven over, or the
+    restore ends here -- before any other service is quiesced and before the database is touched."""
+    from backend.app.services import part_render_scheduler
+
+    if not await part_render_scheduler.stop_part_render_scheduler("restore"):
+        raise HTTPException(
+            409,
+            "The part thumbnail worker could not prove its last attempt ended. Restart BamDude, then restore.",
+        )
+
+
+async def _quiesce_library_previews() -> None:
+    """STEP spec §4.3: every library preview writer -- the STEP jobs, a handed-off attach, the legacy STL/OBJ
+    and sliced-source publications -- is closed and proven quiet before the storage guard and any file work,
+    or the restore ends here with nothing replaced."""
+    from backend.app.services import library_preview_jobs
+
+    if not await library_preview_jobs.quiesce_library_previews_for_restore():
+        raise HTTPException(409, {"error": "preview_quiesce_unproven", "message": PREVIEW_QUIESCE_UNPROVEN})
+
+
+PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Restart BamDude, then restore."
+
+
 async def _restore_backup(file: UploadFile, db: AsyncSession):
     import asyncio
     import tempfile
@@ -786,6 +842,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 from backend.app.services.zigbee.poller import zigbee_poller
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
+                await _quiesce_part_render()
+                await _quiesce_library_previews()
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

@@ -74,6 +74,7 @@ from backend.app.models.queue_source import (
 )
 from backend.app.services.backup_files import _signature as _stat_signature, digest
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, source_snapshot
+from backend.app.services.swap_compatibility import UNKNOWN_SOURCE, SourceFact, confirm as confirm_swap_fact
 from backend.app.utils.safe_path import PathTraversalError, assert_under, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -521,6 +522,10 @@ class CaptureRequest:
     provenance: dict[str, Any] = field(default_factory=dict)
     #: Background legacy hydration (§8) — bounded by :data:`HYDRATION_WORKERS`.
     background: bool = False
+    #: What the source row declares about a baked swap sequence, and the hash its bytes must have for that to
+    #: count (swap-source-lifecycle spec r4 §5). The receipt confirms it against the hash the worker computed.
+    swap_fact: SourceFact = UNKNOWN_SOURCE
+    expected_sha256: str | None = None
 
 
 class _Capture:
@@ -562,6 +567,12 @@ class CaptureReceipt:
     provenance: dict[str, Any]
     epoch: int
     state: str = "staged"
+    #: The source's declaration, confirmed against :attr:`sha256` -- unknown when the hash was missing or
+    #: different. The job's own from here on: nothing reads the source row again for it.
+    swap_fact: SourceFact = UNKNOWN_SOURCE
+    #: The original's ``st_mtime_ns`` as the copy found it, unchanged for the whole read; with
+    #: :attr:`size_bytes` it is the stat revision of the original these bytes are.
+    source_mtime_ns: int | None = None
 
     def descriptor(self, source: QueueSource) -> QueueSourceDescriptor:
         """The one shape readers get — path and format come from the ROW.
@@ -577,6 +588,7 @@ class CaptureReceipt:
             display_filename=self.display_filename,
             plate_fallback=self.plate_fallback,
             provenance=dict(self.provenance),
+            swap_fact=self.swap_fact,
         )
 
     async def discard(self) -> None:
@@ -757,8 +769,12 @@ def _reserve_space(record: _Capture, expected: int, root: Path) -> None:
         )
 
 
-def _capture_bytes(record: _Capture, request: CaptureRequest) -> tuple[str, int]:
-    """Copy the original into this worker's ``.part``, hashing as it goes."""
+def _capture_bytes(record: _Capture, request: CaptureRequest) -> tuple[str, int, int]:
+    """Copy the original into this worker's ``.part``, hashing as it goes.
+
+    Returns the hash, the size and the original's ``st_mtime_ns`` -- the stat the copy was proved against (it
+    did not change while it was read), which tells a caller which revision of the original these bytes are.
+    """
     staging = staging_root()
     try:
         staging.mkdir(parents=True, exist_ok=True)
@@ -832,7 +848,7 @@ def _capture_bytes(record: _Capture, request: CaptureRequest) -> tuple[str, int]
         raise SourceInvalid(f"{request.path} is empty")
 
     _validate_container(part, request.format)
-    return digest_state.hexdigest(), written
+    return digest_state.hexdigest(), written, before.st_mtime_ns
 
 
 def _write_failure(exc: OSError) -> QueueSourceError:
@@ -862,13 +878,13 @@ def _finish(record: _Capture, *, kept: bool) -> bool:
 
 def _work(record: _Capture, request: CaptureRequest, future: Future) -> None:
     try:
-        sha256, size = _capture_bytes(record, request)
+        sha256, size, source_mtime_ns = _capture_bytes(record, request)
     except BaseException as exc:  # noqa: BLE001 - every failure travels to the supervisor
         _finish(record, kept=False)
         future.set_exception(exc)
         return
     if _finish(record, kept=True):
-        future.set_result((sha256, size, record.part))
+        future.set_result((sha256, size, record.part, source_mtime_ns))
     else:
         # The supervisor stopped waiting: these bytes are gone and nobody is
         # owed a result. The future's exception is consumed by the callback the
@@ -903,6 +919,22 @@ def _remaining(record: _Capture) -> float:
         last_progress, started = record.last_progress, record.started
     now = _now()
     return min(NO_PROGRESS_SECONDS - (now - last_progress), CAPTURE_CEILING_SECONDS - (now - started))
+
+
+def _release_unclaimed(record: _Capture) -> None:
+    """Drop bytes a finished worker handed over to a caller that has gone.
+
+    The handover pinned the ``.part`` for the receipt, and only its owner may
+    unlink a pinned staging file (S6) -- here that owner is this supervisor,
+    which will never build the receipt. Off the loop, on a short daemon thread,
+    because a cancelled caller must not wait for a filesystem call.
+    """
+    with _state_lock:
+        part = record.part
+        if part is None or part not in _staging_pins:
+            return
+        _staging_pins.discard(part)
+    threading.Thread(target=_drop, args=(part,), name=f"{THREAD_NAME_PREFIX}-drop", daemon=True).start()
 
 
 def _abandon(record: _Capture) -> bool:
@@ -953,10 +985,13 @@ async def capture(source: CaptureRequest) -> CaptureReceipt:
     except asyncio.CancelledError:
         # Do NOT join: a dead SMB read would hold shutdown forever (§6). The
         # worker keeps its slot and cleans up its own staging when it returns.
-        _abandon(record)
+        if not _abandon(record):
+            # Too late to abandon: the worker finished and handed its bytes to a
+            # receipt nobody will ever hold.
+            _release_unclaimed(record)
         raise
 
-    sha256, size, part = await wrapped
+    sha256, size, part, source_mtime_ns = await wrapped
     return CaptureReceipt(
         token=record.token,
         staging_path=part,
@@ -967,6 +1002,8 @@ async def capture(source: CaptureRequest) -> CaptureReceipt:
         plate_fallback=source.plate_fallback,
         provenance=dict(source.provenance),
         epoch=current_epoch(),
+        swap_fact=confirm_swap_fact(source.swap_fact, source.expected_sha256, sha256),
+        source_mtime_ns=source_mtime_ns,
     )
 
 

@@ -95,6 +95,7 @@ async def remove_verified_copies(
     delete: Callable[[str], Awaitable[object]],
     label: str,
     allow_unverified: bool = False,
+    may_run: Callable[[], bool] | None = None,
 ) -> int:
     """Delete the printer's own copies of this print, proving each one first.
 
@@ -120,6 +121,8 @@ async def remove_verified_copies(
     removed = 0
 
     for entry in entries:
+        if may_run is not None and not may_run():
+            break
         if entry.get("is_directory"):
             continue
         name = entry.get("name") or ""
@@ -157,6 +160,8 @@ async def remove_verified_copies(
             )
 
         try:
+            if may_run is not None and not may_run():
+                break
             await delete(path)
         except Exception as exc:  # noqa: BLE001 — same as above
             logger.debug("[CLEANUP] %s: could not delete %s: %s", label, path, exc)

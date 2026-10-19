@@ -81,6 +81,19 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+# The image carries the STEP component, whose notices send a reader to its copyleft
+# sources on a BamDude release: this checkout's closure must already have its
+# bundle on a published release, or nothing is built.
+PYTHON_BIN=$(command -v python3 || command -v python || true)
+if [ -z "$PYTHON_BIN" ]; then
+    echo -e "${RED}Error: python3 is needed to check the STEP preview sources before publishing${NC}"
+    exit 1
+fi
+if ! "$PYTHON_BIN" scripts/step_preview_sources.py verify-published --repo kainpl/bamdude; then
+    echo -e "${RED}Error: no published release carries this commit's STEP preview sources — nothing was built${NC}"
+    exit 1
+fi
+
 # Get CPU count
 CPU_COUNT=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 

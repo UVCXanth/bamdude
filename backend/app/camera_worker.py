@@ -156,6 +156,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
         capture_tasks: set[asyncio.Task[None]] = set()
         from backend.app.services.camera_worker_live import (
             LIVE_STREAM_ENDED,
+            LiveAdmissionRejected,
             LiveBuiltinSubscription,
             LiveExternalSubscription,
             LiveProducerRegistry,
@@ -473,6 +474,14 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                         request_id=request["request_id"],
                         ok=True,
                         result={"lease_id": lease.lease_id},
+                    )
+                except LiveAdmissionRejected as exc:
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=False,
+                        error="protocol_error",
+                        result={"reason": exc.reason},
                     )
                 except CameraWorkerProtocolError:
                     reply = make_reply(

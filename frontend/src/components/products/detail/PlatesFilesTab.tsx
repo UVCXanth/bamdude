@@ -13,6 +13,7 @@ import { formatDuration } from '../../../utils/date';
 import { invalidateProductFiles } from '../../../utils/queryInvalidation';
 import { formatWeight } from '../../../utils/weight';
 import { Button } from '../../Button';
+import { InstanceThumb, PartThumb } from '../../PartThumb';
 import { ActionConfirm } from '../../workshop/ActionConfirm';
 import { LoadFailedNote } from '../../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
@@ -28,7 +29,7 @@ const LINK_BUTTON =
 type Unlinking = { kind: 'file'; file: ProductFileGroup; row: Element | null } | { kind: 'folder'; folder: ProductFolderRef; row: Element | null };
 
 /** One plate of a file (E03): what it gives, time, filament, material and colour. */
-function PlateRow({ plate }: { plate: PlateRecipe }) {
+function PlateRow({ plate, productId }: { plate: PlateRecipe; productId: number }) {
   const { t } = useTranslation();
   return (
     <tr data-testid={`plate-${plate.id}`} className="border-b border-bambu-dark-tertiary last:border-0">
@@ -41,18 +42,21 @@ function PlateRow({ plate }: { plate: PlateRecipe }) {
       <td className={CELL}>
         <span className="flex flex-wrap gap-1">
           {plate.yield.map((entry) => (
-            <span key={`y-${entry.part_id}-${entry.name}`} className={`${CHIP} bg-bambu-green/15 text-bambu-green`}>
+            <span key={`y-${entry.part_id}-${entry.name}`} className={`${CHIP} gap-1 bg-bambu-green/15 text-bambu-green`}>
+              <PartThumb partId={entry.part_id} image={entry.image} name={entry.name} size="xs" />
               {`${entry.name} × ${entry.count}`}
             </span>
           ))}
           {/* An object no part claims is shown, not hidden: the product under-counts what the
-              plate prints until somebody adds a part (or an alias) with that name. */}
+              plate prints until somebody adds a part (or an alias) with that name. Its picture is
+              the object's own (spec part-thumbnails §11.3, plan E4 D2). */}
           {plate.unassigned.map((entry) => (
             <span
               key={`u-${entry.name_key}`}
               title={t('products.detail.files.notInComposition')}
-              className={`${CHIP} border border-dashed border-bambu-gray/40 text-bambu-gray`}
+              className={`${CHIP} gap-1 border border-dashed border-bambu-gray/40 text-bambu-gray`}
             >
+              <InstanceThumb productId={productId} image={entry.image} name={entry.name_key} size="xs" />
               {`${entry.name_key} × ${entry.count}`}
             </span>
           ))}
@@ -210,7 +214,7 @@ export function PlatesFilesTab({
                     </thead>
                     <tbody>
                       {file.plates.map((plate) => (
-                        <PlateRow key={plate.id} plate={plate} />
+                        <PlateRow key={plate.id} plate={plate} productId={product.id} />
                       ))}
                     </tbody>
                   </table>

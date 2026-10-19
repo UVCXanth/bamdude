@@ -6,6 +6,7 @@ import zipfile
 
 import psutil
 import pytest
+import pytest_asyncio
 
 from backend.app.services import analysis_runtime
 from backend.app.services.analysis_runtime import AnalysisRuntime
@@ -13,6 +14,297 @@ from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.preview_protocol import PreviewError
 from backend.app.services.print_file_analysis import AnalysisResourceError, get_print_file_analysis
 from backend.app.services.printer_manager import PrinterManager
+
+
+@pytest_asyncio.fixture
+async def bootstrap_runtime(tmp_path):
+    (tmp_path / "archive").mkdir()
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    runtime = AnalysisRuntime(tmp_path, broker)
+    try:
+        yield runtime
+    finally:
+        await runtime.stop()
+        await broker.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase", ["connect", "list", "no_responders", "delete", "delete_after", "create_before", "create_after"]
+)
+async def test_bootstrap_recovers_transient_failure_with_real_worker(bootstrap_runtime, monkeypatch, caplog, phase):
+    from nats.aio.client import Client
+    from nats.errors import NoRespondersError, TimeoutError as NatsTimeout
+    from nats.js.api import ObjectStoreConfig
+
+    runtime = bootstrap_runtime
+    js = runtime.broker.nc.jetstream()
+    await js.create_object_store(bucket="bamdude_analysis_old", config=ObjectStoreConfig(max_bytes=1024))
+    foreign = await js.create_object_store(bucket="bamdude_preview_survivor", config=ObjectStoreConfig(max_bytes=1024))
+    await foreign.put("sentinel", b"do not delete")
+    original_request, original_connect = Client.request, Client.connect
+    failed = False
+    connections = []
+    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_RETRY_SECONDS", 0.01, raising=False)
+
+    async def connect(client, *args, **kwargs):
+        nonlocal failed
+        connections.append(client)
+        await original_connect(client, *args, **kwargs)
+        if phase == "connect" and not failed:
+            failed = True
+            raise NatsTimeout("private path and token must not be logged")
+
+    async def request(client, subject, *args, **kwargs):
+        nonlocal failed
+        target = {
+            "list": "STREAM.LIST",
+            "no_responders": "STREAM.LIST",
+            "delete": "STREAM.DELETE.",
+            "delete_after": "STREAM.DELETE.",
+            "create_before": "STREAM.CREATE.",
+            "create_after": "STREAM.CREATE.",
+        }.get(phase)
+        if client is not runtime.broker.nc and target and target in subject and not failed:
+            failed = True
+            if phase in ("delete_after", "create_after"):
+                await original_request(client, subject, *args, **kwargs)
+            if phase == "no_responders":
+                raise NoRespondersError
+            raise NatsTimeout("private path and token must not be logged")
+        return await original_request(client, subject, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "connect", connect)
+    monkeypatch.setattr(Client, "request", request)
+    caplog.set_level(logging.INFO, logger=analysis_runtime.__name__)
+    await runtime.start()
+    assert failed
+    assert runtime.ready, "a transient bootstrap failure must recover in this runtime"
+    assert runtime.reason is None and not runtime.closed
+    path = runtime.base / "archive" / "job.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nG1 E2\n")
+    assert await runtime.parse(path, 1) is not None
+    own = [s.config.name for s in await js.streams_info() if s.config.name.startswith("OBJ_bamdude_analysis_")]
+    assert own == [f"OBJ_{runtime.bucket}"]
+    assert (await foreign.get("sentinel")).data == b"do not delete"
+    assert all(client.is_closed for client in connections if client is not runtime.nc)
+    assert "startup_retry" in caplog.text and "startup_ready" in caplog.text
+    assert "phase=" in caplog.text and "elapsed_ms=" in caplog.text and runtime.generation in caplog.text
+    assert "private path and token" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permanent", [False, True])
+async def test_bootstrap_failure_is_bounded_and_preserves_reason(bootstrap_runtime, monkeypatch, caplog, permanent):
+    from nats.aio.client import Client
+    from nats.errors import TimeoutError as NatsTimeout
+    from nats.js.errors import APIError
+
+    runtime = bootstrap_runtime
+    original = Client.request
+    calls = 0
+    connections = []
+    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_RETRY_SECONDS", 0.01, raising=False)
+
+    async def request(client, subject, *args, **kwargs):
+        nonlocal calls
+        if client is not runtime.broker.nc and "STREAM.LIST" in subject:
+            calls += 1
+            connections.append(client)
+            if permanent:
+                raise APIError(code=403, description="secret")
+            raise NatsTimeout("secret")
+        return await original(client, subject, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "request", request)
+    caplog.set_level(logging.WARNING, logger=analysis_runtime.__name__)
+    async with asyncio.timeout(5):
+        await runtime.start()
+    assert calls == (1 if permanent else 3)
+    assert not runtime.ready and runtime.reason == "startup_failed"
+    assert runtime.monitor is None and runtime.service is None
+    assert all(client.is_closed for client in connections)
+    assert runtime.broker.nc.is_connected
+    assert "phase=stream_list" in caplog.text and "elapsed_ms=" in caplog.text
+    assert "secret" not in caplog.text
+    await runtime.stop()
+    assert runtime.reason == "startup_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["connect", "list", "create", "launch"])
+@pytest.mark.parametrize("cancel_caller", [False, True])
+async def test_shutdown_owns_inflight_bootstrap(bootstrap_runtime, monkeypatch, phase, cancel_caller):
+    from nats.aio.client import Client
+
+    runtime = bootstrap_runtime
+    entered = asyncio.Event()
+    original_connect, original_request, original_launch = Client.connect, Client.request, runtime.launch
+    clients = []
+    processes = []
+
+    async def hold():
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def connect(client, *args, **kwargs):
+        clients.append(client)
+        await original_connect(client, *args, **kwargs)
+        if phase == "connect":
+            await hold()
+
+    async def request(client, subject, *args, **kwargs):
+        result = await original_request(client, subject, *args, **kwargs)
+        if client is not runtime.broker.nc and (
+            phase == "list" and "STREAM.LIST" in subject or phase == "create" and "STREAM.CREATE." in subject
+        ):
+            await hold()
+        return result
+
+    async def launch():
+        await original_launch()
+        processes.append(runtime.service.process)
+        if phase == "launch":
+            await hold()
+
+    monkeypatch.setattr(Client, "connect", connect)
+    monkeypatch.setattr(Client, "request", request)
+    monkeypatch.setattr(runtime, "launch", launch)
+    start = asyncio.create_task(runtime.start())
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+            if cancel_caller:
+                start.cancel()
+                await asyncio.gather(start, return_exceptions=True)
+            else:
+                await runtime.stop()
+                # The public waiter may still be delivering cancellation, but
+                # the owned startup and all of its resources must already end.
+                assert runtime.startup.done()
+                try:
+                    await asyncio.wait_for(asyncio.shield(start), 1)
+                except asyncio.CancelledError:
+                    pass
+        assert not runtime.ready and runtime.closed
+        assert runtime.reason == "stopped"
+        assert all(client.is_closed for client in clients)
+        assert all(process.poll() is not None for process in processes)
+        assert runtime.service is None
+        assert runtime.monitor is None or runtime.monitor.done()
+        assert runtime.broker.nc.is_connected
+    finally:
+        start.cancel()
+        await asyncio.gather(start, return_exceptions=True)
+        await runtime.stop()
+        # Also close the connection the OLD implementation lost during connect.
+        for client in clients:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_bounds_a_stalled_request(bootstrap_runtime, monkeypatch, caplog):
+    from nats.aio.client import Client
+
+    runtime = bootstrap_runtime
+    original = Client.request
+    clients = []
+    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_SECONDS", 0.1)
+
+    async def request(client, subject, *args, **kwargs):
+        if client is not runtime.broker.nc and "STREAM.LIST" in subject:
+            clients.append(client)
+            await asyncio.Event().wait()
+        return await original(client, subject, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "request", request)
+    async with asyncio.timeout(3):
+        await runtime.start()
+    assert len(clients) == 1 and clients[0].is_closed
+    assert not runtime.ready and runtime.reason == "startup_failed"
+    assert "phase=stream_list error=TimeoutError" in caplog.text
+    assert runtime.broker.nc.is_connected
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_admin_request_budget_is_separate_from_control(bootstrap_runtime, monkeypatch):
+    from nats.aio.client import Client
+    from nats.errors import TimeoutError as NatsTimeout
+
+    runtime = bootstrap_runtime
+    original = Client.request
+    timeouts = []
+    first = True
+    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_REQUEST_SECONDS", 0.1)
+    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_RETRY_SECONDS", 0.01)
+
+    async def request(client, subject, *args, **kwargs):
+        nonlocal first
+        if client is not runtime.broker.nc and subject.startswith("$JS.API."):
+            timeouts.append(kwargs["timeout"])
+            if first:
+                first = False
+                # The broker answered; deliver it too late, like a slow read.
+                await original(client, subject, *args, **kwargs)
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.Event().wait(), kwargs["timeout"])
+                raise NatsTimeout
+        return await original(client, subject, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "request", request)
+    await runtime.start()
+    assert runtime.ready
+    assert len(timeouts) >= 3 and set(timeouts) == {0.1}
+    assert analysis_runtime.CONTROL_SECONDS != 0.1
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_retry_cleanup_and_does_not_reconnect(bootstrap_runtime, monkeypatch):
+    from nats.aio.client import Client
+    from nats.errors import TimeoutError as NatsTimeout
+
+    runtime = bootstrap_runtime
+    original_request, original_close = Client.request, Client.close
+    closing, release = asyncio.Event(), asyncio.Event()
+    failed_client = None
+    calls = 0
+
+    async def request(client, subject, *args, **kwargs):
+        nonlocal failed_client, calls
+        if client is not runtime.broker.nc and "STREAM.LIST" in subject:
+            calls += 1
+            failed_client = client
+            raise NatsTimeout
+        return await original_request(client, subject, *args, **kwargs)
+
+    async def close(client):
+        if client is failed_client:
+            closing.set()
+            await release.wait()
+        await original_close(client)
+
+    monkeypatch.setattr(Client, "request", request)
+    monkeypatch.setattr(Client, "close", close)
+    start = asyncio.create_task(runtime.start())
+    stops = []
+    try:
+        async with asyncio.timeout(5):
+            await closing.wait()
+            stops = [asyncio.create_task(runtime.stop()) for _ in range(2)]
+            await asyncio.sleep(0.05)
+            assert all(not task.done() for task in stops)
+            release.set()
+            await asyncio.gather(*stops)
+            await asyncio.gather(start, return_exceptions=True)
+        assert failed_client.is_closed and calls == 1
+        assert runtime.service is None and runtime.monitor is None
+        assert not runtime.ready and runtime.closed
+    finally:
+        release.set()
+        start.cancel()
+        await asyncio.gather(start, *stops, return_exceptions=True)
 
 
 @pytest.mark.asyncio

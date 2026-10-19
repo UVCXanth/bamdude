@@ -49,6 +49,7 @@ from backend.app.services.line_composition import (
     line_composition,
     load_item_configs,
     load_line_configs,
+    snapshot_extra_percentages,
     standard_per,
 )
 
@@ -332,6 +333,8 @@ async def seed_line(
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
     await _write(db, line, new_choices, new_counts)
 
+    line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
+
 
 async def target_key(
     db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int], counts: Mapping[int, int]
@@ -370,6 +373,7 @@ async def set_configuration(
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
     reserved_before = await part_stock.reserved_units_for_line(db, line)
+    reserved_parts = await part_stock.reserved_parts_for_line(db, line)
     if new_choices == current.choices and new_counts == current.counts:
         # Nothing changes: no rows, no reservation move, no journal entry.
         return ConfigOutcome(reserved_before, reserved_before, [], line.config_key)
@@ -379,17 +383,17 @@ async def set_configuration(
     if dry_run:
         dropping = await _dropping(db, line, product, old_comp, new_comp)
         after = 0
-        if reserved_before:
+        if reserved_parts:
             shelf = await part_stock.balances(db, product.id)
             # The line's own kits come back first — the rewrite releases them.
-            for part, per in counted(old_comp):
-                shelf[part.id] = shelf.get(part.id, 0) + reserved_before * per
+            for part_id, held in reserved_parts.items():
+                shelf[part_id] = shelf.get(part_id, 0) + held
             after = min(reserved_before, line.quantity, part_stock.kits_of(shelf, new_comp))
         return ConfigOutcome(reserved_before, after, dropping, config_key(line.mode, new_choices, new_counts))
     await _write(db, line, new_choices, new_counts)
     await db.flush()
     after = 0
-    if reserved_before:
+    if reserved_parts:
         after = await part_stock.reserve_for_line(
             db, line, reserved_before, comp=new_comp, created_by=actor.id if actor else None
         )
@@ -618,4 +622,13 @@ async def copy_configuration(db: AsyncSession, source: ProjectLine, target: Proj
     ledger(db).note_created("project_lines", target.id)
     cfg = (await load_line_configs(db, [source.id])).get(source.id, LineConfig())
     target.mode = source.mode
+    target.extra_percentages = dict(source.extra_percentages or {})
     await _write(db, target, cfg.choices, cfg.counts)
+
+
+async def ensure_no_extra_snapshot(db: AsyncSession, product_id: int, part_ids: Sequence[int]) -> None:
+    """Catalog edits of a snapshotted extra must not silently change an order's obligation."""
+    ids = {str(pid) for pid in part_ids}
+    rows = await db.execute(select(ProjectLine.extra_percentages).where(ProjectLine.product_id == product_id))
+    if any(any((snapshot or {}).get(pid, 0) for pid in ids) for snapshot in rows.scalars()):
+        raise LineConfigError("This part has additional quantities in an order; keep it as a separate part", 409)

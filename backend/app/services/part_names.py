@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 _EXT = r"(?:stl|stp|step|3mf|obj|ply|amf)"
 _RX_EXT_COPY = re.compile(rf"^(.+\.{_EXT})[ _\-]\d+$", re.IGNORECASE)
-_RX_PAREN = re.compile(r"^(.+?)\s*\(\d+\)$")
+_RX_PAREN = re.compile(r"^(.+?)\(\d+\)$")
 _RX_TAIL_N = re.compile(r"^(.+?)[ _\-](\d+)$")
 
 

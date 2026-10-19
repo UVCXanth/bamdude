@@ -157,6 +157,7 @@ def data_dir_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(app_settings, "library_dir", tmp_path / "library", raising=False)
     monkeypatch.setattr(app_settings, "projects_dir", tmp_path / "projects", raising=False)
     monkeypatch.setattr(app_settings, "products_dir", tmp_path / "products", raising=False)
+    monkeypatch.setattr(app_settings, "part_renders_dir", tmp_path / "part-renders", raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -372,6 +373,40 @@ def _clean_advertised_overlay():
 
 
 @pytest.fixture(autouse=True)
+def _clean_print_lifecycle_registries():
+    """The print lifecycle's registries hang off the ``printer_manager`` singleton and survive a test.
+
+    A test that drives ``on_print_start`` through the real manager leaves a print-start admission keyed by printer 1;
+    operator print-state recovery reads "an admission without a run" as a busy printer and offers no repair, so the
+    recovery tests that later land on the same worker failed while each passed on its own (CI, 2026-10-15).
+    ``test_print_registries_do_not_leak`` pins the order. Same leak class as the overlay above.
+    """
+    from backend.app.services import print_reconciliation
+    from backend.app.services.printer_manager import printer_manager
+
+    def clean():
+        for name in (
+            "_print_start_admissions",
+            "_print_start_resolutions",
+            "_print_run_bindings",
+            "_print_run_finishing_bindings",
+            "_print_effect_generations",
+            "_print_terminal_generations",
+            "_pending_print_terminals",
+        ):
+            registry = getattr(printer_manager, name, None)
+            if isinstance(registry, dict):
+                registry.clear()
+        if getattr(printer_manager, "_print_lifecycle_stopping", False):
+            printer_manager._print_lifecycle_stopping = False
+        print_reconciliation._live_completions.clear()
+
+    clean()
+    yield
+    clean()
+
+
+@pytest.fixture(autouse=True)
 def _lock_order_is_strict():
     """The lock-order monitor raises in tests (WS-13 E1, spec BL2): a door that takes a
     lower lock class after a higher one is a red test, not a log line.
@@ -414,6 +449,24 @@ async def _cancel_leaked_asyncio_tasks():
         # return_exceptions so a task that raises during cancel doesn't
         # propagate and fail the test that already passed.
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.fixture(autouse=True)
+async def _library_preview_jobs_isolation():
+    """The STEP thumbnail jobs singleton is function-scoped like the preview runtime ones (plan A1/A4): every test
+    starts without one, and one a test started is stopped, with its proof, before the leaked-task sweep runs."""
+    from backend.app.services import library_preview, library_preview_jobs as jobs_module
+
+    previous = jobs_module.jobs
+    previous_gate = library_preview.publication
+    jobs_module.jobs = None
+    library_preview.publication = library_preview.PublicationGate()  # a restore test closes it for good
+    yield
+    started = jobs_module.jobs
+    if started is not None and started is not previous:
+        await started.stop("shutdown")
+    jobs_module.jobs = previous
+    library_preview.publication = previous_gate
 
 
 @asynccontextmanager
@@ -1115,3 +1168,7 @@ async def library_worker(tmp_path, inprocess_library_worker):
         library_file_runtime.runtime = None
         await runtime.stop()
         await broker.stop()
+
+
+# The requires_cad lane: named skip without the STEP-preview bundle, failure under BAMDUDE_REQUIRE_CAD=1 (A1).
+from backend.tests.cad_lane import pytest_configure, pytest_runtest_setup  # noqa: E402, F401

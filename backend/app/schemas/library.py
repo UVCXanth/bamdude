@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.calibration_mode import CalibrationMode
@@ -201,6 +201,9 @@ class FileResponse(BaseModel):
     skip_objects_supported: bool = False
     sliced_for_model: str | None = None
     swap_compatible: bool = False
+    # Is ``swap_compatible`` a declaration? False for a row without a valid
+    # content hash (spec r4 §9). From the reader; no default on purpose.
+    swap_compatibility_known: bool
     # True iff the file has 2+ plates (extracted at upload / m023). Frontend
     # uses this to gate gallery rendering — saves an N-card-page worth of
     # /plates fetches when most files are single-plate.
@@ -326,6 +329,7 @@ class FileListResponse(BaseModel):
     # «sliced» is the ``gcode`` tag of ``file_tags``, not this.
     plan_eligible: bool = False
     swap_compatible: bool = False
+    swap_compatibility_known: bool  # see ``FileResponse``
     is_multi_plate: bool = False
     # spec §4 - plate 1's (or the only plate's) filament types in slot order,
     # and one compact slice per plate for a multi-plate file (empty otherwise),
@@ -420,6 +424,15 @@ class FilePrintRequest(FilamentRoutingChoices):
     cleanup_library_after_dispatch: bool = False
 
 
+class ThumbnailJobTicket(BaseModel):
+    """A new STEP file's background picture (additive): its receipt, or the closed reason none was queued."""
+
+    jobs_epoch: str | None = None
+    receipt_id: str | None = None
+    state: str | None = None
+    error_code: str | None = None
+
+
 class FileUploadResponse(BaseModel):
     """Schema for file upload response."""
 
@@ -443,6 +456,8 @@ class FileUploadResponse(BaseModel):
     # row that was used — "you sent X, we used Y" needs both halves.
     superseded_name: str | None = None
     metadata: dict | None = None
+    #: a NEW STEP file's background picture — its receipt, or why none was queued (additive)
+    thumbnail_job: ThumbnailJobTicket | None = None
 
 
 # ============ Bulk Operations ============
@@ -475,6 +490,7 @@ class ZipExtractResult(BaseModel):
     filename: str
     file_id: int
     folder_id: int | None = None
+    thumbnail_job: ThumbnailJobTicket | None = None
 
 
 class ZipExtractError(BaseModel):
@@ -515,6 +531,8 @@ class BatchThumbnailResult(BaseModel):
     filename: str
     success: bool
     error: str | None = None
+    #: closed reason (additive): use_thumbnail_jobs for a STEP id, too_small, file_missing; None when unknown
+    error_code: str | None = None
 
 
 class BatchThumbnailResponse(BaseModel):
@@ -524,6 +542,49 @@ class BatchThumbnailResponse(BaseModel):
     succeeded: int
     failed: int
     results: list[BatchThumbnailResult]
+
+
+# ============ STEP thumbnail jobs (background) ============
+
+
+class ThumbnailJobRequest(BaseModel):
+    """Exactly one mode: ``file_ids`` (≤64), or ``folder_id`` / ``all_missing`` read as a keyset page."""
+
+    file_ids: list[int] | None = Field(default=None, max_length=64)
+    folder_id: int | None = None
+    all_missing: bool = False
+    after_id: int = Field(default=0, ge=0)
+    limit: int = Field(default=64, ge=1, le=64)
+
+    @model_validator(mode="after")
+    def _one_mode(self):
+        selection = self.folder_id is not None or self.all_missing
+        if (self.file_ids is not None) == selection or (self.file_ids is not None and not self.file_ids):
+            raise ValueError("Give either file_ids or folder_id/all_missing")
+        return self
+
+
+class ThumbnailJobItem(BaseModel):
+    """One file's receipt, or its refusal (``error_code`` with no receipt). Never another actor's identity."""
+
+    file_id: int
+    receipt_id: str | None = None
+    state: str | None = None
+    error_code: str | None = None
+
+
+class ThumbnailJobResponse(BaseModel):
+    jobs_epoch: str
+    results: list[ThumbnailJobItem]
+    #: the next keyset page of a folder/all_missing selection; None when there is none
+    next_after_id: int | None = None
+
+
+class ThumbnailJobStatus(BaseModel):
+    jobs_epoch: str
+    receipts: list[ThumbnailJobItem]
+    #: ids that are unknown or not yours to read — indistinguishable on purpose
+    missing: list[str]
 
 
 # ============ Queue Sequencer Grouping ============

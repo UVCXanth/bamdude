@@ -7,9 +7,13 @@
  * It carries what the inline editors did (Review Focus 1): aliases, «Not
  * counted» only at zero (a count takes the mark off in the same request), the
  * variant binding, the purchased part's price / address / remarks.
+ *
+ * Its picture (spec part-thumbnails §12.4, §22 p. 2; plan E5, D7): the part first, then the
+ * picture; a picture refused after the part was saved keeps the dialog open on the saved part —
+ * a retry sends the picture alone, never a second create.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
@@ -432,5 +436,312 @@ describe('ProductPartDialog', () => {
       await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
       expect(onClose).not.toHaveBeenCalled();
     });
+  });
+
+  describe('the picture — Save after Save (spec part-thumbnails §12.4, §22 p. 2)', () => {
+    const photoFile = new File(['png'], 'body.png', { type: 'image/png' });
+    const savedNew = part({ id: 9, name: 'Gear', aliases: ['gear.stl'] });
+    const withPhoto = part({
+      id: 1,
+      name: 'Body',
+      aliases: ['body.stl', 'body_v2'],
+      image: { kind: 'photo', status: 'ready', v: 'old.png' },
+      image_choice: { source: 'photo', instance: null, pin: null, photo: { present: true } },
+    });
+
+    beforeEach(() => {
+      vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:x'), revokeObjectURL: vi.fn() }));
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    function choosePhoto() {
+      fireEvent.change(screen.getByLabelText('Choose a photo'), { target: { files: [photoFile] } });
+    }
+
+    it('a new part whose photo is refused: one part, the dialog stays, a retry sends the photo alone (Review Focus 1)', async () => {
+      const create = vi.spyOn(api, 'createProductPart').mockResolvedValue(savedNew as never);
+      const update = vi.spyOn(api, 'updateProductPart');
+      const upload = vi
+        .spyOn(api, 'uploadPartPhoto')
+        .mockRejectedValueOnce(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422))
+        .mockResolvedValueOnce({ ...savedNew, image: { kind: 'photo', status: 'ready', v: 'n.png' } } as never);
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gear' } });
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The part is saved; its picture is not: The photo must be a PNG, JPEG or WebP picture',
+      );
+      // the saved part is the dialog's now: an edit, the kind fixed
+      expect(screen.getByRole('dialog', { name: 'Edit part' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Kind')).toHaveAttribute('readonly');
+      expect(onClose).not.toHaveBeenCalled();
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
+      expect(upload).toHaveBeenCalledTimes(2);
+      expect(upload.mock.calls[1]).toEqual([9, photoFile]);
+    });
+
+    it('a picture-only change sends the picture alone — no PATCH', async () => {
+      const update = vi.spyOn(api, 'updateProductPart');
+      const set = vi.spyOn(api, 'setPartImage').mockResolvedValue(withPhoto as never);
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} part={withPhoto} onClose={onClose} />);
+      fireEvent.click(screen.getByRole('radio', { name: /Automatic/ }));
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(set).toHaveBeenCalledWith(1, { source: 'auto' });
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('the fields first, then the picture; one toast, closed', async () => {
+      const order: string[] = [];
+      vi.spyOn(api, 'updateProductPart').mockImplementation(async () => {
+        order.push('patch');
+        return { ...body, name: 'Body 2' } as never;
+      });
+      vi.spyOn(api, 'uploadPartPhoto').mockImplementation(async () => {
+        order.push('photo');
+        return { ...body, name: 'Body 2' } as never;
+      });
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} part={body} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Body 2' } });
+      choosePhoto();
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(order).toEqual(['patch', 'photo']);
+      expect(await screen.findByText('Part saved')).toBeInTheDocument();
+    });
+
+    it('«Cancel» before «Save part» sends nothing, whatever was chosen', () => {
+      const calls = [
+        vi.spyOn(api, 'createProductPart'),
+        vi.spyOn(api, 'updateProductPart'),
+        vi.spyOn(api, 'setPartImage'),
+        vi.spyOn(api, 'uploadPartPhoto'),
+        vi.spyOn(api, 'deletePartPhoto'),
+      ];
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} part={withPhoto} onClose={onClose} />);
+      choosePhoto();
+      fireEvent.click(screen.getByRole('radio', { name: /Automatic/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      for (const call of calls) expect(call).not.toHaveBeenCalled();
+    });
+
+    it('a pin refused after the fields saved: the dialog stays on the server’s state, the retry is the pin alone (Review Focus 4)', async () => {
+      const key = { library_file_id: 9, plate_index: 1, identify_id: 11 };
+      vi.spyOn(api, 'getPartImageCandidates').mockResolvedValue([
+        {
+          library_file_id: 9,
+          filename: 'flask.gcode.3mf',
+          hidden: false,
+          plate_index: 1,
+          identify_id: 11,
+          method: 'toolpath',
+          reason: null,
+          plate_status: 'ready',
+          v: 'v11',
+          pinned: false,
+        },
+      ]);
+      const savedFields = { ...body, name: 'Body 2', image_choice: { source: 'auto', instance: null, pin: null, photo: null } };
+      const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(savedFields as never);
+      const set = vi
+        .spyOn(api, 'setPartImage')
+        .mockRejectedValueOnce(new ApiError('This object cannot be pinned to this part', 422))
+        .mockResolvedValueOnce(savedFields as never);
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} part={body} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Body 2' } });
+      fireEvent.click(await screen.findByRole('radio', { name: /Object #11/ }));
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent('This object cannot be pinned to this part');
+      expect(screen.getByText('Saved: automatic')).toBeInTheDocument();
+      expect(screen.getByLabelText('Name')).toHaveValue('Body 2');
+      expect(onClose).not.toHaveBeenCalled();
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(set).toHaveBeenLastCalledWith(1, { source: 'instance', instance: key });
+    });
+
+    it('Escape with the larger picture open closes it alone; the alias being typed survives (E5-R2)', () => {
+      const onClose = vi.fn();
+      const ready = part({ id: 1, name: 'Body', aliases: ['body.stl'], image: { kind: 'render', status: 'ready', v: 'r1' } });
+      render(<ProductPartDialog product={product} part={ready} onClose={onClose} />);
+      const input = screen.getByLabelText('Also known as');
+      fireEvent.change(input, { target: { value: 'pending_alias' } });
+      // the keyboard stays in the alias field; the mouse opens the larger picture
+      fireEvent.mouseEnter(within(screen.getByTestId('part-image-section')).getAllByTestId('part-thumb')[0]);
+      expect(screen.getByTestId('part-thumb-zoom')).toBeInTheDocument();
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(screen.queryByTestId('part-thumb-zoom')).not.toBeInTheDocument();
+      expect(input).toHaveValue('pending_alias');
+      expect(onClose).not.toHaveBeenCalled();
+      // the next Escape is the alias field's own: it empties it, the dialog stays (C06)
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(input).toHaveValue('');
+      expect(onClose).not.toHaveBeenCalled();
+      // and the one after is the dialog's
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('the saved picture follows the product; the typed name and the draft stay (E5-R1)', () => {
+      const pendingBody = part({
+        id: 1,
+        name: 'Body',
+        aliases: ['body.stl'],
+        image: { kind: 'render', status: 'pending', v: null },
+        image_choice: { source: 'auto', instance: null, pin: null, photo: null },
+      });
+      const opened = { ...product, parts: [pendingBody] } as Product;
+      const { rerender } = render(<ProductPartDialog product={opened} part={pendingBody} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Unsaved name' } });
+      fireEvent.click(screen.getByRole('radio', { name: 'Photo' }));
+      const fresh = { ...pendingBody, image: { kind: 'render', status: 'ready', v: 'ready-v2' } } as ProductPart;
+      // the caller's stored part stays the opening snapshot — only the product is live
+      rerender(<ProductPartDialog product={{ ...opened, parts: [fresh] } as Product} part={pendingBody} onClose={noop} />);
+      expect(screen.getByLabelText('Name')).toHaveValue('Unsaved name');
+      expect(screen.getByRole('radio', { name: 'Photo' })).toBeChecked();
+      expect(within(screen.getByTestId('part-image-section')).getAllByTestId('part-thumb')[0]).toHaveAttribute(
+        'data-state',
+        'ready',
+      );
+    });
+
+    it('a refusal leaves the slot once another file is chosen (plan E5, Task 41)', async () => {
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValueOnce(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent('The picture is not saved');
+      choosePhoto();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('the partial-success sentence ends the server’s own and reads on — one full stop (plan E5, Task 41)', async () => {
+      vi.spyOn(api, 'createProductPart').mockResolvedValue(savedNew as never);
+      vi.spyOn(api, 'uploadPartPhoto')
+        .mockRejectedValueOnce(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422))
+        .mockRejectedValueOnce(new ApiError('Not a picture.', 422));
+      render(<ProductPartDialog product={product} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gear' } });
+      choosePhoto();
+      fireEvent.click(save());
+      // the server's sentences carry no full stop: the dialog puts one before its own
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The part is saved; its picture is not: The photo must be a PNG, JPEG or WebP picture. «Save part» tries the picture again',
+      );
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      // and one that does carry it gets no second
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('its picture is not: Not a picture. «Save part»'));
+    });
+
+    it('a refused pin asks the gallery again: what the part now matches may have moved (review 2)', async () => {
+      const candidate = {
+        library_file_id: 9,
+        filename: 'flask.gcode.3mf',
+        hidden: false,
+        plate_index: 1,
+        identify_id: 11,
+        method: 'toolpath',
+        reason: null,
+        plate_status: 'ready' as const,
+        v: 'v11',
+        pinned: false,
+      };
+      const candidates = vi.spyOn(api, 'getPartImageCandidates').mockResolvedValue([candidate]);
+      vi.spyOn(api, 'updateProductPart').mockResolvedValue({ ...body, name: 'Body 2' } as never);
+      vi.spyOn(api, 'setPartImage').mockRejectedValue(new ApiError('This object cannot be pinned to this part', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Body 2' } });
+      fireEvent.click(await screen.findByRole('radio', { name: /Object #11/ }));
+      const before = candidates.mock.calls.length;
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent('This object cannot be pinned to this part');
+      await waitFor(() => expect(candidates.mock.calls.length).toBeGreaterThan(before));
+    });
+
+    it('after a partial success, putting the picture back to what is saved closes with «Part saved» (review 4)', async () => {
+      vi.spyOn(api, 'createProductPart').mockResolvedValue(savedNew as never);
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValue(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      const onClose = vi.fn();
+      render(<ProductPartDialog product={product} onClose={onClose} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Gear' } });
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('radio', { name: /Automatic/ }));
+      await waitFor(() => expect(save()).not.toBeDisabled());
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('Part saved')).toBeInTheDocument();
+    });
+
+    it('a picture-only refusal ends with its own full stop (review 5)', async () => {
+      vi.spyOn(api, 'uploadPartPhoto').mockRejectedValue(new ApiError('The photo must be a PNG, JPEG or WebP picture', 422));
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      choosePhoto();
+      fireEvent.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The picture is not saved: The photo must be a PNG, JPEG or WebP picture.',
+      );
+    });
+
+    it('«Photo» with no file on a part without a saved photo: said in the dialog, nothing sent', () => {
+      const update = vi.spyOn(api, 'updateProductPart');
+      const upload = vi.spyOn(api, 'uploadPartPhoto');
+      render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+      fireEvent.click(screen.getByRole('radio', { name: 'Photo' }));
+      fireEvent.click(save());
+      expect(screen.getByRole('alert')).toHaveTextContent('Choose a photo file.');
+      expect(screen.getByLabelText('Choose a photo')).toHaveFocus();
+      expect(update).not.toHaveBeenCalled();
+      expect(upload).not.toHaveBeenCalled();
+    });
+  });
+});
+
+
+describe('ProductPartDialog additional parts', () => {
+  beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'EUR' } as never); });
+  it('saves an entered fractional percentage and shows rounding/shipping help', async () => {
+    const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+    render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+    const field = screen.getByLabelText('Additional parts, %');
+    expect(field).toHaveValue(0);
+    expect(field).toHaveAccessibleDescription(/Rounded up once over the whole order line/);
+    fireEvent.change(field, { target: { value: '12.5' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { extra_percent: 12.5 }));
+  });
+  it('can explicitly reset the stored percentage to zero', async () => {
+    const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+    render(<ProductPartDialog product={product} part={{ ...body, extra_percent: 15 }} onClose={noop} />);
+    fireEvent.change(screen.getByLabelText('Additional parts, %'), { target: { value: '0' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { extra_percent: 0 }));
+  });
+  it('does not offer an extra percentage for a purchased part', () => {
+    render(<ProductPartDialog product={product} part={magnet} onClose={noop} />);
+    expect(screen.queryByLabelText('Additional parts, %')).not.toBeInTheDocument();
+  });
+  it('rejects invalid percentage without writing', async () => {
+    const update = vi.spyOn(api, 'updateProductPart');
+    render(<ProductPartDialog product={product} part={body} onClose={noop} />);
+    fireEvent.change(screen.getByLabelText('Additional parts, %'), { target: { value: '-1' } });
+    fireEvent.click(save());
+    expect(await screen.findByText('Enter a percentage from 0 to 1000.')).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
   });
 });

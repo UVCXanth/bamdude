@@ -84,7 +84,7 @@ class TunnelTransport:
                 logger.info("[%s] tunnel read refused for %s: %s", self._ip, path, exc)
                 return None
 
-    async def delete(self, path: str) -> DeleteResult:
+    async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:
         """⚠️ Never reports ``NOT_FOUND``.
 
         The tunnel's error codes have never been collected, so a refusal cannot
@@ -93,6 +93,8 @@ class TunnelTransport:
         """
         async with self._client() as client:
             try:
+                if may_run is not None and not may_run():
+                    return DeleteResult.FAILED
                 await client.delete_files([path])
                 return DeleteResult.DELETED
             except TunnelError as exc:

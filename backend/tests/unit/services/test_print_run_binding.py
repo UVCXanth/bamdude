@@ -40,6 +40,19 @@ def test_same_archive_enriches_binding_without_new_sequence():
     assert not enriched.matches_device_subtask("74")
 
 
+def test_new_attempt_on_same_archive_revokes_the_old_token():
+    from backend.app.services.print_run_binding import effect_token_for_run, print_effect_is_current
+
+    manager = PrinterManager()
+    old = bind_print_run(manager, printer_id=7, archive_id=41, observed_subtask_id="73")
+    token = effect_token_for_run(old)
+    new = bind_print_run(manager, printer_id=7, archive_id=41, observed_subtask_id="74")
+    assert new.effect_generation != old.effect_generation
+    assert not print_effect_is_current(manager, token)
+    discard_print_run(manager, 7, 41, sequence=old.sequence)
+    assert current_print_run(manager, 7) == new
+
+
 def test_dispatch_intent_stays_distinct_from_printer_observation():
     manager = PrinterManager()
     bound = bind_print_run(
@@ -103,6 +116,30 @@ def test_pending_b_start_vetoes_printer_effects_for_finishing_a():
     begin_print_run_finishing(manager, 7, 41)
     begin_print_start_resolution(manager, 7, {"subtask_id": "92"})
 
+    assert not completion_effects_are_owned(manager, 7, 41)
+
+
+def test_finishing_a_never_regains_effects_after_b_finishes():
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=41)
+    begin_print_run_finishing(manager, 7, 41)
+    bind_print_run(manager, printer_id=7, archive_id=42)
+    begin_print_run_finishing(manager, 7, 42)
+    discard_print_run(manager, 7, 42)
+
+    assert not completion_effects_are_owned(manager, 7, 41)
+
+
+def test_idless_start_permanently_revokes_finishing_a():
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=41)
+    begin_print_run_finishing(manager, 7, 41)
+    sequence = begin_print_start_resolution(manager, 7, {"subtask_id": "0"})
+
+    assert sequence is not None
+    assert not completion_effects_are_owned(manager, 7, 41)
+    assert defer_matching_terminal_during_start(manager, 7, {"subtask_id": "0"}) is None
+    end_print_start_resolution(manager, 7, sequence)
     assert not completion_effects_are_owned(manager, 7, 41)
 
 

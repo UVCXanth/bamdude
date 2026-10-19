@@ -37,8 +37,9 @@ import json
 import logging
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 from sqlalchemy import select, update
 
 from backend.app.migrations.helpers import add_column
@@ -76,7 +77,7 @@ def _extract_bed_type(file_path: Path) -> str | None:
                                 value = meta.get("value")
                                 if value:
                                     return value.strip()
-                except ET.ParseError:
+                except (ET.ParseError, DefusedXmlException):
                     pass
 
             # Fallback: project_settings.config (JSON, project-wide)

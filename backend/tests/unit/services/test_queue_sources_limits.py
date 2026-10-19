@@ -496,6 +496,40 @@ async def test_a_cancelled_capture_publishes_nothing_and_owns_its_staging(tmp_pa
     assert queue_sources.pinned_staging_paths() == frozenset()
 
 
+async def test_a_cancellation_just_after_the_handover_leaves_no_pinned_staging(tmp_path, bench, monkeypatch):
+    """The worker handed its bytes over in the instant the caller stopped waiting.
+
+    Nobody will ever hold that receipt, so nobody could discard it, and a pinned ``.part`` is one the collector
+    must never touch (S6): left alone it would sit in staging until the process restarted. A dispatch with a
+    deadline cancels its capture routinely (swap-source-lifecycle spec r4 §6), which makes this window real.
+    """
+    source = tmp_path / "share" / "a.3mf"
+    raw = make_3mf(source)
+    gate = bench.arm(1, data=raw)[0]
+    handed = threading.Event()
+    real_finish = queue_sources._finish
+
+    def finish_and_tell(record, *, kept):
+        handed_over = real_finish(record, kept=kept)
+        handed.set()
+        return handed_over
+
+    monkeypatch.setattr(queue_sources, "_finish", finish_and_tell)
+    task = capture_task(source)
+    await wait_for(lambda: gate.reading.is_set())
+
+    gate.release.set()
+    # Blocks the loop on purpose: the supervisor cannot resume and take its result before the cancel lands.
+    assert handed.wait(10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await wait_for(lambda: staged_parts() == [])
+    assert queue_sources.pinned_staging_paths() == frozenset()
+    assert queue_sources.active_captures() == 0
+
+
 # --------------------------------------------------------------------------- #
 # Pins
 # --------------------------------------------------------------------------- #

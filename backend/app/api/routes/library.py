@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
 from sqlalchemy import and_, distinct, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +68,7 @@ from backend.app.schemas.library import (
     PlateSummary,
     ProductRef,
     TagSummary,
+    ThumbnailJobTicket,
     ZipExtractError,
     ZipExtractResponse,
     ZipExtractResult,
@@ -83,7 +84,8 @@ from backend.app.schemas.order_from_files import (
     PreviewYieldOut,
 )
 from backend.app.schemas.plate_objects import PlateObjectsResponse
-from backend.app.services import order_from_files
+from backend.app.schemas.swap_declaration import SwapDeclarationRequest, SwapRefreshRequest
+from backend.app.services import order_from_files, swap_compatibility
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
     DesignOverride,
@@ -94,6 +96,7 @@ from backend.app.services.design_settings import (
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
+    answered_file_tags,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
@@ -102,12 +105,18 @@ from backend.app.services.library_helpers import (
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
 from backend.app.services.library_preview import (
+    PauseBudget as PreviewPauseBudget,
     Source as PreviewSource,
     generate as generate_library_preview,
     sliced_preview,
 )
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.line_composition import counted, default_options, standard_composition
+from backend.app.services.mesh_preview_types import (
+    CAD_TYPES as CAD_PREVIEW_TYPES,
+    LEGACY_TYPES as LEGACY_PREVIEW_TYPES,
+    is_cad as is_cad_preview,
+)
 from backend.app.services.order_filing import order_candidates, resolve_link
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
 from backend.app.services.preview_artifacts import disk as preview_disk
@@ -584,6 +593,13 @@ def _resolve_slice_destination(target_folder: LibraryFolder | None, out_filename
     return dest, True, None
 
 
+#: The refusal of a transfer whose declaration the library's row of the same bytes contradicts.
+SWAP_SOURCE_CONFLICT = (
+    "The library already holds this file under a different plate-swap declaration than this archive's, so it was "
+    "not saved again. The library's file was left as it is."
+)
+
+
 def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     """Produce the value to persist in ``LibraryFile.file_path``.
 
@@ -606,6 +622,7 @@ async def save_3mf_bytes_to_library(
     source_url: str | None = None,
     extra_metadata: dict | None = None,
     commit: bool = True,
+    declared_swap: bool | None = None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
@@ -629,6 +646,14 @@ async def save_3mf_bytes_to_library(
     "this IS the existing row", on the hash path merely "one exists somewhere",
     while a second row was created regardless. The outcome enum is the whole
     answer now.
+
+    ``declared_swap`` is a TRANSFER's declaration (save archive to library,
+    swap-source-lifecycle spec r4 §4): the bytes' known fact, never inferred
+    from ``filename``. Left at ``None`` the bytes are a NEW external file and
+    their basename is classified. With a declaration, a library row that
+    already holds the same bytes under another one is a 409
+    ``swap_source_conflict``: that row is not rewritten, and the copy written
+    for the comparison is removed.
     """
 
     # Source-URL dedupe: MakerWorld re-imports of the same plate must not
@@ -659,6 +684,15 @@ async def save_3mf_bytes_to_library(
     reusable = await find_reusable_row(db, content_hash=file_hash)
     if reusable is not None:
         existing, present = reusable
+        if declared_swap is not None and swap_compatibility.library_fact(existing) is not declared_swap:
+            # A transfer says what these bytes declare, and the library holds them
+            # under the other answer. Neither is rewritten into the other: the
+            # existing row stays as it is — not re-pointed either — and our copy goes.
+            file_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "swap_source_conflict", "message": SWAP_SOURCE_CONFLICT},
+            )
         if present:
             # ⚠️ Our bytes are redundant and already written — delete them, or a
             # deduplication feature becomes an orphan-file generator.
@@ -682,9 +716,8 @@ async def save_3mf_bytes_to_library(
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
 
-    fname_lower = filename.lower()
     swap_compatible = (
-        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+        declared_swap if declared_swap is not None else swap_compatibility.classify_external_name(filename)
     )
 
     library_file = LibraryFile(
@@ -699,9 +732,11 @@ async def save_3mf_bytes_to_library(
         thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) or None,
         created_by_id=created_by_id,
-        swap_compatible=swap_compatible,
         source_type=source_type,
         source_url=source_url,
+    )
+    swap_compatibility.declare_ingest(
+        library_file, swap_compatible, origin="transferred" if declared_swap is not None else "classifier"
     )
     db.add(library_file)
     await db.flush()
@@ -2138,7 +2173,7 @@ async def list_files(
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
-                file_tags=f.file_tags or [],
+                file_tags=answered_file_tags(f),
                 file_size=f.file_size,
                 thumbnail_path=f.thumbnail_path,
                 duplicate_count=hash_counts.get(f.file_hash, 0) if f.file_hash else 0,
@@ -2153,7 +2188,8 @@ async def list_files(
                 skip_objects_supported=f.skip_objects_supported,
                 sliced_for_model=sliced_for_model,
                 plan_eligible=is_plan_eligible(f.file_type),
-                swap_compatible=f.swap_compatible,
+                # Only a row with a valid content hash declares anything; no file is read to answer.
+                **swap_compatibility.wire_fields(swap_compatibility.library_fact(f)),
                 is_multi_plate=is_multi_plate,
                 filament_types=filament_types,
                 plate_summaries=plate_summaries,
@@ -3121,6 +3157,8 @@ async def slice_and_persist(
         source_type="sliced",
         created_by_id=current_user_id,
     )
+    # Our own slicer bakes no swap sequence, whatever the model was called.
+    swap_compatibility.declare_ingest(new_file, False, origin="generated")
     db.add(new_file)
     await db.flush()
     await sync_system_tags(db, new_file)
@@ -3340,6 +3378,10 @@ async def slice_and_persist_as_archive(
         extra_data=metadata,
         skip_objects_supported=skip_objects_supported_from_metadata(metadata),
     )
+    # Our own slicer output carries no baked swap sequence, whatever the source
+    # declared: the record copied along with the source's metadata is replaced,
+    # not inherited (swap-source-lifecycle spec r4 §4).
+    swap_compatibility.write_archive_fact(new_archive, False)
     db.add(new_archive)
     await db.commit()
     await db.refresh(new_archive)
@@ -3481,6 +3523,32 @@ async def slice_library_file(
     }
 
 
+def _queue_step_thumbnail(library_file: LibraryFile, authority) -> dict:
+    """After the commit and never waiting for CAD: a receipt for a NEW STEP file's picture, or the closed reason
+    none was queued — a warning, never a rollback of the file (spec §4.1). ``authority`` is the door's explicit
+    descriptor; None is authority_missing, never the system."""
+    from backend.app.services.library_preview_jobs import Refusal, StepSource, get_library_preview_jobs
+
+    service = get_library_preview_jobs()
+    try:
+        if service is None:
+            raise Refusal("unavailable")
+        receipt = service.enqueue(StepSource.capture(library_file), authority, "auto")
+    except Refusal as refused:
+        logger.warning("STEP thumbnail not queued for library file %s: %s", library_file.id, refused.code)
+        return {
+            "jobs_epoch": service.epoch if service is not None else None,
+            "receipt_id": None,
+            "state": None,
+            "error_code": refused.code,
+        }
+    return {"jobs_epoch": service.epoch, **service.describe(receipt)}
+
+
+def _ticket(job: dict | None):
+    return None if job is None else ThumbnailJobTicket(**{k: job.get(k) for k in ThumbnailJobTicket.model_fields})
+
+
 async def store_library_upload(
     db: AsyncSession,
     *,
@@ -3489,6 +3557,7 @@ async def store_library_upload(
     target_folder: LibraryFolder | None,
     generate_stl_thumbnails: bool = True,
     created_by_id: int | None = None,
+    authority=None,
 ) -> IngestResult:
     """Put an uploaded file in the library. Returns an :class:`IngestResult`.
 
@@ -3515,6 +3584,9 @@ async def store_library_upload(
     ⚠️ Raises ``HTTPException`` — the messages are written for a human to read,
     and the bot shows ``e.detail`` verbatim rather than inventing a second
     vocabulary for the same rejections.
+
+    A NEW STEP/STP file asks for its picture in the background after the commit, with ``authority`` — the door's
+    explicit actor descriptor (spec §5); a deduplicated or restored file asks for nothing.
     """
     ext = os.path.splitext(filename)[1].lower()
     file_type = detect_file_type(filename)
@@ -3558,13 +3630,9 @@ async def store_library_upload(
     metadata = prepared.metadata
     thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
-    # Detect swap mode compatibility from filename. Covers both the
-    # singular ".swap." suffix (older / custom tooling) and the ".swaps."
-    # suffix that swaplist.app actually emits on export.
-    fname_lower = filename.lower()
-    swap_compatible = (
-        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
-    )
+    # A new external file declares a baked swap sequence by its basename: ".swap."
+    # (older / custom tooling) or ".swaps." (what swaplist.app emits on export).
+    swap_compatible = swap_compatibility.classify_external_name(filename)
 
     # Create database entry (managed files store relative paths for
     # portability; external files store the absolute mount path — same
@@ -3581,8 +3649,8 @@ async def store_library_upload(
         thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) if metadata else None,
         created_by_id=created_by_id,
-        swap_compatible=swap_compatible,
     )
+    swap_compatibility.declare_ingest(library_file, swap_compatible, origin="classifier")
     db.add(library_file)
     await db.flush()
     await sync_system_tags(db, library_file)
@@ -3614,6 +3682,9 @@ async def store_library_upload(
             raise
         except Exception:
             logger.warning("Preview skipped for saved library file %s", source.id, exc_info=True)
+    thumbnail_job = None
+    if is_cad_preview(file_type) and generate_stl_thumbnails:
+        thumbnail_job = _queue_step_thumbnail(library_file, authority)
     await db.refresh(library_file)
 
     # Tell open browsers the library changed. ``library_file_added`` was
@@ -3633,12 +3704,13 @@ async def store_library_upload(
     except Exception:
         logger.debug("library_file_added broadcast failed", exc_info=True)
 
-    return IngestResult(file=library_file, outcome="created")
+    return IngestResult(file=library_file, outcome="created", thumbnail_job=thumbnail_job)
 
 
 @router.post("/files", response_model=FileUploadResponse)
 @router.post("/files/", response_model=FileUploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: int | None = None,
     generate_stl_thumbnails: bool = Query(default=True),
@@ -3646,6 +3718,8 @@ async def upload_file(
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload a file to the library."""
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is required")
@@ -3684,6 +3758,7 @@ async def upload_file(
             target_folder=target_folder,
             generate_stl_thumbnails=generate_stl_thumbnails,
             created_by_id=current_user.id if current_user else None,
+            authority=await request_authority(request, current_user),
         )
         library_file = result.file
 
@@ -3701,6 +3776,7 @@ async def upload_file(
             outcome=result.outcome,
             superseded_name=result.superseded_name,
             metadata=library_file.file_metadata,
+            thumbnail_job=_ticket(result.thumbnail_job),
         )
     except HTTPException:
         raise
@@ -3711,6 +3787,7 @@ async def upload_file(
 
 @router.post("/files/extract-zip", response_model=ZipExtractResponse)
 async def extract_zip_file(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: int | None = Query(default=None),
     preserve_structure: bool = Query(default=True),
@@ -3730,6 +3807,11 @@ async def extract_zip_file(
     """
     import tempfile
 
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+    from backend.app.services.library_preview_jobs import REQUEST_LIMIT
+
+    authority = await request_authority(request, current_user)
+    step_results: list[tuple[ZipExtractResult, LibraryFile]] = []
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
@@ -3762,6 +3844,7 @@ async def extract_zip_file(
     errors: list[ZipExtractError] = []
     folders_created = 0
     folder_cache: dict[str, int] = {}  # path -> folder_id
+    picture_pause = PreviewPauseBudget()  # one bound for every picture of this ZIP on a backup's pause
 
     # If create_folder_from_zip is True, create a folder named after the ZIP file
     zip_folder_id = folder_id
@@ -3905,6 +3988,11 @@ async def extract_zip_file(
                         file_metadata=_without_print_name(metadata) if metadata else None,
                         created_by_id=upload_user_id,
                     )
+                    # The member is the new external file: its own basename
+                    # declares, not the ZIP's name or a directory inside it.
+                    swap_compatibility.declare_ingest(
+                        library_file, swap_compatibility.classify_external_name(filename), origin="classifier"
+                    )
                     db.add(library_file)
                     await db.flush()
                     await sync_system_tags(db, library_file)
@@ -3937,7 +4025,9 @@ async def extract_zip_file(
                         and len(file_content) >= MIN_USABLE_STL_BYTES
                     ):
                         try:
-                            await generate_library_preview(db, PreviewSource.capture(library_file))
+                            await generate_library_preview(
+                                db, PreviewSource.capture(library_file), pause_budget=picture_pause
+                            )
                         except Exception:
                             logger.warning("Preview skipped for extracted file %s", library_file.id, exc_info=True)
 
@@ -3948,6 +4038,8 @@ async def extract_zip_file(
                             folder_id=target_folder_id,
                         )
                     )
+                    if is_cad_preview(file_type) and generate_stl_thumbnails:
+                        step_results.append((extracted_files[-1], library_file))  # asked after every STL/OBJ
 
                     # Commit after each file to release database lock
                     # This prevents long-running transactions from blocking other requests
@@ -3959,6 +4051,12 @@ async def extract_zip_file(
                     # Rollback the failed file but continue with others
                     await db.rollback()
 
+        # The ZIP's own STL/OBJ pictures are done: only now its STEP files ask, a bounded number of them.
+        for index, (item, row) in enumerate(step_results):
+            if index < REQUEST_LIMIT:
+                item.thumbnail_job = _ticket(_queue_step_thumbnail(row, authority))
+            else:
+                item.thumbnail_job = ThumbnailJobTicket(error_code="queue_full")
         return ZipExtractResponse(
             extracted=len(extracted_files),
             skipped_duplicates=skipped_duplicates,
@@ -4000,9 +4098,12 @@ async def batch_generate_stl_thumbnails(
     - All STL files missing thumbnails (all_missing=True)
     """
     results: list[BatchThumbnailResult] = []
-    query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "obj")))
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES))
     if request.file_ids:
-        query = query.where(LibraryFile.id.in_(request.file_ids))
+        # An explicit STEP id is answered, never lost as processed=0: it renders only through the background jobs.
+        query = LibraryFile.active().where(
+            LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES + CAD_PREVIEW_TYPES), LibraryFile.id.in_(request.file_ids)
+        )
     elif request.folder_id is not None:
         query = query.where(LibraryFile.folder_id == request.folder_id)
         if request.all_missing:
@@ -4013,26 +4114,43 @@ async def batch_generate_stl_thumbnails(
         return BatchThumbnailResponse(processed=0, succeeded=0, failed=0, results=[])
 
     rows = (await db.execute(query)).scalars().all()
-    sources = [PreviewSource.capture(row) for row in rows]
+    cad_files = [(row.id, row.filename) for row in rows if is_cad_preview(row.file_type)]
+    sources = [PreviewSource.capture(row) for row in rows if not is_cad_preview(row.file_type)]
     # This route owns only an auth/selection read transaction.
     await db.commit()
+    picture_pause = PreviewPauseBudget()  # one bound for the whole batch on a backup's pause
+    for file_id, filename in cad_files:
+        results.append(
+            BatchThumbnailResult(
+                file_id=file_id,
+                filename=filename,
+                success=False,
+                error="STEP thumbnails are generated in the background",
+                error_code="use_thumbnail_jobs",
+            )
+        )
     for source in sources:
         success = False
         error = "Thumbnail generation failed"
+        error_code = None
         try:
             path = to_absolute_path(source.file_path)
             size = await preview_disk(lambda path=path: path.stat().st_size if path else 0)
             if size < MIN_USABLE_STL_BYTES:
-                error = "File too small to contain a usable mesh"
+                error, error_code = "File too small to contain a usable mesh", "too_small"
             else:
-                success = await generate_library_preview(db, source)
+                success = await generate_library_preview(db, source, pause_budget=picture_pause)
         except FileNotFoundError:
-            error = "File not found on disk"
+            error, error_code = "File not found on disk", "file_missing"
         except Exception:
             logger.warning("Preview skipped for library file %s", source.id, exc_info=True)
         results.append(
             BatchThumbnailResult(
-                file_id=source.id, filename=source.filename, success=success, error=None if success else error
+                file_id=source.id,
+                filename=source.filename,
+                success=success,
+                error=None if success else error,
+                error_code=None if success else error_code,
             )
         )
     succeeded = sum(item.success for item in results)
@@ -5090,13 +5208,9 @@ async def print_library_file(
     if plate_name:
         dispatch_source_name = f"{lib_file.filename} • {plate_name}"
 
-    # Swap-macro execution only applies to swap-enabled printers AND files
-    # that don't already carry swap macros baked in by third-party tooling
-    # (``swap_compatible`` → double-fire risk). Mute the fields in either
-    # case before they propagate into dispatch options or queued copies.
-    if not printer.swap_mode_enabled or getattr(lib_file, "swap_compatible", False):
-        body.execute_swap_macros = False
-        body.swap_macro_events = None
+    # Swap macros are decided after the copy, from the declaration the captured
+    # bytes confirm, by the dispatcher and the queue writer (swap-source-lifecycle
+    # spec r4 §8) -- not from this row before the copy, which is only a preview.
 
     # Print-Now quantity handling:
     # * quantity == 1 → direct dispatch (no queue items, fastest path).
@@ -5166,7 +5280,7 @@ async def print_library_file(
             cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,
         )
     except DispatchEnqueueRejected as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=e.detail()) from e
 
     return {
         "status": "dispatched",
@@ -5281,9 +5395,141 @@ async def get_file(
         object_count=object_count,
         skip_objects_supported=file.skip_objects_supported,
         sliced_for_model=sliced_for_model,
-        swap_compatible=file.swap_compatible,
+        **swap_compatibility.wire_fields(swap_compatibility.library_fact(file)),
         source_type=file.source_type,
         source_url=file.source_url,
+    )
+
+
+# --- an operator's swap declaration of this source (swap-source-declaration spec r3 §4-5) -------------------------
+
+
+_SWAP_DECLARATION_READ = require_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+_SWAP_DECLARATION_UPDATE = require_ownership_permission(Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_UPDATE_OWN)
+
+
+async def _swap_declaration_caller(request: Request, db: AsyncSession, read, update):
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0] or update[0])
+    return actor, declarations.Rights(read_all=read[1], update_all=update[1])
+
+
+@router.post("/files/{file_id}/swap-declaration/inspect")
+async def inspect_swap_declaration(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Copy what a reprint would read, check it is printable, discard the copy: its hash, its current effective
+    swap fact and the revision a declaration must match. Needs the read AND the update right of this source."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.inspect("library", file_id, actor=actor, rights=rights)
+
+
+@router.put("/files/{file_id}/swap-declaration")
+async def declare_swap_source(
+    file_id: int,
+    body: SwapDeclarationRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+):
+    """Declare whether the inspected bytes carry their own plate-swap sequence -- only those very bytes, under the
+    revision they were inspected at; anything that moved since is a 409 and nothing is written."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await declarations.declare(
+        "library",
+        file_id,
+        value=body.value,
+        expected_sha256=body.expected_sha256,
+        expected_revision=body.expected_revision,
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+    )
+
+
+@router.get("/files/{file_id}/swap-declaration/history")
+async def swap_declaration_history(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+):
+    """The current declaration's chain of operations -- through this source only."""
+    from backend.app.services import swap_source_declarations as declarations
+
+    actor = await declarations.actor_for(request, db, read[0])
+    rights = declarations.Rights(read_all=read[1], update_all=False)
+    return await declarations.history("library", file_id, actor=actor, rights=rights)
+
+
+_SWAP_REFRESH_QUEUE_READ = require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
+_SWAP_REFRESH_QUEUE_UPDATE = require_ownership_permission(Permission.QUEUE_UPDATE_ALL, Permission.QUEUE_UPDATE_OWN)
+
+
+@router.get("/files/{file_id}/swap-declaration/jobs")
+async def swap_declaration_jobs(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """The pending and failed jobs linked to this source the caller may see, each with its revision and whether the
+    current declaration may be applied to it. None is selected: a refresh names its jobs."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.candidates(
+        "library",
+        file_id,
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
+    )
+
+
+@router.post("/files/{file_id}/swap-declaration/jobs/refresh")
+async def refresh_swap_declaration_jobs(
+    file_id: int,
+    body: SwapRefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_READ),
+    update: tuple[User | None, bool] = Depends(_SWAP_DECLARATION_UPDATE),
+    queue_read: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_READ),
+    queue_update: tuple[User | None, bool] = Depends(_SWAP_REFRESH_QUEUE_UPDATE),
+):
+    """Write the source's current declaration into the named jobs' snapshots -- every one, or none. Not a Retry: a
+    failed job stays failed."""
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import swap_job_refresh
+
+    actor, rights = await _swap_declaration_caller(request, db, read, update)
+    return await swap_job_refresh.refresh(
+        "library",
+        file_id,
+        declaration_id=str(body.declaration_id),
+        source_revision=body.source_revision,
+        jobs=[swap_job_refresh.JobRef(job.kind, job.id, job.revision) for job in body.jobs],
+        operation_id=str(body.operation_id),
+        actor=actor,
+        rights=rights,
+        job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
+        printer_scope=key_printer_scope(request),
     )
 
 

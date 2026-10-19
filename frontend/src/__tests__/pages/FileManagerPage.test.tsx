@@ -708,7 +708,7 @@ describe('FileManagerPage', () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        const button = screen.getByTitle('Generate thumbnails for STL files missing them');
+        const button = screen.getByTitle('Generate thumbnails for STL, OBJ and STEP files missing them');
         expect(button).toBeInTheDocument();
       });
     });
@@ -838,7 +838,7 @@ describe('FileManagerPage', () => {
       await user.upload(fileInput, stlFile);
 
       await waitFor(() => {
-        expect(screen.getByText('STL thumbnail generation')).toBeInTheDocument();
+        expect(screen.getByText('Thumbnail generation')).toBeInTheDocument(); // STL, OBJ and STEP now
         expect(screen.getByText(/Thumbnails can be generated/i)).toBeInTheDocument();
       });
     });

@@ -5,13 +5,16 @@ import { Button } from '../../components/Button';
 import { monitorUrl } from './location';
 import type { MonitorView } from './types';
 
-export function OpenMonitorButton({ view, sort }: { view: MonitorView; sort?: string }) {
+export function OpenMonitorButton({ view, sort, onOpened }: { view: MonitorView; sort?: string; onOpened?: () => void }) {
   const { t } = useTranslation();
   const [blocked, setBlocked] = useState(false);
   const url = monitorUrl(view, sort);
   const open = () => {
     const child = window.open(url, '_blank', 'popup,width=1600,height=1000');
-    if (child) child.opener = null;
+    if (child) {
+      child.opener = null;
+      onOpened?.();
+    }
     else setBlocked(true);
   };
   return <div className="flex items-center gap-2">

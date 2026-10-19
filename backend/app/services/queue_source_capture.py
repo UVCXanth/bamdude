@@ -46,6 +46,7 @@ delete and the collector.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -56,7 +57,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, STATE_READY, QueueSource
-from backend.app.services import queue_sources
+from backend.app.services import queue_sources, swap_compatibility
 from backend.app.services.filament_intake import require_source_requirements, resolve_source_path, routing_detail
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
@@ -105,6 +106,7 @@ class StagedSource:
             display_filename=self.receipt.display_filename,
             plate_fallback=self.receipt.plate_fallback,
             provenance=dict(self.receipt.provenance),
+            swap_fact=self.receipt.swap_fact,
         )
 
 
@@ -132,11 +134,20 @@ def plan_capture(*, archive=None, library_file=None, background: bool = False) -
     external path off the event loop — the worker does all of it). A source row
     with no file is refused with the same 422 the requirements reader has always
     given it.
+
+    The source's swap declaration is read here, from this row, through its own
+    reader (swap-source-lifecycle spec r4 §5), together with the hash its bytes
+    must have; the receipt confirms that hash, so the decision of the request is
+    made on the bytes it captured and not on the row as it was loaded.
     """
     source = archive or library_file
     path = resolve_source_path(archive, library_file)
     if source is None or path is None:
         raise HTTPException(422, routing_detail("source_unreadable", source_id=getattr(source, "id", None)))
+    if archive is not None:
+        swap_fact, expected_sha256 = swap_compatibility.archive_source(archive)
+    else:
+        swap_fact, expected_sha256 = swap_compatibility.library_source(library_file)
     return CaptureRequest(
         path=path,
         format=capture_format(path),
@@ -146,6 +157,8 @@ def plan_capture(*, archive=None, library_file=None, background: bool = False) -
         plate_fallback=archive.plate_index if archive is not None else None,
         provenance={"kind": "archive" if archive is not None else "library_file", "id": source.id},
         background=background,
+        swap_fact=swap_fact,
+        expected_sha256=expected_sha256,
     )
 
 
@@ -159,6 +172,23 @@ async def capture_staged(request: CaptureRequest) -> StagedSource:
         receipt = await queue_sources.capture(request)
     except QueueSourceError as exc:
         raise refusal(exc) from exc
+    return StagedSource(receipt=receipt, original=request.path)
+
+
+async def capture_for_dispatch(request: CaptureRequest, *, deadline: float) -> StagedSource:
+    """The dispatcher's copy of a source that has no captured bytes yet (swap-source-lifecycle spec r4 §6).
+
+    Typed, unlike :func:`capture_staged`: the dispatcher answers a refusal by its class, so the service's
+    :class:`~backend.app.services.queue_sources.QueueSourceError` travels as it is, never as an HTTP status.
+    ``deadline`` is wall-clock from entering the copy, beside the service's own no-progress bound; when it passes,
+    the copy is cancelled -- which leaves a hung reader to its worker, holding its slot and its staging until the
+    syscall really returns -- and the answer is :class:`~backend.app.services.queue_sources.CaptureTimeout`.
+    Admission is the service's: no slot is waited for.
+    """
+    try:
+        receipt = await asyncio.wait_for(queue_sources.capture(request), timeout=deadline)
+    except TimeoutError as exc:
+        raise queue_sources.CaptureTimeout(f"the dispatch waited {deadline} seconds for the copy") from exc
     return StagedSource(receipt=receipt, original=request.path)
 
 
@@ -269,6 +299,20 @@ async def reusing_sources(db: AsyncSession, source_ids: Iterable[int | None]) ->
                 )
             blobs[source_id] = blob
         yield blobs
+
+
+def swap_request(fact, *, execute, events, printer_swap_mode: bool) -> tuple[bool, list[str] | None]:
+    """A new job's swap fields from its CAPTURED declaration, or the 409 a writer answers (spec r4 §8).
+
+    Every door that creates work asks this after the copy and before anything is published: a refusal raised
+    inside the caller's capture ``try`` discards the staging, and no row is written.
+    """
+    try:
+        return swap_compatibility.resolve_request(
+            fact, execute=execute, events=events, printer_swap_mode=printer_swap_mode
+        )
+    except swap_compatibility.SwapRequestRefused as exc:
+        raise HTTPException(409, routing_detail(exc.reason)) from exc
 
 
 def refusal(exc: QueueSourceError) -> HTTPException:

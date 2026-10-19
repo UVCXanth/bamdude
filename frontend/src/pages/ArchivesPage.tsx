@@ -1,3 +1,5 @@
+import { AutoEjectBadge } from '../components/AutoEjectBadge';
+import { RecoveryEndTime } from '../components/RecoveryEndTime';
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -59,6 +61,7 @@ import {
   DownloadCloud,
   Cog,
   Archive as ArchiveIcon,
+  ShieldCheck,
 } from 'lucide-react';
 import { SelectionBox } from '../components/SelectionBox';
 import { MakerWorldIcon } from '../components/BrandIcons';
@@ -75,6 +78,7 @@ import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
+import { SwapHoldBadge } from '../components/SwapHoldBadge';
 import { isAnyModalOpen } from '../components/modalStack';
 import { PaginationBar } from '../components/PaginationBar';
 import { ModelViewerModal } from '../components/ModelViewerModal';
@@ -88,6 +92,7 @@ import { EditArchiveModal } from '../components/EditArchiveModal';
 import { No3MFBanner } from '../components/No3MFBanner';
 import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
+import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
 import { CalendarView } from '../components/CalendarView';
@@ -225,6 +230,7 @@ function ArchiveCard({
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
+  const [showSwapDeclaration, setShowSwapDeclaration] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -478,6 +484,18 @@ function ArchiveCard({
           ? t('archives.card.noFileForReprint')
           : !hasPermission('library:upload')
             ? t('archives.permission.noSaveToLibrary')
+            : undefined,
+      },
+      {
+        // What a FUTURE reprint of this source may assume about its plate-change sequence (spec r3 §7).
+        label: t('swapDeclaration.menu'),
+        icon: <ShieldCheck className="w-4 h-4" />,
+        onClick: () => setShowSwapDeclaration(true),
+        disabled: !archive.file_path || !canModify('archives', 'update', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
             : undefined,
       },
     ] : [
@@ -958,6 +976,8 @@ function ArchiveCard({
       </div>
 
       <CardContent className="p-4 flex-1 flex flex-col">
+        <AutoEjectBadge mode={(archive.extra_data?.dispatch_intent as { auto_eject?: boolean } | undefined)?.auto_eject}
+          settings={(archive.extra_data?.dispatch_intent as { auto_eject_settings?: import('../api/client').AutoEjectSettings } | undefined)?.auto_eject_settings} />
         {/* Archive ID */}
         <p className="text-[10px] text-bambu-gray/70 mb-1">#{archive.id}</p>
 
@@ -1003,6 +1023,7 @@ function ArchiveCard({
           {archive.swap_compatible && (
             <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded">SWAP</span>
           )}
+          <SwapHoldBadge extraData={archive.extra_data} />
           {/* File hash badge */}
           {archive.content_hash && (
             <span
@@ -1188,7 +1209,7 @@ function ArchiveCard({
 
         {/* Date, Size & Creator */}
         <div className="flex items-center justify-between text-xs text-bambu-gray border-t border-bambu-dark-tertiary pt-3">
-          <span>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</span>
+          <div><span>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</span><RecoveryEndTime archive={archive} /></div>
           <div className="flex items-center gap-2">
             {archive.created_by_username && (
               <span className="flex items-center gap-1" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
@@ -1331,6 +1352,16 @@ function ArchiveCard({
         isOpen={showSaveToLibrary}
         onClose={() => setShowSaveToLibrary(false)}
       />
+
+      {showSwapDeclaration && (
+        <SwapDeclarationModal
+          kind="archive"
+          id={archive.id}
+          name={archive.print_name || archive.filename}
+          canDeclare={canModify('archives', 'update', archive.created_by_id)}
+          onClose={() => setShowSwapDeclaration(false)}
+        />
+      )}
 
       {showReprint && (
         <PrintModal
@@ -1687,6 +1718,7 @@ function ArchiveListRow({
   const [showPlateObjects, setShowPlateObjects] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
+  const [showSwapDeclaration, setShowSwapDeclaration] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
@@ -1893,6 +1925,18 @@ function ArchiveListRow({
           ? t('archives.card.noFileForReprint')
           : !hasPermission('library:upload')
             ? t('archives.permission.noSaveToLibrary')
+            : undefined,
+      },
+      {
+        // What a FUTURE reprint of this source may assume about its plate-change sequence (spec r3 §7).
+        label: t('swapDeclaration.menu'),
+        icon: <ShieldCheck className="w-4 h-4" />,
+        onClick: () => setShowSwapDeclaration(true),
+        disabled: !archive.file_path || !canModify('archives', 'update', archive.created_by_id),
+        title: !archive.file_path
+          ? t('archives.card.noFileForReprint')
+          : !canModify('archives', 'update', archive.created_by_id)
+            ? t('archives.permission.noUpdateArchives')
             : undefined,
       },
     ] : [
@@ -2216,6 +2260,7 @@ function ArchiveListRow({
             {archive.swap_compatible && (
               <span className="text-[10px] px-1 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded flex-shrink-0">SWAP</span>
             )}
+            <SwapHoldBadge extraData={archive.extra_data} className="flex-shrink-0" />
             {archive.timelapse_path && (
               <span title={t('archives.list.hasTimelapse')}>
                 <Film className="w-3.5 h-3.5 text-bambu-green flex-shrink-0" />
@@ -2372,6 +2417,7 @@ function ArchiveListRow({
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap">
           <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
+          <RecoveryEndTime archive={archive} />
           {archive.created_by_username && (
             <div className="flex items-center gap-1 text-xs opacity-75" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
               <User className="w-3 h-3" />
@@ -2490,6 +2536,16 @@ function ArchiveListRow({
         isOpen={showSaveToLibrary}
         onClose={() => setShowSaveToLibrary(false)}
       />
+
+      {showSwapDeclaration && (
+        <SwapDeclarationModal
+          kind="archive"
+          id={archive.id}
+          name={archive.print_name || archive.filename}
+          canDeclare={canModify('archives', 'update', archive.created_by_id)}
+          onClose={() => setShowSwapDeclaration(false)}
+        />
+      )}
 
       {showReprint && (
         <PrintModal

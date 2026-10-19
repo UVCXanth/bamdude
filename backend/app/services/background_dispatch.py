@@ -15,7 +15,9 @@ import secrets
 import time
 import zipfile
 from collections import deque
+from collections.abc import Callable
 from contextlib import AsyncExitStack
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
@@ -61,6 +63,11 @@ logger = logging.getLogger(__name__)
 # the exact value before the command is published.
 _MAX_FIRMWARE_SUBMISSION_ID = 2_147_483_646
 
+#: How long a dispatch waits, wall-clock, for the copy of a source that had none captured
+#: (swap-source-lifecycle spec r4 §6). Beside the service's own 60 s without progress; the 30 minute bound of an
+#: ordinary enqueue copy is not this one.
+DISPATCH_CAPTURE_DEADLINE_SECONDS = 300
+
 
 def _ensure_submission_id(job: PrintDispatchJob) -> str:
     """Return this attempt's stable firmware-safe project/subtask/task ID."""
@@ -78,6 +85,8 @@ def _dispatch_intent(job: PrintDispatchJob, remote_filename: str, submission_id:
         "submission_id": submission_id,
         "dispatch_job_id": job.id,
         "remote_filename": remote_filename,
+        "auto_eject": job.options.get("auto_eject"),
+        "auto_eject_settings": job.options.get("auto_eject_settings"),
     }
 
 
@@ -174,7 +183,7 @@ def resolve_dispatch_storage(model: str | None, state) -> tuple[str | None, str 
     return capability["print_target"], capability["reason"]
 
 
-async def delete_internal_by_name(transport, *names: str) -> bool:
+async def delete_internal_by_name(transport, *names: str, may_run: Callable[[], bool] | None = None) -> bool:
     """Delete the first file matching any of ``names`` from internal storage.
 
     ⚠️ **Internal-only, because only internal storage needs a lookup.** Over FTP
@@ -196,8 +205,10 @@ async def delete_internal_by_name(transport, *names: str) -> bool:
         return False
     try:
         for entry in await transport.list_files("/"):
+            if may_run is not None and not may_run():
+                return False
             if entry.name in wanted:
-                await transport.delete(entry.path)
+                await transport.delete(entry.path, **({"may_run": may_run} if may_run is not None else {}))
                 return True
     except Exception as exc:  # noqa: BLE001 — cleanup must never fail its caller
         logger.debug("Internal-storage delete of %s skipped: %s", ", ".join(sorted(wanted)), exc)
@@ -671,6 +682,16 @@ class DispatchJobCancelled(Exception):
 class DispatchEnqueueRejected(Exception):
     """Raised when a dispatch job should not be accepted."""
 
+    def __init__(self, message: str, *, code: str | None = None, printer_id: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.printer_id = printer_id
+
+    def detail(self) -> str | dict:
+        if self.code is None:
+            return str(self)
+        return {"code": self.code, "message": str(self), "printer_id": self.printer_id}
+
 
 class DispatchOutcome(TypedDict):
     success: bool
@@ -745,6 +766,10 @@ class PrintDispatchJob:
     #: ``finally`` reports failures inside its ``try`` and ``_run_active_job``
     #: reports the ones raised before it — one failure, one message.
     failure_reported: bool = False
+    #: What our swap-start macro really did on this attempt: ``not_called``, ``possibly_fired`` (sent, not
+    #: confirmed) or ``fired``. The watchdog and the operator's texts read this, never the requested events
+    #: (swap-source-lifecycle spec r4 §8): a muted or refused start did not happen.
+    swap_start_effect: str = "not_called"
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -1226,7 +1251,7 @@ class BackgroundDispatchService:
             await ws_manager.broadcast({"type": "background_dispatch", "data": done_payload})
 
         job.completion_event.set()
-        return dict(job.outcome)
+        return {**job.outcome, "swap_start_effect": job.swap_start_effect}
 
     async def dispatch_print_library_file(
         self,
@@ -1391,8 +1416,24 @@ class BackgroundDispatchService:
 
         async with async_session() as prep_db:
             capture_plan = await direct_print_capture_plan(prep_db, kind=kind, source_id=source_id)
+            printer_row = await prep_db.get(Printer, printer_id)
+            printer_swap_on = bool(printer_row is not None and printer_row.swap_mode_enabled)
         staged = await capture_staged(capture_plan)
         try:
+            from backend.app.services.queue_source_capture import swap_request
+
+            # The swap fields this print may honour, from the declaration the copy
+            # confirmed (swap-source-lifecycle spec r4 §8) -- written into ``options``
+            # itself, which the claim row and the job both carry. An unknown source
+            # asked for our macros is refused here, before the printer is claimed.
+            execute, events = swap_request(
+                staged.receipt.swap_fact.value,
+                execute=options.get("execute_swap_macros"),
+                events=options.get("swap_macro_events"),
+                printer_swap_mode=printer_swap_on,
+            )
+            options["execute_swap_macros"] = execute
+            options["swap_macro_events"] = events
             return await self._enqueue_claimed_job(
                 kind=kind,
                 source_id=source_id,
@@ -1511,7 +1552,9 @@ class BackgroundDispatchService:
                     )
                 except PrinterOccupancyConflict as exc:
                     raise DispatchEnqueueRejected(
-                        f"Printer {printer_name} is no longer available ({exc.code})"
+                        f"Printer {printer_name} is no longer available ({exc.code})",
+                        code=exc.code,
+                        printer_id=printer_id,
                     ) from exc
                 claim_item_id = claim_item.id if claim_item is not None else None
                 if claim_item is not None:
@@ -1937,6 +1980,8 @@ class BackgroundDispatchService:
         item = await db.get(PrintQueueItem, job.queue_item_id) if job.queue_item_id else None
         if item is None or item.status != "printing":
             raise RoutingDeferred("dispatch_claim_changed")
+        job.options["auto_eject"] = item.auto_eject
+        job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
         job.source = await item_descriptor(db, item)
@@ -1950,6 +1995,112 @@ class BackgroundDispatchService:
             plan = job.routing_guard.plan
             job.options.update(ams_mapping=plan.mapping, use_ams=plan.use_ams, plate_id=plan.resolved_plate_id)
 
+    async def _capture_descriptorless_source(self, db, job, pins: AsyncExitStack) -> None:
+        """Give a job with no captured source one copy for this attempt (swap-source-lifecycle spec r4 §6).
+
+        A pre-m173 job or a calibration print has no descriptor, and that is not a known False. Right after the
+        claim and the routing were read, and before any archive, patch, macro or preheat, the UNPATCHED source is
+        copied into staging, and ``job.source`` becomes that copy: everything the attempt reads afterwards reads
+        it, and the original is not opened again. The declaration rides the copy, proved by the hash the worker
+        computed -- for calibration as for anything else; ``is_calibration`` proves nothing.
+
+        The request's transaction is closed first: the copy may take minutes and must not hold one. The staged
+        bytes belong to ``pins`` from the moment the receipt exists, so every exit of the runner -- success, a
+        failure, a cancellation -- drops them after the last reader. A refused copy is answered by its class
+        (:func:`~backend.app.services.filament_deferred.capture_refusal`). After the await the claim and the job's
+        link to its source are read again: a job cancelled, reclaimed or re-pointed meanwhile does not dispatch.
+        """
+        if job.source is not None:
+            return
+        from fastapi import HTTPException
+
+        from backend.app.services.filament_deferred import capture_refusal
+        from backend.app.services.queue_source_capture import capture_for_dispatch, discard_staged, plan_capture
+        from backend.app.services.queue_sources import QueueSourceError
+
+        archive = library_file = None
+        if job.kind == "reprint_archive" and job.source_id:
+            archive = await ArchiveService(db).get_archive(job.source_id)
+        elif job.kind == "print_library_file" and job.source_id:
+            library_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id))
+        if archive is None and library_file is None:
+            raise SourceUnavailable()
+        try:
+            request = plan_capture(archive=archive, library_file=library_file)
+        except HTTPException as exc:  # a row with no file, or a file that is not a sliced container
+            raise SourceUnavailable() from exc
+        await db.commit()
+        try:
+            staged = await capture_for_dispatch(request, deadline=DISPATCH_CAPTURE_DEADLINE_SECONDS)
+        except QueueSourceError as exc:
+            raise capture_refusal(exc, queued=job.awaited_by_scheduler) from exc
+        pins.push_async_callback(discard_staged, staged)
+        await self._verify_routing_claim(db, job)
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+        if (item.archive_id, item.library_file_id) != (job.original_archive_id, job.original_library_file_id):
+            raise RoutingDeferred("dispatch_claim_changed")
+        job.source = staged.descriptor
+        await self._anchor_routing_to_copy(job, staged)
+
+    @staticmethod
+    async def _apply_swap_source_policy(db, job) -> None:
+        """The one runtime decision on OUR swap macros for this attempt (swap-source-lifecycle spec r4 §8).
+
+        Taken once the claim, the routing and the copy are settled and before any archive, preheat or macro, from
+        the job's own declaration: True mutes ours, False keeps exactly what was asked under the printer's swap
+        mode, and an unknown source with an effective request is refused before dispatch (D2). ``job.options`` is
+        rewritten IN PLACE, so the execution archive's pending events, the swap-start step and the config
+        ``on_print_complete`` reads all see this answer and nothing else; selected macros, order options and
+        auto-eject are not touched.
+        """
+        from backend.app.services import swap_compatibility
+        from backend.app.services.filament_deferred import SwapSourceRefused
+
+        options = job.options
+        printer = await db.get(Printer, job.printer_id)
+        fact = job.source.swap_fact.value if job.source is not None else None
+        decision = swap_compatibility.decide(
+            fact,
+            execute=options.get("execute_swap_macros"),
+            events=options.get("swap_macro_events"),
+            printer_swap_mode=bool(printer is not None and printer.swap_mode_enabled),
+        )
+        if decision.refused:
+            raise SwapSourceRefused(decision.reason)
+        options["execute_swap_macros"] = decision.execute
+        options["swap_macro_events"] = list(decision.events) if decision.execute else []
+
+    @staticmethod
+    async def _anchor_routing_to_copy(job, staged) -> None:
+        """Make the routing guard ask about the COPY from now on, never the original.
+
+        The plan was computed from the original as preflight read it, under its stat revision. When the copy was
+        taken from that same revision -- the worker proves the original's stat did not move while it read -- the
+        copy IS what the plan describes, and the guard's later probes (``final_guard``) re-read the staged file by
+        its hash. A copy taken from another revision is a plan about other bytes: ``source_changed``, the answer
+        the guard itself would have given, and the next attempt plans again.
+        """
+        from dataclasses import replace
+
+        from backend.app.services.filament_requirements import SourceIdentity, probe_identity
+
+        guard = job.routing_guard
+        identity = getattr(getattr(guard, "requirements", None), "source_identity", None)
+        if guard is None or identity is None:
+            return
+        receipt = staged.receipt
+        if (identity.size, identity.mtime_ns) != (receipt.size_bytes, receipt.source_mtime_ns):
+            raise RoutingDeferred("source_changed")
+        try:
+            copied = await probe_identity(
+                SourceIdentity(str(staged.staging_path), receipt.size_bytes, 0, sha256=receipt.sha256)
+            )
+        except SourceUnavailable as exc:
+            raise RoutingDeferred(exc.reason) from exc
+        job.routing_guard = replace(guard, requirements=replace(guard.requirements, source_identity=copied))
+
     async def _verify_routing_claim(self, db, job):
         from backend.app.models.print_queue import PrintQueueItem
 
@@ -1959,6 +2110,8 @@ class BackgroundDispatchService:
             or item.status != "printing"
             or item.started_at != job.claim_started_at
             or item.filament_routing != job.routing_intent
+            or bool(item.auto_eject) != bool(job.options.get("auto_eject"))
+            or item.auto_eject_settings != job.options.get("auto_eject_settings")
         ):
             from backend.app.models.printer_queue import PrinterQueue
 
@@ -1987,12 +2140,14 @@ class BackgroundDispatchService:
         # channel and what either side holds, and ``SourceUnavailable``, whose
         # refusal is about the file and has no channel to name.
         reason = routing_detail(exc.reason, **getattr(exc, "params", {}))
+        disposition = getattr(exc, "disposition", None)
         job.outcome = {
             "success": False,
             "archive_id": job.execution_archive_id,
             "error": reason["message"],
             "cancelled": False,
             "deferred": True,
+            "disposition": disposition,
             "reason": reason,
             "revision": exc.revision,
             "claim_started_at": job.claim_started_at,
@@ -2013,6 +2168,7 @@ class BackgroundDispatchService:
                     source_archive_id=job.original_archive_id,
                     source_library_file_id=job.original_library_file_id,
                     restore_source=True,
+                    disposition=disposition,
                 )
             await db.commit()
         if released:
@@ -2078,6 +2234,8 @@ class BackgroundDispatchService:
             # refs before any source probe can fail; the failure path must be able
             # to release the claim. ``pins`` holds the blob for the whole runner.
             await self._prepare_filament_routing(db, job, pins)
+            await self._capture_descriptorless_source(db, job, pins)
+            await self._apply_swap_source_policy(db, job)
             # ⚠️ The source archive is provenance now, not the bytes: a job with a
             # snapshot prints the copy it took, and the row it was taken from may
             # have been purged since (spec §7). Only a job with neither is broken.
@@ -2223,6 +2381,7 @@ class BackgroundDispatchService:
                     dispatch_intent=_dispatch_intent(job, remote_filename, submission_id),
                     swap_macro_events_pending=swap_pending,
                     selected_macro_ids=selected_macros,
+                    source_swap_compatible=job.source.swap_fact.value if job.source is not None else None,
                 )
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
@@ -2435,6 +2594,9 @@ class BackgroundDispatchService:
                 )
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
+                from backend.app.services.order_auto_eject import dispatch_admission
+
+                await dispatch_admission(db, job, printer)
                 rack = await self._resolve_rack(
                     job,
                     printer,
@@ -2491,9 +2653,15 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Swap-mode start macro — fires before the print starts.
+                # Swap-mode start macro — fires before the print starts. Its outcome
+                # goes onto the execution archive: a hold at completion says
+                # whether our swap cycle began (swap-source-lifecycle spec r4 R2-6).
                 await self._run_swap_macro_if_needed(
-                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                    job,
+                    printer,
+                    "swap_mode_start",
+                    f"Running swap start macro on {printer_name}...",
+                    record=self._start_effect_recorder(db, archive),
                 )
 
                 # Tick swap_mode_start off the pending checklist now that
@@ -2553,6 +2721,9 @@ class BackgroundDispatchService:
                     job.routing_guard, job.printer_id, bind_generation=bind_generation
                 )
                 await self._verify_routing_claim(db, job)
+                from backend.app.services.order_auto_eject import dispatch_check
+
+                await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -2746,16 +2917,34 @@ class BackgroundDispatchService:
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
 
+    @staticmethod
+    def _start_effect_recorder(db, archive):
+        """Record the swap-start macro's outcome on the execution archive, committed before going on."""
+
+        async def record(stage: str) -> None:
+            if archive is None:
+                return
+            from backend.app.services import swap_terminal
+
+            swap_terminal.record_start_effect(archive, stage)
+            await db.commit()
+
+        return record
+
     async def _run_swap_macro_if_needed(
         self,
         job: PrintDispatchJob,
         printer,
         event: str,
         status_message: str,
+        *,
+        record=None,
     ):
         """Execute a swap macro if the job's options request it for *event*.
 
-        Raises ``RuntimeError`` on failure so the dispatch job aborts.
+        Raises ``RuntimeError`` on failure so the dispatch job aborts. ``record``
+        is told the start macro's outcome: ``possibly_fired`` before the command
+        may leave, ``fired`` once the printer confirmed it.
         """
         opts = job.options if isinstance(job.options, dict) else {}
         if not opts.get("execute_swap_macros"):
@@ -2780,9 +2969,18 @@ class BackgroundDispatchService:
             return
 
         await self._set_active_message(job, status_message, phase="swapping")
+        if event == "swap_mode_start":
+            # From the moment the command may leave, it may have happened.
+            job.swap_start_effect = "possibly_fired"
+            if record is not None:
+                await record("possibly_fired")
         success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
         if not success:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
+        if event == "swap_mode_start":
+            job.swap_start_effect = "fired"
+            if record is not None:
+                await record("fired")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
@@ -2794,6 +2992,8 @@ class BackgroundDispatchService:
 
         async with AsyncExitStack() as pins, async_session() as db:
             await self._prepare_filament_routing(db, job, pins)
+            await self._capture_descriptorless_source(db, job, pins)
+            await self._apply_swap_source_policy(db, job)
             # ⚠️ The library row is provenance now, not the bytes (spec §7): the
             # file this job prints was copied into the spool when it was queued,
             # and the row may have been trashed since — which is exactly the case
@@ -2946,6 +3146,7 @@ class BackgroundDispatchService:
                     selected_macro_ids=(
                         job.options.get("selected_macro_ids") if isinstance(job.options, dict) else None
                     ),
+                    source_swap_compatible=job.source.swap_fact.value if job.source is not None else None,
                     # Plate the user picked when scheduling — same value the
                     # dispatch loop already uses for FTP filename / MQTT
                     # start_print. Persisting it on the archive gives the
@@ -3164,6 +3365,9 @@ class BackgroundDispatchService:
                 )
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
+                from backend.app.services.order_auto_eject import dispatch_admission
+
+                await dispatch_admission(db, job, printer)
                 rack = await self._resolve_rack(
                     job,
                     printer,
@@ -3217,9 +3421,15 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
-                # Swap-mode start macro — fires before the print starts.
+                # Swap-mode start macro — fires before the print starts. Its outcome
+                # goes onto the execution archive: a hold at completion says
+                # whether our swap cycle began (swap-source-lifecycle spec r4 R2-6).
                 await self._run_swap_macro_if_needed(
-                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                    job,
+                    printer,
+                    "swap_mode_start",
+                    f"Running swap start macro on {printer_name}...",
+                    record=self._start_effect_recorder(db, archive),
                 )
 
                 # Tick swap_mode_start off the pending checklist now that
@@ -3279,6 +3489,9 @@ class BackgroundDispatchService:
                     job.routing_guard, job.printer_id, bind_generation=bind_generation
                 )
                 await self._verify_routing_claim(db, job)
+                from backend.app.services.order_auto_eject import dispatch_check
+
+                await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,

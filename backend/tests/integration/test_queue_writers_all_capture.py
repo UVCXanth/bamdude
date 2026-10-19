@@ -188,6 +188,9 @@ async def test_the_bots_library_add_queues_from_a_captured_copy(
         "display_filename": source.filename,
         "format": "3mf",
         "plate_fallback": None,
+        # The library row has no content hash, so its declaration cannot count.
+        "swap_compatible": None,
+        "swap_reason": "hash_missing",
     }
     assert rows[0].sha256 == hashlib.sha256(original.read_bytes()).hexdigest()
     assert object_of(rows[0]).is_file()

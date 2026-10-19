@@ -263,7 +263,8 @@ async def _start_locked() -> None:
     from backend.app.services.telegram_handlers.stats import router as stats_router
 
     _dispatcher = Dispatcher()
-    _dispatcher.message.middleware(TelegramAuthMiddleware())
+    # CompletionReply needs tg_chat while aiogram evaluates message filters.
+    _dispatcher.message.outer_middleware(TelegramAuthMiddleware())
     _dispatcher.callback_query.middleware(TelegramAuthMiddleware())
     _dispatcher.include_router(start_router)
     _dispatcher.include_router(printers_router)

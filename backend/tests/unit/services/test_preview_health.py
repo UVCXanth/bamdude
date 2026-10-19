@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from backend.app.services import preview_runtime as module
+from backend.app.services.preview_protocol import VERSION
 from backend.app.services.preview_runtime import PreviewRuntime
 
 
@@ -85,7 +86,7 @@ async def test_launch_clears_old_failure_and_stop_does_not_invent_disconnect(tmp
         return {
             "outcome": "ok",
             "epoch": command.service_epoch,
-            "protocol_version": 1,
+            "protocol_version": VERSION,
             "monotonic_ns": time.monotonic_ns(),
         }
 

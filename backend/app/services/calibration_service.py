@@ -28,6 +28,7 @@ from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
+from backend.app.services import swap_compatibility
 from backend.app.services.calibration_constants import (
     CaliMethod,
     CaliMode,
@@ -277,6 +278,8 @@ async def _persist_calibration_slice_to_library(
         source_type="sliced",
         created_by_id=user_id,
     )
+    # A canned calibration slice is ours: no swap sequence, whatever its name says.
+    swap_compatibility.declare_ingest(new_file, False, origin="generated")
     async with async_session() as db:
         # These are BamDude's own canned assets, sliced from a fixed source with
         # fixed settings — running the same calibration twice produces the same

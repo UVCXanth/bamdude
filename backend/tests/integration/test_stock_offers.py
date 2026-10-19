@@ -93,11 +93,21 @@ async def test_the_offer_covers_what_is_neither_printed_nor_queued(db_session, s
 @pytest.mark.asyncio
 async def test_taking_adds_and_never_releases(committing_client, db_session, shop):
     r = await committing_client.get(_url(shop, "stock-offers"))
-    assert r.json() == [{"line_id": shop["line"].id, "product_name": "Pipe", "from_finished": 2, "kits": 3}]
+    assert r.json() == [
+        {"line_id": shop["line"].id, "product_name": "Pipe", "from_finished": 2, "kits": 3, "parts": {}}
+    ]
     r = await committing_client.post(_url(shop, "take-stock"), json={"lines": r.json()})
     assert r.status_code == 200, r.text
     assert r.json()["results"] == [
-        {"line_id": shop["line"].id, "asked_finished": 2, "got_finished": 2, "asked_kits": 3, "got_kits": 3}
+        {
+            "line_id": shop["line"].id,
+            "asked_finished": 2,
+            "got_finished": 2,
+            "asked_kits": 3,
+            "got_kits": 3,
+            "asked_parts": {},
+            "got_parts": {},
+        }
     ]
     [line] = r.json()["order"]["lines"]
     assert (line["from_finished"], line["from_kit_units"]) == (2, 3)

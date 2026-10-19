@@ -49,6 +49,12 @@ describe('OrderForecastPanel', () => {
     expect(panel()).toHaveTextContent('later than the deadline');
   });
 
+  it('distinguishes elapsed fleet time from summed machine hours', () => {
+    forecast(withData({ now_seconds: 182436, machine_seconds: 2204480 }));
+    expect(screen.getByTestId('order-forecast-duration')).toHaveTextContent('50h 40m');
+    expect(panel()).toHaveTextContent('Machine hours612:21');
+  });
+
   it('names printers and prints apart in each model row, and a model nothing takes (R06)', () => {
     forecast(
       withData({

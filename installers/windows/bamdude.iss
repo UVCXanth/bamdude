@@ -27,6 +27,13 @@
   #define MyAppVersion "0.0.0+dev"
 #endif
 
+; The longest install directory the payload allows (its deepest DLL under the loader's limit, any other file
+; under MAX_PATH), derived by build.py from the pinned catalog and the staged payload. Never a number of this
+; script's own: without build.py there is no installer.
+#ifndef StepMaxAppDirLen
+  #error StepMaxAppDirLen comes from build\staging\version.iss: run build.py before ISCC
+#endif
+
 [Setup]
 AppId={{6D2F9C41-8A73-4B25-9E60-2C7A1F0B4D88}}
 AppName={#MyAppName}
@@ -108,6 +115,11 @@ english.UninstallDataKeepDetail=The database, every print archive and your setti
 english.UninstallDataDelete=Delete everything
 english.UninstallDataDeleteDetail=Removes that folder for good: the database, every print archive, all settings, and the bundled PostgreSQL cluster if you use one. There is no undo and no copy left behind — make a backup first if you are not certain.
 english.UninstallDataContinue=Continue
+english.ServiceStillRunning=The BamDude service did not stop within 100 seconds, so nothing was changed.%n%nStop it in Services (or restart Windows), then run this installer again.
+english.ServiceStateUnknown=Setup could not read the state of the BamDude service, so nothing was changed.%n%nRun this installer again as an administrator; if it keeps failing, the setup log says why.
+english.AppDirHasBang=The folder path must not contain an exclamation mark (!): BamDude's service setup cannot use such a path. Please choose another folder.
+english.AppDirTooLong=This folder path is too long for BamDude's 3D preview component: at most %1 characters are possible. Please choose a shorter folder.
+english.ServiceNotRunning=BamDude was installed, but its Windows service is not running, so nothing serves the dashboard yet.%n%nThe setup log is at:%n%1%n%nOpen it to see why, then re-run this installer.
 english.ServiceSetupFailed=BamDude was installed, but its Windows service could not be registered, so nothing is running yet.%n%nThe setup log is at:%n%1%n%nOpen it to see what failed, then re-run this installer.
 
 ukrainian.TaskDesktopIcon=Створити ярлик на робочому столі
@@ -139,6 +151,11 @@ ukrainian.UninstallDataKeepDetail=База, всі архіви друку й в
 ukrainian.UninstallDataDelete=Видалити все
 ukrainian.UninstallDataDeleteDetail=Ця тека зникає остаточно: база, всі архіви друку, всі налаштування і кластер вбудованого PostgreSQL, якщо ви ним користуєтесь. Скасувати це не можна, копії не лишиться — якщо не впевнені, спершу зробіть резервну копію.
 ukrainian.UninstallDataContinue=Продовжити
+ukrainian.ServiceStillRunning=Служба BamDude не зупинилася за 100 секунд, тож нічого не змінено.%n%nЗупиніть її у «Службах» (або перезавантажте Windows) і запустіть інсталятор ще раз.
+ukrainian.ServiceStateUnknown=Не вдалося прочитати стан служби BamDude, тож нічого не змінено.%n%nЗапустіть інсталятор ще раз від імені адміністратора; якщо не допоможе — причину видно в журналі встановлення.
+ukrainian.AppDirHasBang=Шлях до теки не може містити знак оклику (!): налаштування служби BamDude не працює з таким шляхом. Оберіть іншу теку.
+ukrainian.AppDirTooLong=Шлях до цієї теки задовгий для компонента 3D-прев'ю BamDude: можна щонайбільше %1 символів. Оберіть коротшу теку.
+ukrainian.ServiceNotRunning=BamDude встановлено, але служба Windows не працює, тож панель поки недоступна.%n%nЖурнал встановлення:%n%1%n%nВідкрийте його, щоб побачити причину, потім запустіть інсталятор ще раз.
 ukrainian.ServiceSetupFailed=BamDude встановлено, але службу Windows зареєструвати не вдалося, тож зараз нічого не запущено.%n%nЖурнал встановлення:%n%1%n%nВідкрийте його, щоб побачити причину, потім запустіть інсталятор ще раз.
 
 [Tasks]
@@ -166,6 +183,13 @@ Source: "build\staging\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; Start Menu / desktop shortcuts. Lives at the install root so the
 ; UninstallDisplayIcon path stays stable when the [Files] tree changes.
 Source: "bamdude.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; The pinned Node render runtime is replaced whole on every install: files of an older pin must not stay behind.
+; Only Node: the STEP-preview CAD bundles beside it survive a failed copy or verify, and the old ones go only after
+; the new one verified with the service proven stopped (install-service.bat, step_runtime prune). Runs only after
+; PrepareToInstall proved BamDude absent or stopped — it refuses otherwise, before this section.
+Type: filesandordirs; Name: "{app}\app\runtime\node"
 
 [Dirs]
 ; ProgramData layout — created with permissions LocalSystem can write to
@@ -223,6 +247,9 @@ var
   StoragePage: TInputOptionWizardPage;
   UrlPage: TInputQueryWizardPage;
   RemoveDataOnUninstall: Boolean;
+  // Setup's own exit code when the service is not up after [Run]: 41 not registered, 42 registered but not
+  // running (GetCustomSetupExitCode) — what an unattended install reads instead of a message box.
+  PostInstallFailure: Integer;
 
 // Read the current backend from the installed BamDude service's environment
 // (NSSM keeps AppEnvironmentExtra as a REG_MULTI_SZ), so an upgrade defaults to
@@ -288,9 +315,23 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  // A silent install "clicks" Next too, and a False here ends it with another code than 7: the directory
+  // check is the wizard's early word for an interactive install only; a silent one is refused by
+  // PrepareToInstall (exit code 7), still before anything is stopped or created. Every box is suppressible.
+  if (CurPageID = wpSelectDir) and (not WizardSilent) and (Length(WizardDirValue) > {#StepMaxAppDirLen}) then
+  begin
+    SuppressibleMsgBox(FmtMessage(CustomMessage('AppDirTooLong'), [IntToStr({#StepMaxAppDirLen})]),
+      mbError, MB_OK, IDOK);
+    Result := False;
+  end;
+  if (CurPageID = wpSelectDir) and (not WizardSilent) and (Pos('!', WizardDirValue) > 0) then
+  begin
+    SuppressibleMsgBox(CustomMessage('AppDirHasBang'), mbError, MB_OK, IDOK);
+    Result := False;
+  end;
   if (CurPageID = UrlPage.ID) and (Trim(UrlPage.Values[0]) = '') then
   begin
-    MsgBox(CustomMessage('UrlRequired'), mbError, MB_OK);
+    SuppressibleMsgBox(CustomMessage('UrlRequired'), mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;
@@ -319,97 +360,220 @@ begin
             '{#DefaultPort}' + ' ' + GetDbMode() + ' "' + Url + '"';
 end;
 
-// Stop the BamDude service (and the bundled PostgreSQL service, if any) BEFORE
-// the [Files] section copies anything, so file locks on python.exe / .pyd /
-// nssm.exe / postgres.exe release in time for the overwrite. Without this,
-// upgrading over a running install fails with "permission denied" on every
-// file a service has open.
+// --- Service state, read positively from the Service Control Manager ------------------------------------------
 //
-// The guard is the SERVICE, not a file on disk: ServiceExists returns at once
-// on a first-time install, where nothing is registered yet.
-function ServiceExists(const ServiceName: String): Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query ' + ServiceName, '',
-    SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
-end;
+// Four answers, never guessed: ABSENT only on the SCM's own 1060 (no such service); STOPPED; OTHER for any other
+// state (STOP_PENDING included); UNKNOWN for anything not read — the SCM or the service could not be opened
+// (access denied, say) or its status not queried. The old check took any failure of `sc query` for "no service"
+// and let [InstallDelete] and [Files] run against a service it could not see (Codex B-R1).
 
-// Ask the SCM to stop a service and wait until it really is stopped.
-//
-// ⚠️ sc stop, never `net stop`. `net stop` asks whether to also stop the
-// services that depend on this one, and everything here runs hidden with no
-// console, so that question hangs the installer at "Preparing to install"
-// with the service still up. uninstall-service.bat carries the same warning —
-// it hit exactly this once; the install path was never updated to match.
-//
-// ⚠️ sc returns as soon as the control code is delivered, NOT when the service
-// has stopped, so the poll is the point of this function. `sc query | find
-// "STOPPED"` is the only state signal an Exec exit code can carry, since Inno
-// cannot read a process's output.
-function StopServiceAndWait(const ServiceName: String; TimeoutSeconds: Integer): Boolean;
-var
-  ResultCode, Waited: Integer;
-begin
-  if not ServiceExists(ServiceName) then
-  begin
-    Result := True;
-    Exit;
+const
+  SvcAbsent = 0;
+  SvcStopped = 1;
+  SvcOther = 2;
+  SvcUnknown = 3;
+  SC_MANAGER_CONNECT = $0001;
+  SERVICE_QUERY_STATUS = $0004;
+  SERVICE_STOP = $0020;
+  SERVICE_CONTROL_STOP = $00000001;
+  SERVICE_STOPPED = $00000001;
+  SERVICE_START_PENDING = $00000002;
+  SERVICE_RUNNING = $00000004;
+  ERROR_SERVICE_DOES_NOT_EXIST = 1060;
+
+type
+  TServiceStatus = record
+    dwServiceType: Cardinal;
+    dwCurrentState: Cardinal;
+    dwControlsAccepted: Cardinal;
+    dwWin32ExitCode: Cardinal;
+    dwServiceSpecificExitCode: Cardinal;
+    dwCheckPoint: Cardinal;
+    dwWaitHint: Cardinal;
   end;
 
-  Log('Stopping ' + ServiceName + ' before file copy...');
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop ' + ServiceName, '',
-    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+function OpenSCManager(lpMachineName, lpDatabaseName: String; dwDesiredAccess: Cardinal): THandle;
+  external 'OpenSCManagerW@advapi32.dll stdcall';
+function OpenService(hSCManager: THandle; lpServiceName: String; dwDesiredAccess: Cardinal): THandle;
+  external 'OpenServiceW@advapi32.dll stdcall';
+function QueryServiceStatus(hService: THandle; var lpServiceStatus: TServiceStatus): Boolean;
+  external 'QueryServiceStatus@advapi32.dll stdcall';
+function ControlService(hService: THandle; dwControl: Cardinal; var lpServiceStatus: TServiceStatus): Boolean;
+  external 'ControlService@advapi32.dll stdcall';
+function CloseServiceHandle(hSCObject: THandle): Boolean;
+  external 'CloseServiceHandle@advapi32.dll stdcall';
 
-  Waited := 0;
-  repeat
-    if Exec(ExpandConstant('{cmd}'),
-         '/c sc query ' + ServiceName + ' | find "STOPPED" >nul', '',
-         SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+// The class of the service's state, read with SERVICE_QUERY_STATUS alone.
+function ServiceState(const ServiceName: String): Integer;
+var
+  Manager, Service: THandle;
+  Status: TServiceStatus;
+  Error: Integer;
+begin
+  Result := SvcUnknown;
+  Manager := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if Manager = 0 then
+  begin
+    Log('SCM could not be opened (error ' + IntToStr(DLLGetLastError()) + ')');
+    Exit;
+  end;
+  try
+    Service := OpenService(Manager, ServiceName, SERVICE_QUERY_STATUS);
+    if Service = 0 then
     begin
-      Result := True;
+      Error := DLLGetLastError();
+      if Error = ERROR_SERVICE_DOES_NOT_EXIST then Result := SvcAbsent
+      else Log(ServiceName + ' could not be opened (error ' + IntToStr(Error) + ')');
       Exit;
     end;
-    Sleep(2000);
-    Waited := Waited + 2;
-  until Waited >= TimeoutSeconds;
-
-  Log(ServiceName + ' did not reach STOPPED within ' + IntToStr(TimeoutSeconds) + 's');
-  Result := False;
+    try
+      if not QueryServiceStatus(Service, Status) then
+        Log(ServiceName + ' status could not be read (error ' + IntToStr(DLLGetLastError()) + ')')
+      else if Status.dwCurrentState = SERVICE_STOPPED then
+        Result := SvcStopped
+      else
+        Result := SvcOther;
+    finally
+      CloseServiceHandle(Service);
+    end;
+  finally
+    CloseServiceHandle(Manager);
+  end;
 end;
 
+// True only for a service the SCM shows RUNNING or START_PENDING.
+function ServiceRunning(const ServiceName: String): Boolean;
+var
+  Manager, Service: THandle;
+  Status: TServiceStatus;
+begin
+  Result := False;
+  Manager := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if Manager = 0 then Exit;
+  try
+    Service := OpenService(Manager, ServiceName, SERVICE_QUERY_STATUS);
+    if Service = 0 then Exit;
+    try
+      if QueryServiceStatus(Service, Status) then
+        Result := (Status.dwCurrentState = SERVICE_RUNNING) or (Status.dwCurrentState = SERVICE_START_PENDING);
+    finally
+      CloseServiceHandle(Service);
+    end;
+  finally
+    CloseServiceHandle(Manager);
+  end;
+end;
+
+// Ask the SCM to stop the service; whether it stopped is what ServiceState then reads (a stop already under way
+// refuses a second control, and that is fine).
+procedure RequestStop(const ServiceName: String);
+var
+  Manager, Service: THandle;
+  Status: TServiceStatus;
+begin
+  Manager := OpenSCManager('', '', SC_MANAGER_CONNECT);
+  if Manager = 0 then Exit;
+  try
+    Service := OpenService(Manager, ServiceName, SERVICE_STOP or SERVICE_QUERY_STATUS);
+    if Service = 0 then
+    begin
+      Log(ServiceName + ' could not be opened to stop (error ' + IntToStr(DLLGetLastError()) + ')');
+      Exit;
+    end;
+    try
+      if not ControlService(Service, SERVICE_CONTROL_STOP, Status) then
+        Log(ServiceName + ' stop request answered error ' + IntToStr(DLLGetLastError()));
+    finally
+      CloseServiceHandle(Service);
+    end;
+  finally
+    CloseServiceHandle(Manager);
+  end;
+end;
+
+// Stop a service and wait until the SCM shows it STOPPED: returns the final state class — SvcAbsent or
+// SvcStopped is a proven stop, SvcOther means it did not stop within Seconds, SvcUnknown that it could not be read.
+// No dependents question can arise here (net stop's), and the poll is the point: a stop request returns at once.
+function StopServiceAndWait(const ServiceName: String; Seconds: Integer): Integer;
+var
+  Waited: Integer;
+begin
+  Result := ServiceState(ServiceName);
+  if Result <> SvcOther then
+    Exit;
+  Log('Stopping ' + ServiceName + ' before file copy...');
+  RequestStop(ServiceName);
+  Waited := 0;
+  while Waited < Seconds * 1000 do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+    Result := ServiceState(ServiceName);
+    if Result <> SvcOther then
+      Exit;
+  end;
+  Log(ServiceName + ' did not reach STOPPED within ' + IntToStr(Seconds) + 's');
+end;
+
+// Nothing of the installed payload may change while BamDude may run: [InstallDelete] and [Files] come only after
+// this returns '' — so it returns a reason instead whenever BamDude is not proven absent or stopped.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  ResultCode: Integer;
+  ResultCode, State: Integer;
   NssmPath: String;
 begin
   Result := '';
   NeedsRestart := False;
+
+  // A directory too long for the CAD bundle's deepest DLL: refused before anything is stopped.
+  if Length(ExpandConstant('{app}')) > {#StepMaxAppDirLen} then
+  begin
+    Result := FmtMessage(CustomMessage('AppDirTooLong'), [IntToStr({#StepMaxAppDirLen})]);
+    Exit;
+  end;
+
+  // install-service.bat assigns its arguments under delayed expansion: a `!` in {app} would be stripped from
+  // every path it builds, and nothing would be registered. Refused here, before anything is stopped.
+  if Pos('!', ExpandConstant('{app}')) > 0 then
+  begin
+    Result := CustomMessage('AppDirHasBang');
+    Exit;
+  end;
 
   // ⚠️ BamDude FIRST — it depends on BamDudePostgres (DependOnService, set by
   // install-service.bat). Stopping the dependency while its dependent is still
   // running is exactly what makes the SCM ask about dependents, which is the
   // question that must never be asked here.
   //
-  // Both are best-effort: a service that is not installed returns at once, so
-  // this is a no-op on a first-time install.
-  // Apply the child-process grace BEFORE stopping an older installation.
+  // Apply the child-process grace BEFORE stopping an older installation (it writes only NSSM's registry).
   // The [Run] script only sets up the replacement service after file copy.
   NssmPath := ExpandConstant('{app}\bin\nssm.exe');
-  if ServiceExists('BamDude') and FileExists(NssmPath) then
+  if (ServiceState('BamDude') <> SvcAbsent) and FileExists(NssmPath) then
     if not Exec(NssmPath, 'set BamDude AppStopMethodConsole 90000', '',
       SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       Log('Could not configure BamDude console-stop grace before upgrade')
     else if ResultCode <> 0 then
       Log('NSSM rejected BamDude console-stop grace before upgrade');
   // Console grace plus NSSM's remaining shutdown stages.
-  StopServiceAndWait('BamDude', 100);
+  State := StopServiceAndWait('BamDude', 100);
+  if State = SvcUnknown then
+  begin
+    Result := CustomMessage('ServiceStateUnknown');
+    Exit;
+  end;
+  if (State <> SvcAbsent) and (State <> SvcStopped) then
+  begin
+    Result := CustomMessage('ServiceStillRunning');
+    Exit;
+  end;
 
-  if not StopServiceAndWait('BamDudePostgres', 90) then
+  State := StopServiceAndWait('BamDudePostgres', 90);
+  if (State <> SvcAbsent) and (State <> SvcStopped) then
     // Not fatal on its own — say it in the log and let [Files] report the real
-    // failure if a binary is still held. Aborting here would strand an install
+    // failure if a binary is still held (visibly: Retry/Abort, never a silently
+    // half-replaced CAD or Node runtime). Aborting here would strand an install
     // that a second attempt would complete.
-    Log('BamDudePostgres is still running; the file copy may fail on its binaries');
+    Log('BamDudePostgres is not proven stopped; the file copy may fail on its binaries');
 
   // A beat for Windows to finalize the unload before [Files] takes exclusive
   // handles on nssm.exe / postgres.exe.
@@ -422,8 +586,6 @@ end;
 // at all. Check for the service and point at the log if it is not there.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  ResultCode: Integer;
-  Ok: Boolean;
   LogPath: String;
 begin
   if CurStep <> ssPostInstall then
@@ -432,9 +594,26 @@ begin
   // that as a section tag, even inside [Code] — so the message argument is
   // bound to a variable first rather than written as an inline array.
   LogPath := ExpandConstant('{commonappdata}\BamDude\logs\install-service.log');
-  Ok := Exec(ExpandConstant('{sys}\sc.exe'), 'query BamDude', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if (not Ok) or (ResultCode <> 0) then
-    MsgBox(FmtMessage(CustomMessage('ServiceSetupFailed'), [LogPath]), mbError, MB_OK);
+  // install-service.bat exits 4 when the CAD bundle failed its verify (the service then stays stopped, on demand
+  // start) and 5 when BamDude was not proven stopped; Inno ignores a [Run] exit code, so the state is read here and
+  // reported as Setup's own exit code (41/42), with a box /SUPPRESSMSGBOXES silences.
+  if ServiceState('BamDude') = SvcAbsent then
+  begin
+    PostInstallFailure := 41;
+    Log('BamDude service is not registered after install-service.bat');
+    SuppressibleMsgBox(FmtMessage(CustomMessage('ServiceSetupFailed'), [LogPath]), mbError, MB_OK, IDOK);
+  end
+  else if not ServiceRunning('BamDude') then
+  begin
+    PostInstallFailure := 42;
+    Log('BamDude service is registered but not running after install-service.bat');
+    SuppressibleMsgBox(FmtMessage(CustomMessage('ServiceNotRunning'), [LogPath]), mbError, MB_OK, IDOK);
+  end;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := PostInstallFailure;
 end;
 
 function InitializeSetup(): Boolean;
@@ -579,6 +758,12 @@ function InitializeUninstall(): Boolean;
 begin
   // Keeping the data is the default and stays the default: an uninstall that
   // silently took the archives with it would be unrecoverable.
+  if UninstallSilent then
+  begin
+    RemoveDataOnUninstall := False;  // a silent uninstall keeps the data and opens no window nobody can answer
+    Result := True;
+    Exit;
+  end;
   Result := AskAboutData(RemoveDataOnUninstall);
 end;
 

@@ -5,6 +5,7 @@ import { api } from '../../../api/client';
 import type { PartSource, ProductPartRow } from '../../../api/client';
 import { useSearchBox } from '../../../hooks/useSearchBox';
 import { Button } from '../../Button';
+import { PartThumb } from '../../PartThumb';
 import { ListSearchBox } from '../../ListSearchBox';
 import { PaginationBar } from '../../PaginationBar';
 import { Select } from '../../Select';
@@ -203,23 +204,28 @@ function PartRow({
         />
       </td>
       <td className={CELL}>
-        <div className="font-semibold [overflow-wrap:break-word]">
-          {row.name}
-          {row.variant && (
-            <span className={`ml-1.5 ${VARIANT_CHIP}`} title={`${row.variant.group}: ${row.variant.option}`}>
-              {row.variant.option}
-            </span>
-          )}
-        </div>
-        <div className="text-xs text-bambu-gray">
-          {row.product.name}
-          {row.product.sku && (
-            <>
-              {' · '}
-              <span className="font-mono">{row.product.sku}</span>
-            </>
-          )}
-          {` · ${row.product.code}`}
+        <div className="flex items-start gap-2">
+          <PartThumb partId={row.part_id} image={row.image} name={row.name} size="sm" />
+          <div className="min-w-0">
+            <div className="font-semibold [overflow-wrap:break-word]">
+              {row.name}
+              {row.variant && (
+                <span className={`ml-1.5 ${VARIANT_CHIP}`} title={`${row.variant.group}: ${row.variant.option}`}>
+                  {row.variant.option}
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-bambu-gray">
+              {row.product.name}
+              {row.product.sku && (
+                <>
+                  {' · '}
+                  <span className="font-mono">{row.product.sku}</span>
+                </>
+              )}
+              {` · ${row.product.code}`}
+            </div>
+          </div>
         </div>
       </td>
       <td className={CELL}>

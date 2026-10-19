@@ -216,12 +216,14 @@ describe('FileManagerPage pagination', () => {
     // one that discovers it, same as it would in production.
     responseLastPage = 1;
     await clickNextPage();
-    await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('3'), SETTLE);
 
     // Left unclamped this stays on page 3 showing "No files yet" with the
     // pager reading current_page=3 of last_page=1. The clamp effect must
     // fire a follow-up fetch back onto page 1.
     await waitFor(() => expect(requests.at(-1)?.get('page')).toBe('1'), SETTLE);
+    // The correct clamp may already have completed when clickNextPage resolves:
+    // page 3 must have been requested, but need not still be the last request.
+    expect(requests.some((params) => params.get('page') === '3')).toBe(true);
   });
 
   it('drops the selection too when the clamp fires — the residual IMP2 case the clamp effect itself reopened', async () => {

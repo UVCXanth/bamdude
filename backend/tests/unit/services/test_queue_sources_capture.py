@@ -481,6 +481,9 @@ async def test_the_snapshot_payload_comes_from_task_ones_builder(tmp_path, sessi
         "display_filename": "Нічник.3mf",
         "format": FORMAT_3MF,
         "plate_fallback": 3,
+        # A request that names no declaration records an unknown (swap-source-lifecycle spec r4 §5).
+        "swap_compatible": None,
+        "swap_reason": "source_unknown",
     }
     # §4: the hash and the path are not duplicated into the job's JSON.
     assert published.sha256 not in str(payload)

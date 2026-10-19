@@ -47,15 +47,19 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 async def catalog(db_session, tmp_path):
     """One product 'Lamp': 1 shade + 2 arms per unit, 4 screws purchased; one sliced plate yielding 1 shade + 2 arms."""
+    import hashlib
+
+    path = write_routing_3mf(
+        tmp_path / "lamp.gcode.3mf",
+        {1: [{"id": 1, "type": "PETG", "color": "#FFFFFF", "used_g": "1"}]},
+        model="P1S",
+    )
     file = LibraryFile(
         filename="lamp.gcode.3mf",
-        file_path=str(
-            write_routing_3mf(
-                tmp_path / "lamp.gcode.3mf",
-                {1: [{"id": 1, "type": "PETG", "color": "#FFFFFF", "used_g": "1"}]},
-                model="P1S",
-            )
-        ),
+        file_path=str(path),
+        # A content hash over the very bytes, so the file's swap declaration counts (swap-source-lifecycle spec
+        # r4 §4): without one a request for our swap macros is refused as an unknown source.
+        file_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
         file_size=1,
         file_type="gcode",
         file_metadata={
@@ -1967,7 +1971,9 @@ async def test_the_plan_loads_every_products_recipes_in_one_batch(
     assert all(line["rows"] for line in r.json()["lines"]), "each line still gets its own plate to print"
     assert calls["batched"] == 1
     assert engine_reads == [1], seen
-    assert len(seen) == 2, seen  # + the one batched read of the names
+    # + the one batched read of the names, + the parts' pictures (part thumbnails E4: one batch
+    # for every part of the answer, whatever the number of products)
+    assert len(seen) == 3, seen
 
 
 @pytest.mark.asyncio
@@ -2351,7 +2357,8 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     assert row.bed_levelling_mode == "auto" and row.flow_cali_mode == "off"
     assert row.timelapse is True
 
-    # The file's own baked-in macros mute it on either target, printer or not.
+    # A baked-in file on the auto target: the router row's swap fields are inert -- its assignment decides per
+    # printer from the declaration the capture recorded (swap-source-lifecycle spec r4 §8), which is True here.
     catalog["file"].swap_compatible = True
     await db_session.commit()
     r = await committing_client.post(
@@ -2359,18 +2366,17 @@ async def test_plan_enqueue_mutes_swap_macros_that_would_fire_twice(committing_c
     )
     assert r.status_code == 200, r.text
     (auto_row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
-    assert auto_row.execute_swap_macros is False and auto_row.swap_macro_events is None
+    from backend.app.services import swap_compatibility
+
+    assert swap_compatibility.snapshot_fact(auto_row.source_snapshot) == swap_compatibility.SourceFact(True)
     assert auto_row.bed_levelling is False
 
 
 @pytest.mark.asyncio
-async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(committing_client, db_session, catalog):
-    """⚠️ The gate is UNCONDITIONAL, not "only when a profile turned them on".
-
-    ``AutoQueueItemCreate`` defaults ``execute_swap_macros`` to True, so a
-    ``swap_compatible`` file with nothing saved at all would double-fire through
-    the writer's own default — the one case where the writers' defaults are NOT
-    left alone, and deliberately."""
+async def test_plan_enqueue_records_a_baked_in_file_for_the_assignment(committing_client, db_session, catalog):
+    """A baked-in file with nothing saved at all: the router row records the declaration, and that is what mutes
+    our swap macros -- at the assignment, for the printer that wins (swap-source-lifecycle spec r4 §8). The
+    writer's own ``execute_swap_macros`` default on the router row is inert and decides nothing."""
     catalog["file"].swap_compatible = True
     await db_session.commit()
     pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 10)
@@ -2382,7 +2388,9 @@ async def test_plan_enqueue_mutes_a_baked_in_file_even_with_no_preference(commit
     )
     assert r.status_code == 200, r.text
     (row,) = await _written_rows(db_session, AutoQueueItem, r.json()["created"][0]["queue_item_ids"])
-    assert row.execute_swap_macros is False and row.swap_macro_events is None
+    from backend.app.services import swap_compatibility
+
+    assert swap_compatibility.snapshot_fact(row.source_snapshot) == swap_compatibility.SourceFact(True)
     # Nothing else moved: the writer's other defaults still stand.
     assert row.bed_levelling is True and row.mesh_mode_fast_check is True
 
@@ -3980,11 +3988,14 @@ async def test_a_line_lists_its_purchased_parts_and_they_add_up_to_procurement(c
     detail = await _detail(committing_client, pid)
     product_line, parts_line = detail["lines"]
     assert parts_line["quantity"] == 2  # the DTO's reading: the printed parts it wants
+    # ``image`` (part thumbnails E4): a purchased part shows its photo, and these have none
     assert product_line["purchased"] == [
-        {"part_id": screw, "name": "M3", "per": 4, "need": 12, "variant": False},
-        {"part_id": magnet.id, "name": "Magnet", "per": 2, "need": 6, "variant": True},
+        {"part_id": screw, "name": "M3", "per": 4, "need": 12, "variant": False, "image": None},
+        {"part_id": magnet.id, "name": "Magnet", "per": 2, "need": 6, "variant": True, "image": None},
     ]
-    assert parts_line["purchased"] == [{"part_id": screw, "name": "M3", "per": 5, "need": 5, "variant": False}]
+    assert parts_line["purchased"] == [
+        {"part_id": screw, "name": "M3", "per": 5, "need": 5, "variant": False, "image": None}
+    ]
     per_line = Counter()
     for line in detail["lines"]:
         for row in line["purchased"]:

@@ -1,7 +1,23 @@
 import json
 import re
+from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
+
+from backend.app.core.timezones import server_timezone
+
+
+def _operator_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Unknown operator forecast timezone") from exc
+    return value
+
+
+OperatorTimezone = Annotated[str, AfterValidator(_operator_timezone)]
+OPERATOR_TIME_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 
 # Outbound service URLs validated when they are saved, so a bad value is rejected
 # at configuration time with a message naming the field rather than failing
@@ -380,6 +396,10 @@ class AppSettings(BaseModel):
             "to the printer. The preheat stage is added on top from its own settings."
         ),
     )
+    forecast_operator_absence_enabled: bool = False
+    forecast_operator_absence_start: str = Field(default="23:00", pattern=OPERATOR_TIME_PATTERN)
+    forecast_operator_absence_end: str = Field(default="08:00", pattern=OPERATOR_TIME_PATTERN)
+    forecast_operator_timezone: OperatorTimezone = Field(default_factory=lambda: str(server_timezone()))
     forecast_plate_clear_minutes: int = Field(
         default=10,
         ge=0,
@@ -782,6 +802,10 @@ class AppSettingsUpdate(BaseModel):
     stagger_interval_minutes: int | None = None
     stagger_wait_for_bed: bool | None = None
     forecast_upload_seconds: int | None = Field(default=None, ge=0, le=3600)
+    forecast_operator_absence_enabled: bool | None = None
+    forecast_operator_absence_start: str | None = Field(default=None, pattern=OPERATOR_TIME_PATTERN)
+    forecast_operator_absence_end: str | None = Field(default=None, pattern=OPERATOR_TIME_PATTERN)
+    forecast_operator_timezone: OperatorTimezone | None = None
     forecast_plate_clear_minutes: int | None = Field(default=None, ge=0, le=1440)
     stagger_split_by_tags: bool | None = None
     stagger_group_tag_ids: str | None = None

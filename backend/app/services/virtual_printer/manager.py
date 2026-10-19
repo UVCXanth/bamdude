@@ -766,6 +766,11 @@ class VirtualPrinterInstance:
 
             async with self._session_factory() as db_session:
                 filename = file_path.name
+                # The file the slicer sent is a new external file: the name it
+                # arrived under declares, before the sliced-suffix promotion below.
+                from backend.app.services import swap_compatibility
+
+                declared_swap = swap_compatibility.classify_external_name(file_path.name)
                 # Bambu Studio's "Send to printer" lands files via VP FTP
                 # under their bare ``.3mf`` name even when the bytes are a
                 # sliced gcode-3mf container. Without promoting the suffix,
@@ -821,6 +826,7 @@ class VirtualPrinterInstance:
                     file_metadata=metadata,
                     source_type=detected_source_type,
                 )
+                swap_compatibility.declare_ingest(library_file, declared_swap, origin="classifier")
                 # The slicer sends the same plate again more often than any
                 # other path — "Send to printer", tweak nothing, send again.
                 # ``find_reusable_row`` is the one place that decides.

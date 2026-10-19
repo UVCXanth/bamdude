@@ -50,7 +50,7 @@ from backend.app.schemas.print_queue import (
     QueueSummaryGroup,
     QueueSummaryResponse,
 )
-from backend.app.services import farm_forecast, queue_sources
+from backend.app.services import farm_forecast, queue_sources, swap_compatibility
 from backend.app.services.filament_intake import (
     item_descriptor,
     item_source,
@@ -66,7 +66,7 @@ from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
 from backend.app.services.queue_ops import queue_scope_lock
-from backend.app.services.queue_source_capture import refusal, reusing_sources
+from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.queue_sources import QueueSourceError
 from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
@@ -105,6 +105,53 @@ async def _item_file_model(
             cache, archive=archive, library_file=library, plate_id=plate_id, allow_raw_gcode=True
         )
     return req.model if req else None
+
+
+_SWAP_FIELDS = frozenset({"execute_swap_macros", "swap_macro_events"})
+
+
+def _end_capture_cooldowns(item_ids) -> None:
+    """An explicit edit, delete or Retry ends a job's busy-spool wait at once (swap-source-lifecycle spec r4 §6)."""
+    from backend.app.services.print_scheduler import scheduler
+
+    for item_id in item_ids:
+        scheduler.clear_capture_cooldown(item_id)
+
+
+async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None) -> dict:
+    """The job's swap columns after an edit, from its OWN captured declaration (swap-source-lifecycle spec r4 §8).
+
+    Asked only when the edit touches the swap fields or moves the job to another printer's queue: a baked source
+    stays muted, an edit of a plain one's request is stored under the printer's swap mode, an opt-out is never
+    raised, and an unknown source asked for our macros is a 409. A move is not an edit of the request: the job
+    keeps what was asked for the way back -- dispatch mutes it on a printer without swap mode -- and only the
+    target may refuse it. Never the library or archive row's current value. Returns the columns to write --
+    ``swap_macro_events`` as its stored JSON -- or ``{}`` for nothing to write.
+    """
+    moves = target_queue is not None and target_queue.id != item.queue_id
+    if not (_SWAP_FIELDS & update.keys() or moves):
+        return {}
+    execute = (
+        update["execute_swap_macros"] if update.get("execute_swap_macros") is not None else item.execute_swap_macros
+    )
+    if "swap_macro_events" in update:
+        events = update["swap_macro_events"]
+        events = json.loads(events) if isinstance(events, str) else events
+    else:
+        events = json.loads(item.swap_macro_events) if item.swap_macro_events else None
+    queue = target_queue if moves else await db.get(PrinterQueue, item.queue_id)
+    printer = await db.get(Printer, queue.printer_id) if queue is not None and queue.printer_id else None
+    descriptor = await item_descriptor(db, item)
+    fact = descriptor.swap_fact.value if descriptor is not None else None
+    execute, events = swap_request(
+        fact,
+        execute=execute,
+        events=events,
+        printer_swap_mode=bool(printer is not None and printer.swap_mode_enabled),
+    )
+    if moves and not _SWAP_FIELDS & update.keys() and fact is not True:
+        return {}
+    return {"execute_swap_macros": execute, "swap_macro_events": json.dumps(events) if events else None}
 
 
 async def _check_item_model_for_queue(
@@ -196,6 +243,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
 
     # Create response with parsed ams_mapping
     item_dict = {
+        "auto_eject": item.auto_eject,
+        "auto_eject_settings": item.auto_eject_settings or {},
         "id": item.id,
         "queue_id": item.queue_id,
         "printer_id": item.printer_id,  # convenience property from queue
@@ -696,6 +745,14 @@ async def bulk_update_queue_items(
     updated_count = 0
     skipped_count = 0
 
+    # The swap columns of every row that will change, decided before the first
+    # write: one unknown source asked for our macros refuses the whole action.
+    swap_updates = {
+        item.id: await _swap_update(db, item, update_data, new_queue)
+        for item in items
+        if item.status == "pending" and (can_modify_all or item.created_by_id == user.id)
+    }
+
     for item in items:
         if item.status != "pending":
             skipped_count += 1
@@ -707,6 +764,7 @@ async def bulk_update_queue_items(
             continue
 
         item_update = await routing_update(db, item, update_data)
+        item_update.update(swap_updates[item.id])
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -717,6 +775,7 @@ async def bulk_update_queue_items(
         updated_count += 1
 
     await db.commit()
+    _end_capture_cooldowns(swap_updates)
 
     logger.info("Bulk updated %s queue items, skipped %s", updated_count, skipped_count)
     return PrintQueueBulkUpdateResponse(
@@ -809,6 +868,7 @@ async def bulk_delete_queue_items(
         for queue_id in queue_ids:
             await update_queue_counters(db, queue_id)
         await db.commit()
+        _end_capture_cooldowns(item.id for item in to_delete)
 
     logger.info("Bulk deleted %s queue items, skipped %s", len(to_delete), skipped)
     return PrintQueueBulkDeleteResponse(
@@ -843,9 +903,12 @@ async def get_queue_copy_source(
 ):
     """Return the saved source profile needed to copy one queue row.
 
-    This endpoint is deliberately queue-read scoped and refuses a legacy or
-    broken source.  It never loads the item's archive or library relationship:
-    those rows may have been deleted, and their current bytes are irrelevant.
+    This endpoint is deliberately queue-read scoped and refuses a broken source.
+    The swap declaration is the job's own, captured with its bytes; the live
+    archive or library row is not its authority. Only a snapshot from before the
+    declaration was captured looks back, through the job's own foreign key and a
+    matching content hash (``item_descriptor``, spec r4 §6) -- those rows may
+    have been deleted since, and then the answer is unknown.
     """
     current_user, can_read_all = auth_result
     item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
@@ -887,16 +950,11 @@ async def get_queue_copy_source(
     except (OSError, SourceUnavailable, zipfile.BadZipFile):
         raise HTTPException(422, routing_detail("source_unreadable")) from None
 
-    filename_lower = filename.lower()
     return QueueCopySourceProfile(
         item_id=item.id,
         filename=filename,
         sliced_for_model=requirements.model if requirements is not None else None,
-        swap_compatible=(
-            filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
-            or ".swap." in filename_lower
-            or ".swaps." in filename_lower
-        ),
+        **swap_compatibility.wire_fields(descriptor.swap_fact.value),
         plates=plates,
         is_multi_plate=len(plates) > 1,
     )
@@ -1082,7 +1140,10 @@ async def update_queue_item(
                 printer_model,
             )
 
+    swap_columns = await _swap_update(db, item, update_data, new_queue)
     update_data = await routing_update(db, item, update_data)
+    update_data.pop("swap_macro_events", None)  # decided above, stored as its JSON
+    update_data.update(swap_columns)
 
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
@@ -1102,10 +1163,6 @@ async def update_queue_item(
             json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
 
-    # swap_macro_events is stored as a JSON-encoded TEXT column.
-    if "swap_macro_events" in update_data:
-        events = update_data["swap_macro_events"]
-        update_data["swap_macro_events"] = json.dumps(events) if events else None
     if "selected_macro_ids" in update_data:
         ids = update_data["selected_macro_ids"]
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
@@ -1117,6 +1174,7 @@ async def update_queue_item(
             setattr(item, field, value)
 
     await db.commit()
+    _end_capture_cooldowns([item.id])
 
     # Re-query with full eager loading (queue→printer chain)
     result = await db.execute(
@@ -1172,6 +1230,7 @@ async def delete_queue_item(
     await db.delete(item)
     await update_queue_counters(db, queue_id)
     await db.commit()
+    _end_capture_cooldowns([item_id])
 
     logger.info("Deleted queue item %s", item_id)
     return {"message": "Queue item deleted"}
@@ -1772,6 +1831,7 @@ async def retry_failed_item(
             item.completed_at = None
             await update_queue_counters(db, item.queue_id)
             await db.commit()
+        _end_capture_cooldowns([item.id])
     except QueueSourceError as exc:
         raise refusal(exc) from exc
 
@@ -1991,15 +2051,18 @@ async def update_batch(
         update_data["nozzle_rack_choice"] = (
             json.dumps(update_data["nozzle_rack_choice"]) if update_data["nozzle_rack_choice"] else None
         )
-    if "swap_macro_events" in update_data:
-        events = update_data["swap_macro_events"]
-        update_data["swap_macro_events"] = json.dumps(events) if events else None
     if "selected_macro_ids" in update_data:
         ids = update_data["selected_macro_ids"]
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
+    # Every member's swap columns before the first write (swap-source-lifecycle spec r4 §8):
+    # the batch is refused whole, or written whole.
+    swap_updates = {item.id: await _swap_update(db, item, update_data, None) for item in pending}
+    update_data.pop("swap_macro_events", None)
+
     for item in pending:
         item_update = await routing_update(db, item, update_data)
+        item_update.update(swap_updates[item.id])
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -2008,6 +2071,7 @@ async def update_batch(
             else:
                 setattr(item, field, value)
     await db.commit()
+    _end_capture_cooldowns(item.id for item in pending)
     return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys())}
 
 

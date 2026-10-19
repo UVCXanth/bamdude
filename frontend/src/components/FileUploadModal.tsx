@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
-import type { LibraryFileUploadResponse } from '../api/client';
+import type { LibraryFileUploadResponse, ThumbnailJobTicket } from '../api/client';
+import { isMeshUploadName } from '../utils/meshPreviewTypes';
+import { countByReason, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from './Button';
 import { Modal } from './Modal';
 
@@ -51,9 +53,11 @@ interface FileUploadModalProps {
    * before upload. The prop is consumed once on mount; subsequent changes
    * don't re-trigger ingestion. */
   initialFiles?: File[];
+  /** Receipts of new STEP files' background pictures, for the page's one polling owner. */
+  onThumbnailJobs?: (epoch: string, items: Array<{ receipt_id: string; file_id: number }>) => void;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles, onThumbnailJobs }: FileUploadModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [files, setFiles] = useState<UploadFile[]>([]);
@@ -99,6 +103,21 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     // modal is about to close on.
     const reused: string[] = [];
     let restoredCount = 0;
+    // A STEP picture is made in the background: every receipt goes to the page's polling owner, and a refusal
+    // is announced once at the end, in the closed vocabulary.
+    const refusedThumbnails: string[] = [];
+    const handOver = (tickets: Array<{ ticket: ThumbnailJobTicket | null | undefined; fileId: number }>) => {
+      const byEpoch = new Map<string, Array<{ receipt_id: string; file_id: number }>>();
+      for (const { ticket, fileId } of tickets) {
+        if (!ticket) continue;
+        if (ticket.receipt_id && ticket.jobs_epoch) {
+          byEpoch.set(ticket.jobs_epoch, [...(byEpoch.get(ticket.jobs_epoch) ?? []), { receipt_id: ticket.receipt_id, file_id: fileId }]);
+        } else if (ticket.error_code) {
+          refusedThumbnails.push(ticket.error_code);
+        }
+      }
+      for (const [epoch, items] of byEpoch) onThumbnailJobs?.(epoch, items);
+    };
 
     for (const uf of filesToUpload) {
       if (uf.status !== 'pending') continue;
@@ -108,6 +127,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
       try {
         if (uf.isZip) {
           const result = await api.extractZipFile(uf.file, folderId, preserveZipStructure, createFolderFromZip, generateStlThumbnails);
+          handOver((result.files ?? []).map((entry) => ({ ticket: entry.thumbnail_job, fileId: entry.file_id })));
           updateFileStatus(uf.file, {
             status: result.errors.length > 0 && result.extracted === 0 ? 'error' : 'success',
             extractedCount: result.extracted,
@@ -116,6 +136,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
           });
         } else {
           const result = await api.uploadLibraryFile(uf.file, folderId, generateStlThumbnails);
+          handOver([{ ticket: result.thumbnail_job, fileId: result.id }]);
           updateFileStatus(uf.file, {
             status: 'success',
             dedupOutcome: result.outcome === 'created' ? undefined : result.outcome,
@@ -150,6 +171,15 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     }
     if (restoredCount > 0) {
       showToast(t('fileManager.dedupRestoredToast', { count: restoredCount }), 'info');
+    }
+    for (const [code, count] of countByReason(refusedThumbnails)) {
+      const reason = t(thumbnailReasonKey(code));
+      showToast(
+        count === 1
+          ? t('fileManager.stepThumbnail.notQueued', { reason })
+          : t('fileManager.stepThumbnail.notQueuedMany', { count, reason }),
+        'info',
+      );
     }
     onUploadComplete();
     // #1401: don't auto-close if any file ended with an error — the
@@ -207,7 +237,8 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   }, []);
 
   const hasZipFiles = files.some((f) => f.isZip && f.status === 'pending');
-  const hasStlFiles = files.some((f) => f.file.name.toLowerCase().endsWith('.stl') && f.status === 'pending');
+  // STL, OBJ and STEP all get a picture; STEP's is made in the background after the upload.
+  const hasStlFiles = files.some((f) => isMeshUploadName(f.file.name) && f.status === 'pending');
   const has3mfFiles = files.some((f) => f.is3mf && f.status === 'pending');
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;

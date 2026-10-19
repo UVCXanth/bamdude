@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
@@ -44,6 +45,9 @@ class PrintArchive(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     # The order line this print was made for. Set by the dispatcher when the job
@@ -180,6 +184,9 @@ class PrintArchive(Base):
 
     # Swap mode compatibility (processed for plate swapper)
     swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An operator's declaration of this archive's SOURCE for a future reprint (swap-source-declaration spec r3
+    # §2), apart from the executed run's fact above. Read and written only by services/swap_compatibility.
+    swap_source_declaration: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Whether per-object skipping will work for this archive's 3MF —
     # ``gcode_label_objects`` AND ``exclude_object``, both from

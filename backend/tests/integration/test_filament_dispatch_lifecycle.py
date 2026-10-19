@@ -71,7 +71,11 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     import backend.app.services.background_dispatch as bd
 
     # "silence" is the 2026-09-24 incident and must START the print like "success".
-    ok = change in {"success", "silence", "reconnect"}
+    # "source" changes the ORIGINAL mid-upload: this row has no captured bytes, so the attempt copied the source
+    # before anything read it and prints that one copy -- a later change of the original is not this attempt's
+    # (swap-source-lifecycle spec r4 §6). A change BEFORE the copy is a changed source; see
+    # test_swap_source_transient_capture.py.
+    ok = change in {"success", "silence", "reconnect", "source"}
 
     source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     monkeypatch.setattr(settings, "base_dir", tmp_path)
@@ -237,7 +241,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         await service._run_active_job(job)
         assert job.completion_event.is_set()
         assert bool(job.outcome.get("deferred")) == (not ok), job.outcome
-        refused = change in {"upload", "preheat", "calibration", "source"}
+        refused = change in {"upload", "preheat", "calibration"}
         # A direct refusal is a failed dispatch to the batch — the toast closes as
         # "1 failed" instead of spinning on "Starting prints" (spec
         # direct-print-silent-cancel §4.1). A row somebody else took counts nothing.
@@ -305,7 +309,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     assert Path(source.file_path).exists()
     assert upload_mock.await_count == 1
     mqtt._client.publish.assert_not_called()
-    if owner == "direct" and change in {"upload", "preheat", "calibration", "source"}:
+    if owner == "direct" and change in {"upload", "preheat", "calibration"}:
         # Announced once, in words — the silent cancellation of 2026-09-24.
         failure.assert_awaited_once()
         assert failure.await_args.kwargs["reason"] == job.outcome["reason"]["message"]

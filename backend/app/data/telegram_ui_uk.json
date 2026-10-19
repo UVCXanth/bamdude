@@ -164,6 +164,7 @@
     "printing": "Друкується",
     "empty": "Черга порожня",
     "item_detail": "Завдання черги",
+    "job_fallback": "Завдання №{id}",
     "file": "Файл",
     "printer": "Принтер",
     "position": "Позиція",

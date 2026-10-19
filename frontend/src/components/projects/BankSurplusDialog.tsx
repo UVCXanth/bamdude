@@ -7,6 +7,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
+import { PartThumb } from '../PartThumb';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { lineConfigLabel } from './lineConfigLabel';
@@ -26,8 +27,10 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { showToast } = useToast();
-  // The detail hands its order over; from a list the full order is read.
-  const read = useOrderDetail(detail ? null : order.id);
+  // The detail hands its order over; from a list the full order is read. Either way the order is watched by
+  // its id while the dialog is open: a part's picture is the live one, so a render that finished or a photo
+  // replaced shows here too (plan E6, D8). The rows and figures stay the preview as it was read (E6 F01).
+  const read = useOrderDetail(order.id);
   const full = detail ?? read.data;
   const sent = useRef(false);
   const primaryId = useId();
@@ -57,7 +60,11 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
   const rows = (full?.lines ?? []).flatMap((line) =>
     line.parts
       .filter((part) => part.bankable > 0)
-      .map((part) => ({ key: `${line.id}:${part.part_id}`, part: part.name, line, moves: part.bankable })),
+      .map((part) => {
+        // The live read's answer, `null` included; the snapshot only while it has none for this row (D8).
+        const live = read.data?.lines.find((l) => l.id === line.id)?.parts.find((p) => p.part_id === part.part_id);
+        return { key: `${line.id}:${part.part_id}`, part, line, moves: part.bankable, image: live ? live.image : part.image };
+      }),
   );
   const total = full?.figures.bankable_surplus ?? 0;
 
@@ -122,7 +129,12 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
                     const config = lineConfigLabel(row.line.configuration, row.line.mode, t);
                     return (
                       <tr key={row.key} className="border-t border-bambu-dark-tertiary">
-                        <td className="px-3 py-2 text-white">{row.part}</td>
+                        <td className="px-3 py-2 text-white">
+                          <span className="flex items-center gap-2">
+                            <PartThumb partId={row.part.part_id} image={row.image} name={row.part.name} size="sm" />
+                            <span className="min-w-0 break-words">{row.part.name}</span>
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-bambu-gray-light">
                           {row.line.product_name}
                           {config && <small className="block text-xs text-bambu-gray">{config}</small>}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from backend.app.i18n import t
+from backend.app.i18n import get_language, t
 from backend.app.services.printer_manager import printer_manager
 
 if TYPE_CHECKING:
@@ -177,13 +177,70 @@ async def get_next_queue_item(printer_id: int) -> str | None:
         result = await db.execute(
             select(PrintQueueItem)
             .where(PrintQueueItem.status == "pending", PrintQueueItem.queue_id == printer_id)
-            .order_by(PrintQueueItem.position)
+            .order_by(PrintQueueItem.position, PrintQueueItem.id)
             .limit(1)
         )
         item = result.scalar_one_or_none()
         if item:
-            return item.file_name or f"Job #{item.id}"
+            return (await queue_item_names(db, [item], await get_language()))[item.id]
     return None
+
+
+async def queue_item_names(db, items, lang: str) -> dict[int, str]:
+    """Resolve human names in batches without reading or capturing file bytes."""
+    from sqlalchemy import select
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.queue_source import QueueSource
+    from backend.app.services.filament_intake import source_display_filename
+    from backend.app.services.queue_source_descriptor import stored_descriptor
+    from backend.app.services.source_io import SourceUnavailable
+
+    source_ids = {item.queue_source_id for item in items if item.queue_source_id is not None}
+    legacy = [item for item in items if item.queue_source_id is None]
+    archive_ids = {item.archive_id for item in legacy if item.archive_id is not None}
+    library_ids = {
+        item.library_file_id for item in legacy if item.archive_id is None and item.library_file_id is not None
+    }
+    sources = (
+        {row.id: row for row in (await db.scalars(select(QueueSource).where(QueueSource.id.in_(source_ids)))).all()}
+        if source_ids
+        else {}
+    )
+    archives = (
+        {row.id: row for row in (await db.scalars(select(PrintArchive).where(PrintArchive.id.in_(archive_ids)))).all()}
+        if archive_ids
+        else {}
+    )
+    libraries = (
+        {row.id: row for row in (await db.scalars(LibraryFile.active().where(LibraryFile.id.in_(library_ids)))).all()}
+        if library_ids
+        else {}
+    )
+
+    names = {}
+    for item in items:
+        name = None
+        if item.queue_source_id is not None:
+            source = sources.get(item.queue_source_id)
+            if source is not None:
+                try:
+                    name = source_display_filename(stored_descriptor(source, item.source_snapshot))
+                except SourceUnavailable:
+                    pass
+        elif item.archive_id is not None:
+            archive = archives.get(item.archive_id)
+            if archive is not None:
+                name = archive.print_name or archive.filename
+        elif item.library_file_id is not None:
+            library = libraries.get(item.library_file_id)
+            if library is not None:
+                name = library.filename
+        names[item.id] = (
+            name.strip() if isinstance(name, str) and name.strip() else t(lang, NS, "queue.job_fallback", id=item.id)
+        )
+    return names
 
 
 async def get_maintenance_counts(printer_id: int) -> tuple[int, int]:
@@ -203,17 +260,10 @@ async def get_maintenance_counts(printer_id: int) -> tuple[int, int]:
 
 
 async def resolve_queue_id(printer_id: int) -> int | None:
-    """The ``printer_queues`` row id for a printer, or ``None`` if it has none.
+    """Look up the printer's queue, or return ``None`` when it is absent.
 
-    ⚠️ **``queue_id`` is not ``printer_id``.** Both bot scenes used to assume it
-    was, with a comment saying so. ``PrinterQueue.id`` is its own autoincrement
-    key and ``printer_id`` is a separate unique column, so the two agree only
-    while the queues were created in the same order as the printers and none was
-    ever deleted — true on a farm that has never removed a machine, and
-    guaranteed by nothing. Everything outside the bot already looks the row up
-    (see ``background_dispatch.enqueue_calibration_print``).
-
-    Getting it wrong is silent and lands the job on **another printer's queue**.
+    ``ensure_printer_queue`` creates and repairs rows with id == printer_id;
+    this read does not create or repair a queue while rendering Telegram UI.
     """
     from sqlalchemy import select
 

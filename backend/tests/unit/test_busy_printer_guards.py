@@ -28,6 +28,7 @@ def _client(state_str: str) -> MagicMock:
     c.state = MagicMock()
     c.state.state = state_str
     c.state.connected = True
+    c.is_stale.return_value = False
     return c
 
 

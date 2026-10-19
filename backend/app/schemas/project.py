@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, field_
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
+from backend.app.schemas.part_image import PartImageRef
+from backend.app.schemas.plate_fit import PlateFitConfirmation
 
 #: The most one request may put on a line or move on a shelf. Far above any
 #: shelf, far below the INTEGER a PostgreSQL column overflows at — a typo is
@@ -115,6 +118,9 @@ class DroppedPartOut(BaseModel):
     per_after: int
     printed: int
     queued: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class LineConfigurationImpact(BaseModel):
@@ -153,6 +159,7 @@ class LineConfigurationOut(BaseModel):
 
 
 class ProjectLineUpdate(BaseModel):
+    plate_fit: PlateFitConfirmation | None = None
     quantity: int | None = Field(default=None, ge=1)
     material: str | None = Field(default=None, max_length=50)
     color: str | None = Field(default=None, max_length=64)
@@ -192,7 +199,8 @@ OrderColor = Annotated[str, StringConstraints(max_length=20)]
 OrderUrl = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
 
 
-class ProjectCreate(BaseModel):
+class ProjectCreate(AutoEjectSelection):
+    auto_eject_enabled: bool = False
     name: OrderName
     customer_id: int | None = None
     # A contact of ``customer_id`` (checked in the route), who receives the order.
@@ -222,7 +230,8 @@ class ProjectCreate(BaseModel):
         return v
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(AutoEjectSelection):
+    auto_eject_enabled: bool | None = None
     name: OrderName | None = None
     customer_id: int | None = None
     contact_id: int | None = None
@@ -237,7 +246,7 @@ class ProjectUpdate(BaseModel):
     url: OrderUrl | None = None
     responsible_id: int | None = None
 
-    @field_validator("name", "status", "priority")
+    @field_validator("name", "status", "priority", "auto_eject_enabled", "auto_eject_settings")
     @classmethod
     def _not_null(cls, v: str | None, info: ValidationInfo) -> str:
         return _reject_null(v, info)
@@ -309,6 +318,14 @@ class PartFiguresOut(BaseModel):
     #: WS-13 E6 H01: the part of ``surplus`` still to move — ``PartFigures.bankable``,
     #: the very number ``bank-surplus`` moves (0 for a part without a shelf).
     bankable: int = 0
+    allocated_qty: int = 0
+    stock_used_qty: int = 0
+    extra_qty: int = 0
+    extra_percent: float = 0
+    extra_received_qty: int = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class LinePurchasedPartOut(BaseModel):
@@ -320,6 +337,9 @@ class LinePurchasedPartOut(BaseModel):
     per: int
     need: int
     variant: bool = False
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class ProjectLineResponse(BaseModel):
@@ -461,6 +481,8 @@ class OrderContactOut(BaseModel):
 
 
 class ProjectResponse(BaseModel):
+    auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
+    auto_eject_enabled: bool = False
     id: int
     code: str
     name: str
@@ -569,6 +591,9 @@ class PlanPartCount(BaseModel):
     part_id: int
     name: str
     count: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class PlanAlternativeOut(BaseModel):
@@ -949,6 +974,10 @@ class PartStateOut(BaseModel):
     held: int
     issued: int
     written_off: int = 0
+    stock_qty: int = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class StockPositionRefOut(BaseModel):
@@ -1017,6 +1046,7 @@ class StockOfferOut(BaseModel):
     product_name: str
     from_finished: int
     kits: int
+    parts: dict[int, int] = {}
 
 
 class TakeStockLineIn(BaseModel):
@@ -1025,6 +1055,7 @@ class TakeStockLineIn(BaseModel):
     line_id: int
     from_finished: int = Field(default=0, ge=0, le=MAX_QTY)
     kits: int = Field(default=0, ge=0, le=MAX_QTY)
+    parts: dict[int, Annotated[int, Field(ge=0, le=MAX_QTY)]] = Field(default_factory=dict, max_length=500)
 
 
 class TakeStockIn(BaseModel):
@@ -1032,6 +1063,11 @@ class TakeStockIn(BaseModel):
     lines: list[TakeStockLineIn] | None = Field(default=None, max_length=500)
 
 
+class StockTakenOut(LineIntakeOut):
+    asked_parts: dict[int, int] = {}
+    got_parts: dict[int, int] = {}
+
+
 class TakeStockOut(BaseModel):
     order: ProjectResponse
-    results: list[LineIntakeOut]
+    results: list[StockTakenOut]

@@ -10,6 +10,21 @@ name: Docker Publish (tag)
 # Anything else fails the classification step so the operator notices
 # rather than getting a mis-channeled image.
 #
+# Both arches are built NATIVELY, in parallel, from this run's one SHA
+# (owner, 2026-10-19). The image runs the STEP component's full verify at build
+# time — a real STEP turned into a PNG under fixed child budgets — and under
+# QEMU that was measured at about twice the headroom on a desktop, less on a
+# hosted runner, with a failure surfacing only after the immutable tag. Each
+# build pushes its image by digest only, then checks the pushed digest inside a
+# container on its own architecture; the shared tags are made from those
+# checked digests — never a second build — once both builds and the sources
+# check have passed.
+#
+# A manual dispatch runs the same path without a tag: no CI gate (there is no
+# tag to hold), the sources collected instead of waited for, both images built,
+# pushed by digest and checked, and the manifest list composed with --dry-run —
+# nothing is tagged.
+#
 # See temp/release_guide.md for the full release cadence and channel
 # convention.
 
@@ -17,54 +32,88 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
   actions: read  # the gate below reads CI run conclusions for this commit
 
+env:
+  GHCR_IMAGE: ghcr.io/kainpl/bamdude
+  DOCKERHUB_IMAGE: docker.io/kainpl/bamdude
+
 jobs:
   # The gate lives in its own workflow so the Windows installer enforces the
   # same rule from the same file — two copies of "is CI green here?" would
-  # drift, and the copy that drifts is the one that stops refusing.
+  # drift, and the copy that drifts is the one that stops refusing. Only a tag
+  # is held by it: a manual run tags nothing.
   gate:
+    if: github.event_name == 'push'
     permissions:
       actions: read
       contents: read
     uses: ./.github/workflows/require-green-ci.yml
 
-  publish:
-    name: Build & push tagged image
+  # The image carries the STEP component, and its notices say the source of
+  # the component's copyleft parts is an asset of this tag's release
+  # (step-preview-sources.yml attaches it). Nothing is tagged until that
+  # bundle is there, published and fully uploaded, and verified for this
+  # checkout's closure — a failed or cancelled sources run holds the image.
+  # A manual run has no tag to wait for: it collects this closure's bundle
+  # instead (a published copy first), which proves the sources still hold.
+  sources:
+    name: STEP preview sources
     runs-on: ubuntu-latest
-    needs: gate
-    if: github.repository == 'kainpl/bamdude'
+    timeout-minutes: 75
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Classify tag
-        id: classify
-        run: |
-          # Strip the leading 'v' — the *_VERSION strings in config.py /
-          # package.json / pyproject.toml never carry it.
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
 
-          if [[ "$VERSION" =~ b[0-9]+$ ]]; then
-            echo "channel=beta" >> "$GITHUB_OUTPUT"
-            echo "tag_latest=false" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "channel=stable" >> "$GITHUB_OUTPUT"
-            echo "tag_latest=true" >> "$GITHUB_OUTPUT"
-          else
-            # Unknown shape — don't guess, fail visibly so the operator can
-            # correct the tag rather than end up with a mis-channeled image.
-            echo "::error::Unrecognised tag shape: ${TAG}"
-            exit 1
-          fi
+      - name: Wait for this tag's sources and verify them
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: python scripts/step_preview_sources.py verify-release --repo "$REPO" --tag "$TAG" --wait 3600
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Collect this closure's sources
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python scripts/step_preview_sources.py collect --out "$RUNNER_TEMP/sources" --reuse-from "$REPO"
+
+  build:
+    name: Build ${{ matrix.platform }} natively
+    needs: gate
+    # A tag needs the CI gate green; a manual run has none (its gate job is skipped).
+    if: ${{ !cancelled() && github.repository == 'kainpl/bamdude' && (needs.gate.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -82,54 +131,166 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (stable)
-        if: steps.classify.outputs.tag_latest == 'true'
+      # By digest only: this image carries no tag until the publish job below
+      # names both checked digests. No STEP_PREVIEW_CANDIDATE: a candidate pin
+      # fails the build by itself — a release image needs a release pin.
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
           provenance: false
           sbom: false
-          tags: |
-            ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}
-            ghcr.io/kainpl/bamdude:latest
-            kainpl/bamdude:${{ steps.classify.outputs.version }}
-            kainpl/bamdude:latest
-          cache-from: type=gha,scope=tag
-          cache-to: type=gha,mode=max,scope=tag
+          outputs: type=image,"name=ghcr.io/kainpl/bamdude,docker.io/kainpl/bamdude",push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=tag-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=tag-${{ matrix.arch }}
 
-      - name: Build and push (beta)
-        if: steps.classify.outputs.tag_latest == 'false'
-        uses: docker/build-push-action@v7
+      # The pushed digest itself, on its own architecture: the arch it claims,
+      # the STEP bundle's full verify and a real STL and STEP rendered inside
+      # it — what CI's docker-test jobs check, now on the bytes that ship. The
+      # entrypoint drops to PUID 1000; offline, read-only over the bundle.
+      - name: Check the pushed image on ${{ matrix.arch }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="$GHCR_IMAGE@$DIGEST"
+          docker pull "$ref"
+          test "$(docker image inspect "$ref" --format '{{.Architecture}}')" = "$ARCH"
+          docker run --rm --network none "$ref" python -m backend.app.step_runtime verify
+          docker run --rm --network none "$ref" python -m backend.app.step_render_probe
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digests/$ARCH"
+
+      - name: Keep the checked digest
+        uses: actions/upload-artifact@v7
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: false
-          sbom: false
-          # ⚠️ `:dev` moves here, and ONLY here. It used to be rebuilt on every
-          # push to dev, which meant the one image tag aimed at testers was the
-          # one image tag no gate ever looked at — a red commit published it
-          # happily. Pointing it at the newest beta costs nothing (this build
-          # already ran) and gives it a meaning worth pinning: "the latest
-          # pre-release", tested, instead of "whatever was committed last".
-          tags: |
-            ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}
-            ghcr.io/kainpl/bamdude:dev
-            kainpl/bamdude:${{ steps.classify.outputs.version }}
-            kainpl/bamdude:dev
-          cache-from: type=gha,scope=tag
-          cache-to: type=gha,mode=max,scope=tag
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Tag the multi-arch image
+    runs-on: ubuntu-latest
+    needs: [build, sources]
+    # GitHub skips every job below a skipped one unless its condition carries a
+    # status function: a manual run's gate is skipped, and without !cancelled()
+    # this job never ran there. Past it, only on BOTH builds and the sources check.
+    if: ${{ !cancelled() && github.repository == 'kainpl/bamdude' && needs.build.result == 'success' && needs.sources.result == 'success' }}
+    steps:
+      - name: Classify tag
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != push ]; then
+            # A manual run tags nothing; these names only label the dry run.
+            echo "version=check-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+            echo "moving=check" >> "$GITHUB_OUTPUT"
+            echo "channel=check" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Strip the leading 'v' — the *_VERSION strings in config.py /
+          # package.json / pyproject.toml never carry it.
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$VERSION" =~ b[0-9]+$ ]]; then
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            # ⚠️ `:dev` moves here, and ONLY here. It used to be rebuilt on
+            # every push to dev, which meant the one image tag aimed at testers
+            # was the one image tag no gate ever looked at — a red commit
+            # published it happily. Pointing it at the newest beta gives it a
+            # meaning worth pinning: "the latest pre-release", tested.
+            echo "moving=dev" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "moving=latest" >> "$GITHUB_OUTPUT"
+          else
+            # Unknown shape — don't guess, fail visibly so the operator can
+            # correct the tag rather than end up with a mis-channeled image.
+            echo "::error::Unrecognised tag shape: ${TAG}"
+            exit 1
+          fi
+
+      - name: Collect the checked digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The list names exactly the two digests the builds checked — per
+      # registry, so no blob crosses registries — and nothing is built here.
+      - name: Tag the checked digests
+        env:
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ steps.classify.outputs.version }}
+          MOVING: ${{ steps.classify.outputs.moving }}
+        run: |
+          set -euo pipefail
+          amd64="$(cat digests/amd64)"
+          arm64="$(cat digests/arm64)"
+          for digest in "$amd64" "$arm64"; do
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Not a digest: $digest"; exit 1; }
+          done
+          dry=(--dry-run)
+          if [ "$EVENT" = push ]; then dry=(); fi
+          for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
+            docker buildx imagetools create ${dry[@]+"${dry[@]}"} \
+              -t "$image:$VERSION" -t "$image:$MOVING" \
+              "$image@$amd64" "$image@$arm64"
+          done
+
+      - name: The tags name exactly the checked digests
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.classify.outputs.version }}
+        run: |
+          set -euo pipefail
+          want="$(printf '%s\n' "$(cat digests/amd64)" "$(cat digests/arm64)" | sort)"
+          for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
+            got="$(docker buildx imagetools inspect "$image:$VERSION" --raw | python3 -c \
+              'import json,sys; print("\n".join(sorted(m["digest"] for m in json.load(sys.stdin)["manifests"])))')"
+            test "$got" = "$want" || { echo "::error::$image:$VERSION does not name the checked digests"; exit 1; }
+          done
 
       - name: Summary
+        env:
+          CHANNEL: ${{ steps.classify.outputs.channel }}
+          VERSION: ${{ steps.classify.outputs.version }}
+          MOVING: ${{ steps.classify.outputs.moving }}
         run: |
-          echo "### Published ${GITHUB_REF_NAME} (${{ steps.classify.outputs.channel }})" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- kainpl/bamdude:${{ steps.classify.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.classify.outputs.tag_latest }}" = "true" ]; then
-            echo "- :latest updated" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- :dev updated" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            if [ "$CHANNEL" = check ]; then
+              echo "### Checked ${GITHUB_SHA::12}: both arches built natively and checked; nothing tagged"
+            else
+              echo "### Published ${GITHUB_REF_NAME} (${CHANNEL})"
+              echo ""
+              echo "- ghcr.io/kainpl/bamdude:${VERSION} and :${MOVING}"
+              echo "- kainpl/bamdude:${VERSION} and :${MOVING}"
+            fi
+            echo ""
+            echo "- linux/amd64 $(cat digests/amd64)"
+            echo "- linux/arm64 $(cat digests/arm64)"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -40,6 +40,7 @@ from backend.app.models.finished_stock import utcnow
 REASON_SURPLUS_BANKED = "surplus_banked"
 REASON_UNFILED_PRINT = "unfiled_print"
 REASON_RESERVED_FOR_ORDER = "reserved_for_order"
+REASON_RESERVED_PARTS_FOR_ORDER = "reserved_parts_for_order"
 REASON_RESERVATION_RELEASED = "reservation_released"
 REASON_MANUAL = "manual"
 REASON_ASSEMBLED = "assembled"

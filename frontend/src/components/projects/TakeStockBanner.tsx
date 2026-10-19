@@ -44,18 +44,24 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
   const take = useMutation({
     mutationFn: (shown: StockOffer[]) =>
       api.takeStock(orderId, {
-        lines: shown.map((o) => ({ line_id: o.line_id, from_finished: o.from_finished, kits: o.kits })),
+        lines: shown.map((o) => ({ line_id: o.line_id, from_finished: o.from_finished, kits: o.kits,
+          ...(o.parts && Object.keys(o.parts).length > 0 ? { parts: o.parts } : {}),
+        })),
       }),
     onSuccess: (result: TakeStockResult, shown) => {
       invalidateOrderViews(qc, { orderId });
       const names = new Map(shown.map((o) => [o.line_id, lineName(o)]));
       const short = result.results
-        .filter((r) => r.got_finished < r.asked_finished || r.got_kits < r.asked_kits)
+        .filter((r) => r.got_finished < r.asked_finished || r.got_kits < r.asked_kits ||
+          Object.entries(r.asked_parts ?? {}).some(([pid, qty]) => (r.got_parts?.[Number(pid)] ?? 0) < qty))
         .map((r) => {
           const what = [
             r.got_finished < r.asked_finished &&
               t('orders.add.clampedReady', { got: r.got_finished, asked: r.asked_finished }),
             r.got_kits < r.asked_kits && t('orders.add.clampedKits', { got: r.got_kits, asked: r.asked_kits }),
+            ...Object.entries(r.asked_parts ?? {}).filter(([pid, qty]) => (r.got_parts?.[Number(pid)] ?? 0) < qty)
+              .map(([pid, qty]) => t('orders.take.clampedParts', { got: r.got_parts?.[Number(pid)] ?? 0, asked: qty,
+                part: lines.find((line) => line.id === r.line_id)?.parts.find((p) => p.part_id === Number(pid))?.name ?? `#${pid}` })),
           ]
             .filter(Boolean)
             .join(', ');
@@ -66,7 +72,8 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
         // What the shelf actually gave, off the server's answer (WS-13 E6 F02).
         const ready = result.results.reduce((sum, r) => sum + r.got_finished, 0);
         const kits = result.results.reduce((sum, r) => sum + r.got_kits, 0);
-        showToast(t('orders.take.takenCounts', { ready, kits }));
+        const parts = result.results.reduce((sum, r) => sum + Object.values(r.got_parts ?? {}).reduce((a, b) => a + b, 0), 0);
+        showToast(t(parts ? 'orders.take.takenPartsCounts' : 'orders.take.takenCounts', { ready, kits, parts }));
       }
     },
     // A refusal means the shelf moved: say why, and read the offers again — the banner
@@ -89,6 +96,8 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
     return {
       key: o.line_id,
       text,
+      loose: Object.entries(o.parts ?? {}).map(([pid, qty]) => t('orders.take.partCount', { count: qty,
+        part: lines.find((line) => line.id === o.line_id)?.parts.find((p) => p.part_id === Number(pid))?.name ?? `#${pid}` })).join(', '),
       node: config ? (
         // `Trans` escapes the values before it parses the tags, so an option named «Ø < 5 mm»
         // cannot become markup; `shouldUnescape` turns the entities back into the text typed.
@@ -122,6 +131,7 @@ export function TakeStockBanner({ orderId, lines = [] }: { orderId: number; line
           <span key={part.key}>
             {index > 0 && '; '}
             <span>{part.node}</span>
+            {part.loose && <span className="text-bambu-green"> · {part.loose}</span>}
           </span>
         ))}
         {/* One full stop: the Ukrainian offer already ends in «компл.». */}

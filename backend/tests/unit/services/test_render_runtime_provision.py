@@ -1,0 +1,676 @@
+import hashlib
+import io
+import json
+import os
+import stat
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from backend.app.services import render_runtime
+from backend.app.services.render_runtime import ProvisionError, provision
+
+VERSION = "v24.17.0"
+TOP = f"node-{VERSION}-win-x64"
+
+
+def _archive(tmp_path: Path, *, evil: bool = False) -> tuple[Path, str, int]:
+    """The Windows build's shape: a zip with one top directory holding node.exe."""
+    path = tmp_path / f"{TOP}.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo(f"{TOP}/node.exe")
+        info.external_attr = (stat.S_IFREG | 0o755) << 16
+        zf.writestr(info, b"MZ fake node")
+        zf.writestr(f"{TOP}/LICENSE", b"MIT")
+        if evil:
+            # still outside after the top directory is stripped
+            zf.writestr(f"{TOP}/../../escape.txt", b"no")
+    data = path.read_bytes()
+    return path, hashlib.sha256(data).hexdigest(), len(data)
+
+
+def _manifest(sha256: str, size: int) -> dict:
+    return {
+        "lines": {"t": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {
+                "line": "t",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha256,
+                "bytes": size,
+            }
+        },
+    }
+
+
+def _fetch_from(source: Path):
+    calls: list[str] = []
+
+    def fetch(url: str, dest: Path, limit: int | None = None) -> None:
+        calls.append(url)
+        dest.write_bytes(source.read_bytes())
+
+    fetch.calls = calls  # type: ignore[attr-defined]
+    return fetch
+
+
+def test_installs_and_marks_the_version(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert target == tmp_path / "runtime" / "node" / "win-x64"
+    assert (target / "VERSION").read_text().strip() == VERSION
+    assert (target / "node.exe").is_file()
+
+
+def test_only_the_executable_and_the_licence_are_installed_from_a_zip(tmp_path: Path):
+    # owner, 2026-10-07: the renderer needs node.exe alone -- no npm/npx/corepack, headers or docs beside a service
+    path = tmp_path / f"{TOP}.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{TOP}/node.exe", b"MZ fake node")
+        zf.writestr(f"{TOP}/LICENSE", b"MIT")
+        zf.writestr(f"{TOP}/npm.cmd", b"@echo npm")
+        zf.writestr(f"{TOP}/node_modules/npm/index.js", b"npm")
+        zf.writestr(f"{TOP}/README.md", b"docs")
+    data = path.read_bytes()
+    target = provision(
+        tmp_path / "runtime",
+        manifest=_manifest(hashlib.sha256(data).hexdigest(), len(data)),
+        platform="win-x64",
+        fetch=_fetch_from(path),
+    )
+    installed = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert installed == ["LICENSE", "VERSION", "node.exe"]
+
+
+def test_only_the_executable_and_the_licence_are_installed_from_a_tar_xz(tmp_path: Path):
+    files = {
+        "bin/node": b"#!fake",
+        "LICENSE": b"MIT",
+        "lib/node_modules/npm/index.js": b"npm",
+        "include/node/node.h": b"/* */",
+        "share/doc/node/gdbinit": b"doc",
+    }
+    data = _tar_xz(tmp_path, "node-v9-linux-x64", files).read_bytes()
+    manifest = {
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {
+                "line": "t",
+                "url": "u.tar.xz",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+            }
+        },
+    }
+    target = render_runtime.provision(
+        tmp_path / "runtime",
+        manifest=manifest,
+        platform="linux-x64",
+        fetch=lambda u, d, limit=None: d.write_bytes(data),
+    )
+    installed = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert installed == ["LICENSE", "VERSION", "bin/node"]
+
+
+def test_is_idempotent(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    fetch = _fetch_from(archive)
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    assert len(fetch.calls) == 1
+
+
+def test_refuses_a_hash_mismatch_and_installs_nothing(tmp_path: Path):
+    archive, _, size = _archive(tmp_path)
+    with pytest.raises(ProvisionError, match="sha256"):
+        provision(
+            tmp_path / "runtime", manifest=_manifest("0" * 64, size), platform="win-x64", fetch=_fetch_from(archive)
+        )
+    assert not (tmp_path / "runtime" / "node" / "win-x64").exists()
+
+
+def test_refuses_entries_that_escape_the_target(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path, evil=True)
+    with pytest.raises(ProvisionError, match="unsafe"):
+        provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_a_failed_extract_leaves_no_target_and_the_next_run_installs(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    broken = tmp_path / "broken.zip"
+    broken.write_bytes(archive.read_bytes()[: size // 2])
+    with pytest.raises(ProvisionError):
+        provision(
+            tmp_path / "runtime",
+            manifest=_manifest(hashlib.sha256(broken.read_bytes()).hexdigest(), size // 2),
+            platform="win-x64",
+            fetch=_fetch_from(broken),
+        )
+    target = tmp_path / "runtime" / "node" / "win-x64"
+    assert not target.exists()
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "VERSION").read_text().strip() == VERSION
+
+
+def test_reinstalls_when_the_executable_is_gone(tmp_path: Path):
+    # Antivirus quarantine or a hand-deleted file: VERSION alone must not
+    # convince a re-run of the installer that nothing is to be done.
+    archive, sha, size = _archive(tmp_path)
+    fetch = _fetch_from(archive)
+    target = provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    (target / "node.exe").unlink()
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    assert len(fetch.calls) == 2
+    assert (target / "node.exe").is_file()
+
+
+def test_replaces_an_older_version(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    target = tmp_path / "runtime" / "node" / "win-x64"
+    target.mkdir(parents=True)
+    (target / "VERSION").write_text("v1.0.0")
+    (target / "stale.txt").write_text("old")
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "VERSION").read_text().strip() == VERSION
+    assert not (target / "stale.txt").exists()
+
+
+def _flaky_rename(monkeypatch, refusals: int) -> list[str]:
+    """Path.rename refusing ``refusals`` times first, as Windows does while an antivirus holds the new tree."""
+    real = Path.rename
+    calls: list[str] = []
+
+    def rename(self, target):
+        calls.append(self.name)
+        if len(calls) <= refusals:
+            raise PermissionError(5, "Access is denied", str(self))
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(render_runtime.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_a_briefly_held_tree_is_renamed_once_it_is_released(tmp_path: Path, monkeypatch):
+    # Seen on Windows 2026-10-07: the freshly unpacked node.exe is held for a moment and the
+    # staged directory cannot be renamed into place; a moment later the same rename succeeds.
+    archive, sha, size = _archive(tmp_path)
+    calls = _flaky_rename(monkeypatch, refusals=2)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert (target / "node.exe").is_file()
+    assert len(calls) == 3
+
+
+def test_a_tree_that_stays_held_is_an_error(tmp_path: Path, monkeypatch):
+    archive, sha, size = _archive(tmp_path)
+    _flaky_rename(monkeypatch, refusals=10_000)
+    with pytest.raises(ProvisionError, match="could not be put in place"):
+        provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert not (tmp_path / "runtime" / "node" / "win-x64").exists()
+
+
+def _refuse_renames_of(monkeypatch, *suffixes: str) -> None:
+    """Path.rename refusing for good a source whose name ends with one of ``suffixes``: a hold that outlasts the retries."""
+    real = Path.rename
+
+    def rename(self, target):
+        if self.name.endswith(suffixes):
+            raise PermissionError(5, "Access is denied", str(self))
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(render_runtime.time, "sleep", lambda s: None)
+
+
+def test_a_failed_replacement_restores_the_previous_runtime(tmp_path: Path, monkeypatch):
+    # Codex review 2026-10-07 (P2): the old runtime moved aside, the new one refused for good -- the old one
+    # must be back at the regular path, not left in a hidden .old that locate_in never looks at
+    runtime = tmp_path / "runtime"
+    old_executable = _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part")
+    with pytest.raises(ProvisionError, match="previous one is kept"):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert render_runtime.locate_in(runtime, platform="win-x64") == render_runtime.NodeInstall(
+        old_executable, "v9", "win-x64"
+    )
+    assert old_executable.read_bytes() == b"#!fake"
+
+
+def test_a_failed_restore_keeps_the_backup_and_says_where(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError, match="could not be restored") as err:
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    backup = runtime / "node" / ".win-x64.old"
+    assert (backup / "node.exe").is_file()
+    assert (backup / "VERSION").read_text(encoding="utf-8").strip() == "v9"
+    assert str(backup) in str(err.value)
+
+
+def test_a_kept_backup_survives_another_failed_update(tmp_path: Path, monkeypatch):
+    # Codex review 2026-10-07: the next run must not delete the only runtime there is -- the backup a
+    # failed restore left behind -- before a runtime is back in place
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    for _ in range(2):
+        with pytest.raises(ProvisionError, match="could not be restored"):
+            provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    backup = runtime / "node" / ".win-x64.old"
+    assert (backup / "node.exe").read_bytes() == b"#!fake"
+    assert (backup / "VERSION").read_text(encoding="utf-8").strip() == "v9"
+
+
+def test_a_kept_backup_goes_back_in_place_when_the_update_fails_again(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    old_executable = _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    monkeypatch.undo()
+    _refuse_renames_of(monkeypatch, ".part")  # the backup can move again, the new tree still cannot
+    with pytest.raises(ProvisionError, match="previous one is kept"):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert render_runtime.locate_in(runtime, platform="win-x64") == render_runtime.NodeInstall(
+        old_executable, "v9", "win-x64"
+    )
+
+
+def test_a_kept_backup_is_dropped_once_the_new_runtime_is_in_place(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    monkeypatch.undo()
+    target = provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "node.exe").read_bytes() == b"MZ fake node"
+    assert not (runtime / "node" / ".win-x64.old").exists()
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "key"),
+    [
+        ("Linux", "x86_64", "linux-x64"),
+        ("Linux", "aarch64", "linux-arm64"),
+        ("Darwin", "arm64", "darwin-arm64"),
+        ("Darwin", "x86_64", "darwin-x64"),
+        ("Windows", "AMD64", "win-x64"),
+    ],
+)
+def test_platform_key(system, machine, key):
+    assert render_runtime.platform_key(system, machine) == key
+
+
+@pytest.mark.parametrize("machine", ["armv6l", "riscv64"])
+def test_platform_key_reports_a_platform_without_an_official_build(machine):
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", machine)
+
+
+ARMHF = "arm-linux-gnueabihf"
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l"])
+def test_a_32_bit_armhf_userland_runs_armv7l(machine):
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
+
+
+@pytest.mark.parametrize("machine", ["aarch64", "arm64", "armv8l"])
+def test_a_32_bit_armhf_userland_on_a_64_bit_kernel_runs_armv7l(machine):
+    # Raspberry Pi OS 32-bit on a Pi 4 / Pi 5: the kernel says aarch64, this interpreter is armhf (spec D4)
+    assert render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc") == "linux-armv7l"
+    assert render_runtime.platform_key("Linux", "aarch64", bits=64) == "linux-arm64"
+
+
+@pytest.mark.parametrize("triplet", ["arm-linux-gnueabi", "arm-linux-musleabihf", ""])
+def test_a_32_bit_arm_userland_that_is_not_armhf_has_no_runtime(triplet):
+    # the official armv7l Node is glibc hard-float: it would download and never start (spec D4)
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="armhf|arm-linux-gnueabihf"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=triplet)
+
+
+def test_a_32_bit_x86_linux_has_no_runtime():
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", "x86_64", bits=32)
+
+
+def test_the_interpreter_triplet_comes_from_soabi(monkeypatch):
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cpython-313-arm-linux-gnueabihf")
+    assert render_runtime.interpreter_triplet() == ARMHF
+    monkeypatch.setattr(render_runtime.sysconfig, "get_config_var", lambda name: "cp312-win_amd64")
+    assert render_runtime.interpreter_triplet() == ""
+
+
+WITHOUT_ARMV7 = tuple(k for k in render_runtime.PLATFORMS if k != "linux-armv7l")
+
+
+@pytest.mark.parametrize("machine", ["armv7l", "armv8l", "aarch64"])
+def test_armhf_whose_line_ended_is_unsupported(machine, monkeypatch):
+    # consilium NL-R1: the armhf branch meets the same PLATFORMS check as every other one
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", machine, bits=32, triplet=ARMHF, libc="glibc")
+
+
+def test_pruning_removes_only_retired_platforms(tmp_path, monkeypatch):
+    # linux-armv7l stands for a platform whose line ended and left PLATFORMS (spec D3, D9)
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    node = tmp_path / "node"
+    for name in ("win-x64", "linux-x64", "linux-armv7l", ".linux-armv7l.v22.0.0.part", ".linux-armv7l.old", "notes"):
+        (node / name).mkdir(parents=True)
+    removed = render_runtime.prune_retired_platforms(tmp_path)
+    assert removed == [".linux-armv7l.old", ".linux-armv7l.v22.0.0.part", "linux-armv7l"]
+    assert sorted(p.name for p in node.iterdir()) == ["linux-x64", "notes", "win-x64"]
+
+
+def test_pruning_keeps_every_pinned_platform_and_its_backup(tmp_path):
+    # a failed restore keeps .<key>.old as the only runtime there is (provision's own rule); a checkout mounted
+    # into a container holds the HOST's platform -- neither is ever taken
+    for name in ("win-x64", ".win-x64.old", "linux-arm64", ".linux-x64.download.ab12"):
+        (tmp_path / "node" / name).mkdir(parents=True)
+    assert render_runtime.prune_retired_platforms(tmp_path) == []
+
+
+def test_a_32_bit_python_on_64_bit_windows_still_runs_the_x64_node():
+    assert render_runtime.platform_key("Windows", "AMD64", bits=32) == "win-x64"
+
+
+SHASUMS = "\n".join(
+    f"{i:064x}  node-v24.17.0-{name}"
+    for i, name in enumerate(
+        [
+            "linux-x64.tar.xz",
+            "linux-arm64.tar.xz",
+            "darwin-x64.tar.xz",
+            "darwin-arm64.tar.xz",
+            "win-x64.zip",
+            "linux-x64.tar.gz",
+            "headers.tar.xz",
+        ]
+    )
+)
+
+
+LINE_24 = ("linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64")
+
+
+def test_artifacts_from_shasums_picks_one_archive_per_platform():
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", LINE_24)
+    assert set(found) == set(LINE_24)
+    assert found["linux-x64"][0] == "node-v24.17.0-linux-x64.tar.xz"
+    assert found["win-x64"][0] == "node-v24.17.0-win-x64.zip"
+
+
+def test_artifacts_from_shasums_names_every_missing_platform():
+    text = "\n".join(line for line in SHASUMS.splitlines() if "darwin" not in line)
+    with pytest.raises(render_runtime.ProvisionError, match="darwin-arm64.*darwin-x64|darwin-x64.*darwin-arm64"):
+        render_runtime.artifacts_from_shasums(text, "v24.17.0", LINE_24)
+
+
+def test_artifacts_from_shasums_takes_only_the_platforms_it_is_given():
+    found = render_runtime.artifacts_from_shasums(SHASUMS, "v24.17.0", ("linux-x64", "win-x64"))
+    assert set(found) == {"linux-x64", "win-x64"}
+
+
+def test_the_version_marker_is_the_platforms_line(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    manifest = {
+        "lines": {"24": {"version": "v24.1.0"}, "22": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {
+                "line": "22",
+                "url": f"https://nodejs.org/dist/{VERSION}/{TOP}.zip",
+                "sha256": sha,
+                "bytes": size,
+            }
+        },
+    }
+    target = provision(tmp_path / "runtime", manifest=manifest, platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "VERSION").read_text().strip() == VERSION
+
+
+def _tar_xz(tmp_path: Path, top: str, files: dict[str, bytes]) -> Path:
+    archive = tmp_path / "node.tar.xz"
+    with tarfile.open(archive, "w:xz") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(f"{top}/{name}")
+            info.size, info.mode = len(data), 0o755
+            tf.addfile(info, io.BytesIO(data))
+    return archive
+
+
+def test_provision_unpacks_a_tar_xz_and_locates_bin_node(tmp_path):
+    archive = _tar_xz(tmp_path, "node-v9-linux-x64", {"bin/node": b"#!fake", "LICENSE": b"x"})
+    data = archive.read_bytes()
+    manifest = {
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
+    }
+    target = render_runtime.provision(
+        tmp_path / "runtime",
+        manifest=manifest,
+        platform="linux-x64",
+        fetch=lambda url, dest, limit=None: dest.write_bytes(data),
+    )
+    assert (target / "VERSION").read_text().strip() == "v9"
+    found = render_runtime.locate_in(tmp_path / "runtime", platform="linux-x64")
+    assert found and found.executable.name == "node" and found.version == "v9"
+    if os.name != "nt":
+        # the tar's executable bit survives the "data" filter: Linux and macOS run bin/node as it lands
+        assert found.executable.stat().st_mode & stat.S_IXUSR
+
+
+def test_provision_refuses_a_tar_entry_escaping_the_target(tmp_path):
+    archive = tmp_path / "evil.tar.xz"
+    with tarfile.open(archive, "w:xz") as tf:
+        # still outside after the top directory is stripped
+        info = tarfile.TarInfo("node-v9-linux-x64/../../escape")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+    data = archive.read_bytes()
+    manifest = {
+        "lines": {"t": {"version": "v9"}},
+        "platforms": {
+            "linux-x64": {"line": "t", "url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        },
+    }
+    with pytest.raises(render_runtime.ProvisionError):
+        render_runtime.provision(
+            tmp_path / "rt", manifest=manifest, platform="linux-x64", fetch=lambda u, d, limit=None: d.write_bytes(data)
+        )
+    assert not (tmp_path / "escape").exists()
+
+
+def _install(runtime: Path, key: str) -> Path:
+    target = runtime / render_runtime.PRODUCT_DIR / key
+    executable = target / "node.exe" if key == "win-x64" else target / "bin" / "node"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"#!fake")
+    (target / "VERSION").write_text("v9\n", encoding="utf-8")
+    return executable
+
+
+def test_locate_in_tells_unsupported_from_missing_from_installed(tmp_path, monkeypatch):
+    # consilium R5.3: three answers, never folded together
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.locate_in(runtime)  # no_runtime: fallback methods only
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
+    assert render_runtime.locate_in(runtime) is None  # runtime_missing
+    executable = _install(runtime, "linux-arm64")
+    assert render_runtime.locate_in(runtime) == render_runtime.NodeInstall(executable, "v9", "linux-arm64")
+
+
+def test_locate_in_refuses_an_explicit_platform_without_an_official_build(tmp_path):
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.locate_in(tmp_path, platform="linux-armv6l")
+
+
+def test_a_version_marker_without_its_executable_is_not_an_install(tmp_path):
+    executable = _install(tmp_path, "win-x64")
+    executable.unlink()
+    assert render_runtime.locate_in(tmp_path, platform="win-x64") is None
+
+
+def test_provision_hands_the_pinned_size_to_the_download(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    limits: list[int | None] = []
+
+    def fetch(url: str, dest: Path, limit: int | None = None) -> None:
+        limits.append(limit)
+        dest.write_bytes(archive.read_bytes())
+
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    assert limits == [size]
+
+
+def test_download_stops_at_the_pinned_size(tmp_path: Path, monkeypatch):
+    # a server that keeps sending must not fill the disk before the hash check can refuse the archive
+    class Endless(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(render_runtime.urllib.request, "urlopen", lambda request, timeout: Endless(b"x" * (8 * 2**20)))
+    dest = tmp_path / "node.zip"
+    with pytest.raises(ProvisionError, match="larger than"):
+        render_runtime.download("https://nodejs.org/dist/node.zip", dest, limit=2**20)
+    assert dest.stat().st_size <= 2 * 2**20
+
+
+def _pin_file(tmp_path: Path, sha: str, size: int) -> Path:
+    # an unresolvable host: a code path that reaches the network by mistake fails fast instead of downloading
+    pin = {
+        "lines": {"t": {"version": VERSION}},
+        "platforms": {
+            "win-x64": {"line": "t", "url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}
+        },
+    }
+    path = tmp_path / "render_runtime.json"
+    path.write_text(json.dumps(pin), encoding="utf-8")
+    return path
+
+
+def test_cli_provision_exits_0_when_installed(tmp_path: Path, monkeypatch):
+    archive, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(
+        render_runtime, "download", lambda url, dest, limit=None: dest.write_bytes(archive.read_bytes())
+    )
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main([*args, "--platform", "win-x64"]) == 0
+
+
+def test_cli_provision_exits_1_with_a_message_when_the_download_fails(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+
+    def offline(url, dest, limit=None):
+        raise OSError("Network is unreachable")
+
+    monkeypatch.setattr(render_runtime, "download", offline)
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main([*args, "--platform", "win-x64"]) == 1
+    err = capsys.readouterr().err
+    assert "Network is unreachable" in err and "Traceback" not in err
+
+
+def test_cli_provision_exits_3_on_a_platform_without_an_official_build(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main(args) == 3
+    assert "top-view fallback" in capsys.readouterr().err
+
+
+def test_a_provision_prunes_a_retired_platform(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    archive, sha, size = _archive(tmp_path)
+    (tmp_path / "runtime" / "node" / "linux-armv7l" / "bin").mkdir(parents=True)
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    # the platform's lock file stays (startup-provisioning spec P8): removing it would race
+    assert sorted(p.name for p in (tmp_path / "runtime" / "node").iterdir()) == [".win-x64.lock", "win-x64"]
+
+
+def test_the_cli_on_armhf_whose_line_ended_exits_3_and_cleans_up(tmp_path: Path, monkeypatch):
+    # the REAL configuration of a 32-bit Raspberry Pi OS on a Pi 4: aarch64 kernel, 32-bit armhf interpreter
+    monkeypatch.setattr(render_runtime, "PLATFORMS", WITHOUT_ARMV7)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(render_runtime, "_interpreter_bits", lambda: 32)
+    monkeypatch.setattr(render_runtime, "interpreter_triplet", lambda: ARMHF)
+    monkeypatch.setattr(render_runtime, "interpreter_libc", lambda: "glibc")
+    node = tmp_path / "rt" / "node"
+    (node / "linux-armv7l" / "bin").mkdir(parents=True)
+    (node / "linux-armv7l" / "bin" / "node").write_bytes(b"old runtime")
+    (node / "linux-arm64" / "bin").mkdir(parents=True)  # a pinned platform's runtime (a mounted host checkout)
+    pin_file = tmp_path / "render_runtime.json"
+    pin_file.write_text(json.dumps({"lines": {"24": {"version": "v24.21.0"}}, "platforms": {}}), encoding="utf-8")
+    assert render_runtime.main(["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(pin_file)]) == 3
+    assert sorted(p.name for p in node.iterdir()) == ["linux-arm64"]
+
+
+@pytest.mark.parametrize("libc", ["", "musl"])
+def test_a_musl_interpreter_that_claims_gnueabihf_has_no_runtime(libc):
+    # final review M4: CPython before bpo-43112 reports a gnueabihf SOABI on musl; the official armv7l Node needs glibc
+    with pytest.raises(render_runtime.UnsupportedPlatform, match="glibc"):
+        render_runtime.platform_key("Linux", "armv7l", bits=32, triplet=ARMHF, libc=libc)
+
+
+def test_the_interpreter_libc_comes_from_libc_ver(monkeypatch):
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("glibc", "2.41"))
+    assert render_runtime.interpreter_libc() == "glibc"
+    monkeypatch.setattr(render_runtime._platform, "libc_ver", lambda: ("", ""))
+    assert render_runtime.interpreter_libc() == ""
+
+
+def _refuse_prune(runtime_root):
+    raise PermissionError("a root-owned leftover")
+
+
+def test_a_failed_prune_never_fails_a_provision(tmp_path: Path, monkeypatch, capsys):
+    # final review M3: a leftover the service user cannot remove must not turn an install into a failure
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    archive, sha, size = _archive(tmp_path)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert (target / "node.exe").is_file()
+    assert "a root-owned leftover" in capsys.readouterr().err
+
+
+def test_a_failed_prune_keeps_exit_3_on_a_machine_without_a_build(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(render_runtime, "prune_retired_platforms", _refuse_prune)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv6l")
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main(args) == 3
+    err = capsys.readouterr().err
+    assert "top-view fallback" in err and "Traceback" not in err
+
+
+def test_an_old_shape_manifest_is_a_message_not_a_traceback():
+    # final review M10: a manifest of the one-version shape names no line for the platform
+    manifest = {"version": "v24.17.0", "platforms": {"win-x64": {"url": "u", "sha256": "0" * 64, "bytes": 1}}}
+    with pytest.raises(ProvisionError, match="line"):
+        render_runtime.pinned_version(manifest, "win-x64")

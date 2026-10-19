@@ -34,8 +34,10 @@ import { LogViewer } from '../components/LogViewer';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { SystemHealthPanel } from '../components/SystemHealthPanel';
+import { PrintStateIssuesPanel } from '../components/PrintStateIssuesPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
+import { StepPreviewComponentRow } from '../components/StepPreviewComponentRow';
 import { formatDateTime, type TimeFormat } from '../utils/date';
 
 function formatBytes(bytes: number): string {
@@ -492,6 +494,7 @@ export function SystemInfoPage() {
           <LogViewer />
 
           {/* Historical archives — daily-rotated bamdude-YYYY-MM-DD.log files */}
+          <PrintStateIssuesPanel />
           <LogArchivesPanel />
         </div>
       </Section>
@@ -626,6 +629,7 @@ export function SystemInfoPage() {
             </a>
           </>
         )}
+        {systemInfo.step_preview && <StepPreviewComponentRow state={systemInfo.step_preview} />}
       </Section>
 
       <Section title={t('system.cameraWorker.title')} icon={Activity}>
@@ -671,6 +675,60 @@ export function SystemInfoPage() {
           <p className="text-sm text-bambu-gray mt-2">
             {t('system.libraryFileWorker.reason')}: <code>{systemInfo.library_file_worker.reason}</code>
           </p>
+        )}
+      </Section>
+
+      <Section title={t('system.partRenderWorker.title')} icon={Activity}>
+        <p className={systemInfo.part_render_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.partRenderWorker.states.${systemInfo.part_render_worker?.state ?? 'unavailable'}`)}
+        </p>
+        {systemInfo.part_render_worker?.reason &&
+          t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`, { defaultValue: '' }) && (
+            <p className="text-sm text-bambu-gray mt-2">
+              {t(`system.partRenderWorker.reasons.${systemInfo.part_render_worker.reason}`)}
+            </p>
+          )}
+        <p className="text-sm text-bambu-gray mt-2">{t('system.partRenderWorker.scope')}</p>
+        {systemInfo.part_render_worker?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.reason')}: <code>{systemInfo.part_render_worker.reason}</code>
+          </p>
+        )}
+        {systemInfo.part_render_worker?.runtime && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.runtime', {
+              version: systemInfo.part_render_worker.runtime.version,
+              pinnedAt: systemInfo.part_render_worker.runtime.pinned_at ?? '—',
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.queue && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.queue', {
+              pending: systemInfo.part_render_worker.queue.pending,
+              failed: systemInfo.part_render_worker.queue.failed,
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.last && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.partRenderWorker.last', {
+              outcome: t(`system.partRenderWorker.outcomes.${systemInfo.part_render_worker.last.outcome}`, {
+                defaultValue: systemInfo.part_render_worker.last.outcome,
+              }),
+              seconds: (systemInfo.part_render_worker.last.elapsed_ms / 1000).toFixed(1),
+            })}
+          </p>
+        )}
+        {systemInfo.part_render_worker?.state !== 'ready' && (
+          <a
+            href={`https://docs.bamdude.top/${i18n.resolvedLanguage?.startsWith('uk') ? 'uk/' : ''}reference/troubleshooting/#part-thumbnail-worker`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-2 text-bambu-green hover:underline"
+          >
+            {t('system.partRenderWorker.guide')}
+          </a>
         )}
       </Section>
 

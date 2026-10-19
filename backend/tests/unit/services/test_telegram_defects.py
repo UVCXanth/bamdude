@@ -84,6 +84,7 @@ def _callback(data: str, *, user_id: int = 7, message_id: int | None = None):
     callback.message.message_id = message_id
     callback.message.answer = AsyncMock(return_value=MagicMock(message_id=99))
     callback.message.edit_text = AsyncMock()
+    callback.message.edit_reply_markup = AsyncMock()
     return callback
 
 
@@ -465,6 +466,137 @@ async def test_force_reply_from_the_owner_finishes_the_draft(patched_session, db
         select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive_id)
     )
     assert receipt is not None and receipt.assessment["defective_count"] == 4
+
+
+@pytest.mark.parametrize("denied_check", ["permission", "scope"])
+async def test_force_reply_refuses_revoked_access_without_consuming_draft(patched_session, db_session, denied_check):
+    from backend.app.services.telegram_handlers.defects import (
+        _drafts,
+        cb_defects_other,
+        cb_defects_start,
+        msg_defects_count,
+    )
+
+    archive = await _print(db_session, {"lid": 6})
+    start = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(start, _State())
+        other = _callback(_button(_markup(start), "defo:"))
+        await cb_defects_other(other, _State())
+    message = MagicMock(
+        text="4",
+        chat=MagicMock(id=4242),
+        from_user=MagicMock(id=7),
+        reply_to_message=MagicMock(message_id=99),
+        answer=AsyncMock(),
+    )
+    with (
+        patch(f"{MOD}.get_language", AsyncMock(return_value="en")),
+        patch(f"{MOD}.has_perm", return_value=denied_check != "permission"),
+        patch(f"{MOD}.chat_allows_printer", return_value=denied_check != "scope"),
+    ):
+        await msg_defects_count(message, _State())
+    assert message.answer.awaited
+    assert len(_drafts) == 1 and next(iter(_drafts.values())).values == {next(iter(_drafts.values())).rows[0].id: 0}
+    assert (
+        await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
+        is None
+    )
+
+
+async def test_custom_count_keeps_a_current_cancel_button(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import (
+        _drafts,
+        cb_defects_cancel,
+        cb_defects_other,
+        cb_defects_start,
+    )
+
+    archive = await _print(db_session, {"lid": 6})
+    start = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(start, _State())
+        other = _callback(_button(_markup(start), "defo:"))
+        await cb_defects_other(other, _State())
+        updated = other.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        cancel = _callback(_button(updated, "defc:"))
+        await cb_defects_cancel(cancel, _State())
+    assert not _drafts
+
+
+async def test_slash_cancel_only_drops_its_operators_drafts(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, _new, _reply_prompts
+    from backend.app.services.telegram_handlers.start import cmd_cancel
+
+    archive = await _print(db_session, {"lid": 6})
+    mine = _new(archive, [], (11, 4242, 7))
+    foreign = _new(archive, [], (12, 4242, 7))
+    _reply_prompts[((11, 4242, 7), 99)] = (mine.token, mine.revision)
+    message = MagicMock(chat=MagicMock(id=4242), from_user=MagicMock(id=7), reply_to_message=None, answer=AsyncMock())
+    state = MagicMock(get_state=AsyncMock(return_value=None), clear=AsyncMock())
+    with patch("backend.app.services.telegram_handlers.start.get_language", AsyncMock(return_value="en")):
+        await cmd_cancel(message, state, MagicMock(provider_id=11))
+    assert mine.token not in _drafts and foreign.token in _drafts
+    assert ((11, 4242, 7), 99) not in _reply_prompts
+
+
+async def test_addressed_slash_cancel_drops_only_that_draft(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, _new, _reply_prompts
+    from backend.app.services.telegram_handlers.start import cmd_cancel
+
+    first = await _print(db_session, {"lid": 6})
+    second = await _print(db_session, {"base": 2})
+    owner = (11, 4242, 7)
+    first_draft = _new(first, [], owner)
+    second_draft = _new(second, [], owner)
+    _reply_prompts[(owner, 99)] = (first_draft.token, first_draft.revision)
+    _reply_prompts[(owner, 100)] = (second_draft.token, second_draft.revision)
+    message = MagicMock(
+        chat=MagicMock(id=4242),
+        from_user=MagicMock(id=7),
+        reply_to_message=MagicMock(message_id=99),
+        answer=AsyncMock(),
+    )
+    state = MagicMock(get_state=AsyncMock(return_value=None), clear=AsyncMock())
+    with patch("backend.app.services.telegram_handlers.start.get_language", AsyncMock(return_value="en")):
+        await cmd_cancel(message, state, MagicMock(provider_id=11))
+    assert first_draft.token not in _drafts and second_draft.token in _drafts
+    assert (owner, 99) not in _reply_prompts and (owner, 100) in _reply_prompts
+
+
+async def test_two_replies_to_one_prompt_advance_once(patched_session, db_session):
+    import asyncio
+
+    from backend.app.services.telegram_handlers.defects import cb_defects_other, cb_defects_start, msg_defects_count
+
+    archive = await _print(db_session, {"lid": 6})
+    start = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(start, _State())
+        await cb_defects_other(_callback(_button(_markup(start), "defo:")), _State())
+
+    def reply():
+        return MagicMock(
+            text="4",
+            chat=MagicMock(id=4242),
+            from_user=MagicMock(id=7),
+            reply_to_message=MagicMock(message_id=99),
+            answer=AsyncMock(),
+            edit_text=AsyncMock(),
+        )
+
+    first, second = reply(), reply()
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await asyncio.gather(msg_defects_count(first, _State()), msg_defects_count(second, _State()))
+    receipt = await db_session.scalar(
+        select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id)
+    )
+    assert receipt is not None and receipt.assessment["defective_count"] == 4
+    assert first.answer.await_count + second.answer.await_count == 1
 
 
 async def _ops_chat(db) -> None:

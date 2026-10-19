@@ -4,6 +4,8 @@ Every probe is its own coroutine and its own ``try``/``except``: this is opened
 when something is wrong, so one probe that raises must not blank the nine that
 would have answered. A failed probe leaves its field ``None`` and puts its name
 in ``probes_failed`` — visible, rather than indistinguishable from «no data».
+PostgreSQL SQL probes also own a savepoint: catching a Python exception alone
+does not recover an aborted database transaction.
 
 ⚠️ The mode is NOT the dialect. ``is_postgres()`` is true for
 ``DATABASE_URL=embedded`` as well, because config rewrites the URL — so telling
@@ -49,8 +51,13 @@ def mode() -> Mode:
     return "external"
 
 
-async def _guard(name: str, probe: Callable[[], Awaitable[Any]], failures: list[str]) -> Any:
+async def _guard(
+    name: str, probe: Callable[[], Awaitable[Any]], failures: list[str], *, db: AsyncSession | None = None
+) -> Any:
     try:
+        if db is not None and is_postgres():
+            async with db.begin_nested():
+                return await probe()
         return await probe()
     except Exception as exc:  # noqa: BLE001 — a diagnostics page never 500s
         logger.debug("db-health probe %s failed: %s", name, exc)
@@ -215,7 +222,10 @@ async def probe_statements(db: AsyncSession) -> tuple[list[dict], str, str | Non
     """
     if is_postgres():
         try:
-            return await _pg_statements(db), "pg_stat_statements", None
+            # Roll back the savepoint BEFORE translating an SQL error into the
+            # optional-extension warning. Never roll back the caller's session.
+            async with db.begin_nested():
+                return await _pg_statements(db), "pg_stat_statements", None
         except Exception as exc:  # noqa: BLE001
             logger.debug("pg_stat_statements unavailable: %s", exc)
             reason = _NO_STATEMENTS_EXTERNAL if mode() == "embedded_service" else _NO_STATEMENTS
@@ -241,9 +251,9 @@ async def collect(db: AsyncSession) -> dict[str, Any]:
     )
     return {
         "engine": "PostgreSQL" if is_postgres() else "SQLite",
-        "version": await _guard("version", lambda: probe_version(db), failures),
+        "version": await _guard("version", lambda: probe_version(db), failures, db=db),
         "mode": mode(),
-        "size_bytes": await _guard("size_bytes", lambda: probe_size_bytes(db), failures),
+        "size_bytes": await _guard("size_bytes", lambda: probe_size_bytes(db), failures, db=db),
         "pool": await _guard("pool", lambda: _as_coro(get_pool_status()), failures),
         "instrumentation": {
             "query_threshold_ms": query_timing.query_threshold_ms(),
@@ -252,10 +262,10 @@ async def collect(db: AsyncSession) -> dict[str, Any]:
             "reason": reason,
             "slowest": statements,
         },
-        "sqlite": await _guard("sqlite", lambda: probe_sqlite(db), failures),
-        "postgres": await _guard("postgres", lambda: probe_postgres(db), failures),
-        "largest_tables": await _guard("largest_tables", lambda: probe_largest_tables(db), failures),
-        "scans": await _guard("scans", lambda: probe_scans(db), failures),
+        "sqlite": await _guard("sqlite", lambda: probe_sqlite(db), failures, db=db),
+        "postgres": await _guard("postgres", lambda: probe_postgres(db), failures, db=db),
+        "largest_tables": await _guard("largest_tables", lambda: probe_largest_tables(db), failures, db=db),
+        "scans": await _guard("scans", lambda: probe_scans(db), failures, db=db),
         "probes_failed": failures,
     }
 

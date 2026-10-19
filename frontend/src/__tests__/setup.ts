@@ -25,6 +25,11 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
+// jsdom has no canvas without the `canvas` package: getContext logs «Not implemented» and answers null. Every loaded
+// part thumbnail reads its tone through one (components/partTone.ts), so the stub answers the same null without the
+// noise; a test that needs a context spies on it.
+HTMLCanvasElement.prototype.getContext = (() => null) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+
 // Mock window.matchMedia for responsive components
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

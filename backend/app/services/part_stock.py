@@ -71,6 +71,7 @@ from backend.app.services.line_composition import (
     LineConfig,
     counted,
     default_options,
+    extra_parts_for_line,
     has_shelf,
     line_composition,
     load_line_configs,
@@ -83,7 +84,7 @@ logger = logging.getLogger(__name__)
 #: The two reasons that make up a line's reservation. Read as ONE sum: a
 #: release is not the deletion of a reservation but a movement of its own, so
 #: "what is still reserved" is ``−Σ(both)`` and never "the last row wins".
-_RESERVATION_REASONS = ("reserved_for_order", "reservation_released")
+_RESERVATION_REASONS = ("reserved_for_order", "reserved_parts_for_order", "reservation_released")
 
 #: Why the BACKEND wrote a movement — a closed set of tokens, never a sentence
 #: (Ruling 17). The product page renders each of these in the operator's own
@@ -135,6 +136,7 @@ REASONS = (
     "surplus_banked",
     "unfiled_print",
     "reserved_for_order",
+    "reserved_parts_for_order",
     "reservation_released",
     "manual",
     "assembled",
@@ -159,6 +161,7 @@ _REQUIRED_SIGN = {
     "unfiled_print": 1,
     "reservation_released": 1,
     "reserved_for_order": -1,
+    "reserved_parts_for_order": -1,
     "assembled": -1,  # into a finished-goods position
     "made_for_order": 1,  # a parts line's printed parts onto the shelf — paired with held_for_order
     "held_for_order": -1,  # …and held off the free balance for that order
@@ -404,7 +407,7 @@ async def move(
 
     balance = await _balance_of(db, part_id)
     if balance + delta < 0:
-        if reason != "reserved_for_order":
+        if reason not in ("reserved_for_order", "reserved_parts_for_order"):
             raise PartStockError(
                 f"movement {delta:+d} ({reason}) would take part {part_id} to {balance + delta}; "
                 "stock never goes below 0"
@@ -625,6 +628,37 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
         )
 
 
+async def reserved_parts_for_line(db: AsyncSession, line: ProjectLine) -> dict[int, int]:
+    """Actual live per-part reservations, including incomplete kits."""
+    return dict(await _reserved_net_by_part(db, line.id))
+
+
+async def fit_reservation_for_line(db: AsyncSession, line: ProjectLine, units: int) -> None:
+    """Release only the parts above a reduced line's remaining kit capacity.
+
+    This never takes stock and keeps a partial reservation partial, unlike a
+    rewrite in whole-kit units. The caller already holds the product/line locks.
+    """
+    kit = counted(await line_composition_of(db, line))
+    await lock_parts(db, [part for part, _per in kit])
+    held = await reserved_parts_for_line(db, line)
+    extras = extra_parts_for_line(line, kit)
+    counters = (await line_part_stock(db, [line.id])).get(line.id, {}) if line.extra_percentages else {}
+    for part, per in kit:
+        row = counters.get(part.id)
+        extra_room = max(0, extras.get(part.id, 0) - (row.received - row.written_off if row else 0))
+        release = max(0, held.get(part.id, 0) - max(0, units) * per - extra_room)
+        if release:
+            await move(
+                db,
+                part_id=part.id,
+                delta=release,
+                reason="reservation_released",
+                project_line_id=line.id,
+                note=NOTE_RESERVATION_REWRITTEN,
+            )
+
+
 async def reserve_for_line(
     db: AsyncSession,
     line: ProjectLine,
@@ -723,6 +757,9 @@ class LineStockReads:
 
     reserved_units: dict[int, int]
     banked_by_part: dict[tuple[int, int], int]
+    reserved_by_part: dict[tuple[int, int], int] = field(default_factory=dict)
+    used_by_part: dict[tuple[int, int], int] = field(default_factory=dict)
+    made_by_part: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 async def line_ledger_reads(
@@ -758,6 +795,9 @@ async def line_ledger_reads(
         return LineStockReads(reserved_units={}, banked_by_part={})
     reserved_net: dict[tuple[int, int], int] = defaultdict(int)
     banked: dict[tuple[int, int], int] = defaultdict(int)
+    used: dict[tuple[int, int], int] = defaultdict(int)
+    loose_lines: set[int] = set()
+    made: dict[tuple[int, int], int] = defaultdict(int)
     for start in range(0, len(line_ids), IN_CHUNK):
         rows = (
             await db.execute(
@@ -769,7 +809,9 @@ async def line_ledger_reads(
                 )
                 .where(
                     ProductPartStockMovement.project_line_id.in_(line_ids[start : start + IN_CHUNK]),
-                    ProductPartStockMovement.reason.in_((*_RESERVATION_REASONS, "surplus_banked")),
+                    ProductPartStockMovement.reason.in_(
+                        (*_RESERVATION_REASONS, "surplus_banked", "assembled", "made_for_order")
+                    ),
                 )
                 .group_by(
                     ProductPartStockMovement.project_line_id,
@@ -779,20 +821,97 @@ async def line_ledger_reads(
             )
         ).all()
         for line_id, part_id, reason, net in rows:
+            if reason == "reserved_parts_for_order":
+                loose_lines.add(line_id)
             if reason == "surplus_banked":
                 banked[(line_id, part_id)] += int(net or 0)
+            elif reason == "assembled":
+                used[(line_id, part_id)] -= int(net or 0)
+            elif reason == "made_for_order":
+                made[(line_id, part_id)] += int(net or 0)
             else:
                 reserved_net[(line_id, part_id)] += int(net or 0)
-    per_line: dict[int, list[int]] = defaultdict(list)
-    for (line_id, part_id), net in reserved_net.items():
-        qty = per_by_line.get(line_id, {}).get(part_id)
-        if not qty:
-            continue
-        per_line[line_id].append(max(0, -net) // qty)
+    # Loose-part allocations require every part of the CURRENT kit. Legacy
+    # complete-kit reservations retain their historical reader: a part added
+    # later with only a bank row must not zero an existing kit (Ruling 30).
+    per_line = {
+        line_id: [
+            max(0, -reserved_net.get((line_id, part_id), 0)) // qty
+            for part_id, qty in per.items()
+            if qty > 0 and (line_id in loose_lines or (line_id, part_id) in reserved_net)
+        ]
+        for line_id, per in per_by_line.items()
+    }
     return LineStockReads(
-        reserved_units={line_id: kits for line_id, taken in per_line.items() if (kits := min(taken)) > 0},
+        reserved_units={line_id: kits for line_id, taken in per_line.items() if taken and (kits := min(taken)) > 0},
         banked_by_part={key: net for key, net in banked.items() if net > 0},
+        reserved_by_part={key: -net for key, net in reserved_net.items() if net < 0},
+        used_by_part={key: net for key, net in used.items() if net > 0},
+        made_by_part={key: net for key, net in made.items() if net > 0},
     )
+
+
+async def add_parts_for_line(
+    db: AsyncSession, line: ProjectLine, counts: Mapping[int, int], *, created_by: int | None
+) -> dict[int, int]:
+    """Add individual free parts to an order's existing reservation, without release.
+
+    The stock-offer door bounds these by the fresh plan under the product/order/
+    position/line/part locks. Each existing ledger writer still clamps a stale
+    shelf. These are real allocations, never subtraction from an unreserved shelf.
+    """
+    kit = {part.id: part for part, _per in counted(await line_composition_of(db, line))}
+    if line.mode != "product" or set(counts) - kit.keys() or any(n < 0 for n in counts.values()):
+        raise PartStockError("Only counted product parts can be reserved for a product line")
+    await lock_parts(db, [kit[pid] for pid in sorted(counts)])
+    got = {}
+    for pid, qty in sorted(counts.items()):
+        if qty <= 0:
+            continue
+        row = await move(
+            db,
+            part_id=pid,
+            delta=-qty,
+            reason="reserved_parts_for_order",
+            project_line_id=line.id,
+            created_by=created_by,
+        )
+        if row is not None:
+            got[pid] = -row.delta
+    return got
+
+
+async def consume_partial_reservation(
+    db: AsyncSession, line: ProjectLine, units: int, *, stock_item_id: int, created_by: int | None
+) -> None:
+    """Use reserved loose parts when printed parts complete the missing kit.
+
+    Whole reserved kits remain available to the existing assembly door. A receipt
+    consumes only the extra parts beyond those kits, through the very same release
+    + assembled zero-sum pair. No free balance changes a second time.
+    """
+    kit = counted(await line_composition_of(db, line))
+    await lock_parts(db, [part for part, _per in kit])
+    held = dict(await _reserved_net_by_part(db, line.id))
+    kits = min((held.get(part.id, 0) // per for part, per in kit), default=0)
+    if line.extra_percentages:
+        kits = min(
+            kits,
+            max(
+                0,
+                line.quantity
+                - (line.from_finished or 0)
+                - (line.assembled or 0)
+                - (line.received or 0)
+                + (line.written_off or 0),
+            ),
+        )
+    for part, per in kit:
+        take = min(units * per, max(0, held.get(part.id, 0) - kits * per))
+        if take:
+            common = {"project_line_id": line.id, "created_by": created_by, "stock_item_id": stock_item_id}
+            await move(db, part_id=part.id, delta=take, reason="reservation_released", **common)
+            await move(db, part_id=part.id, delta=-take, reason="assembled", **common)
 
 
 async def reserved_units_by_line(
@@ -923,16 +1042,29 @@ async def convert_reserved_kits(
 
 
 async def receive_parts_for_line(
-    db: AsyncSession, line: ProjectLine, counts: Mapping[int, int], *, created_by: int | None
+    db: AsyncSession,
+    line: ProjectLine,
+    counts: Mapping[int, int],
+    *,
+    created_by: int | None,
+    stock_counts: Mapping[int, int] | None = None,
 ) -> None:
     """A parts line's printed parts put on the shelf under its order (spec rule 6)."""
     wanted = {pid: n for pid, n in counts.items() if n > 0}
     if not wanted:
         return
-    for part in await _locked_parts(db, list(wanted)):
+    parts = await _locked_parts(db, list(wanted))
+    allocated = await reserved_parts_for_line(db, line) if any((stock_counts or {}).values()) else {}
+    for part in parts:
         n = wanted[part.id]
         common = {"project_line_id": line.id, "created_by": created_by}
-        await move(db, part_id=part.id, delta=n, reason="made_for_order", **common)
+        stock = (stock_counts or {}).get(part.id, 0)
+        if not 0 <= stock <= n or stock > allocated.get(part.id, 0):
+            raise PartStockError("The reserved parts changed before receipt")
+        if stock:
+            await move(db, part_id=part.id, delta=stock, reason="reservation_released", **common)
+        if n > stock:
+            await move(db, part_id=part.id, delta=n - stock, reason="made_for_order", **common)
         await move(db, part_id=part.id, delta=-n, reason="held_for_order", **common)
         row = await _counter(db, line.id, part.id)
         row.received += n
@@ -1012,6 +1144,18 @@ async def return_parts_for_line(db: AsyncSession, line: ProjectLine, *, created_
     return back
 
 
+def kit_reservation_room(line: ProjectLine, kit: Composition, held: Mapping[int, int]) -> int:
+    """Base kits still reservable; additional parts never enlarge the kit count."""
+    covered = (
+        (line.from_finished or 0)
+        + (line.assembled or 0)
+        + (line.received or 0)
+        - (line.returned or 0)
+        - (line.written_off or 0)
+    )
+    return min((max(0, (line.quantity - covered) * per - held.get(part.id, 0)) // per for part, per in kit), default=0)
+
+
 async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, created_by: int | None) -> int:
     """«Взяти зі складу» (spec rule 17): MORE kits for the line — never a release first,
     never past the line's quantity, never more than the shelf makes. Returns the kits taken."""
@@ -1021,16 +1165,10 @@ async def add_kits_for_line(db: AsyncSession, line: ProjectLine, kits: int, *, c
     if not kit:
         return 0
     await lock_parts(db, [part for part, _per in kit])
-    # What the shelf, the kits and the prints already cover — the same room as the ready
-    # units door's (final review M5).
-    covered = (
-        (line.from_finished or 0)
-        + (line.assembled or 0)
-        + (line.received or 0)
-        - (line.returned or 0)
-        - (line.written_off or 0)
-    )
-    room = line.quantity - covered - await reserved_units_for_line(db, line)
+    held = await reserved_parts_for_line(db, line)
+    # Whole-kit history is add-only, but existing loose reservations also spend
+    # this line's room. Do not reserve its already-covered component twice.
+    room = kit_reservation_room(line, kit, held)
     take = min(kits, room, kits_of(await balances(db, line.product_id), kit))
     if take <= 0:
         return 0

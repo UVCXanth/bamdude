@@ -112,4 +112,16 @@ describe('ActionConfirm', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(send).not.toHaveBeenCalled();
   });
+  it('disables an unready primary action while retaining cancellation', () => {
+    const send = vi.fn();
+    const close = vi.fn();
+    render(<ActionConfirm title="Review" body="Loading" primaryLabel="Send" primaryDisabled send={send} onClose={close} />);
+    const button = screen.getByRole('button', { name: 'Send' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
 });

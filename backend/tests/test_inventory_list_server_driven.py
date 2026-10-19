@@ -1213,6 +1213,58 @@ class TestGroupedModeService:
 
 
 class TestGroupedSort:
+    @pytest.mark.parametrize("key", ["id", "lot", "purchase_date"])
+    async def test_member_fields_sort_by_the_stable_representative(self, db_session, key):
+        first = await _spool(db_session, brand="A", lot=30, purchase_date=datetime(2026, 2, 1, tzinfo=timezone.utc))
+        await _spool(db_session, brand="A", lot=1, purchase_date=datetime(2025, 1, 1, tzinfo=timezone.utc))
+        second = await _spool(db_session, brand="B", lot=20, purchase_date=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        await _spool(db_session, brand="B", lot=99, purchase_date=datetime(2027, 1, 1, tzinfo=timezone.utc))
+        expected = [first.id, second.id] if key == "id" else [second.id, first.id]
+        for direction in ("asc", "desc"):
+            groups = await _groups(db_session, sort_by=f"{key}_{direction}")
+            assert [g["representative"].id for g in groups] == (expected if direction == "asc" else expected[::-1])
+            assert [g["group_count"] for g in groups] == [2, 2]
+
+    @pytest.mark.parametrize("key", ["label_weight", "net", "remaining"])
+    async def test_weight_sort_uses_group_totals_with_per_spool_clamping(self, db_session, key):
+        first = await _spool(db_session, brand="A", label_weight=500, weight_used=100)
+        await _spool(db_session, brand="A", label_weight=500, weight_used=700)
+        await _spool(db_session, brand="A", label_weight=500, weight_used=400)
+        second = await _spool(db_session, brand="B", label_weight=1000, weight_used=400)
+        empty = await _spool(db_session, brand="C", label_weight=0)
+        # A: label 1500, net 500, 33%; B: label 1000, net 600, 60%; C: zero label.
+        expected = [empty.id, second.id, first.id] if key == "label_weight" else [empty.id, first.id, second.id]
+        for direction in ("asc", "desc"):
+            groups = await _groups(db_session, sort_by=f"{key}_{direction}")
+            assert [g["representative"].id for g in groups] == (expected if direction == "asc" else expected[::-1])
+            assert next(g for g in groups if g["representative"].id == first.id)["remaining_total"] == 500
+
+    async def test_location_sort_keeps_shelf_groups_and_deduplicates_assignments(self, db_session, printer_factory):
+        shelf = await _spool(db_session)
+        await _spool(db_session)
+        printer_a = await printer_factory(name="Printer A")
+        printer_z = await printer_factory(name="Printer Z")
+        on_z = await _spool(db_session)
+        on_a = await _spool(db_session)
+        db_session.add_all(
+            [
+                SpoolAssignment(spool_id=on_z.id, printer_id=printer_z.id, ams_id=0, tray_id=0),
+                SpoolAssignment(spool_id=on_z.id, printer_id=printer_z.id, ams_id=0, tray_id=1),
+                SpoolAssignment(spool_id=on_a.id, printer_id=printer_a.id, ams_id=0, tray_id=0),
+            ]
+        )
+        await db_session.commit()
+        for direction, expected in (("asc", [shelf.id, on_a.id, on_z.id]), ("desc", [on_z.id, on_a.id, shelf.id])):
+            groups = await _groups(db_session, sort_by=f"location_{direction}")
+            assert [g["representative"].id for g in groups] == expected
+            paged = [
+                (await _groups(db_session, sort_by=f"location_{direction}", limit=1, offset=offset))[0][
+                    "representative"
+                ].id
+                for offset in range(3)
+            ]
+            assert paged == expected
+
     async def test_material_asc_and_desc(self, db_session):
         await _spool(db_session, material="PLA")
         await _spool(db_session, material="ABS")
@@ -1276,7 +1328,7 @@ class TestGroupedSort:
             await _groups(db_session, sort_by="material")  # malformed: no _asc/_desc
         # And the route-facing validator agrees (same single source of truth).
         with pytest.raises(ValueError):
-            inventory_service.assert_group_sort_supported("location_desc")
+            inventory_service.assert_group_sort_supported("weight_check_desc")
         inventory_service.assert_group_sort_supported(None)
         inventory_service.assert_group_sort_supported("display_name_desc")
 

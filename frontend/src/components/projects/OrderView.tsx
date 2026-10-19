@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +16,7 @@ import { ProcurementChecklist } from './ProcurementChecklist';
 import { OrderPrints } from './OrderPrints';
 import { OrderQueue } from './OrderQueue';
 import { OrderTimeline } from './OrderTimeline';
+import { OrderAutoEject } from './OrderAutoEject';
 import { OrderNotes } from './OrderNotes';
 import { OrderAttachments } from './OrderAttachments';
 import { TakeStockBanner } from './TakeStockBanner';
@@ -32,6 +33,7 @@ import { WorkshopTabPanel, WorkshopTabs } from '../workshop/WorkshopTabs';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
+import type { PlateFitDraft } from './PlateFitDialog';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -44,7 +46,7 @@ import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
  * comes from `GET /projects/{id}` and is shown as sent (design decision 8).
  * `PlanBlock` below the lines answers the other half: what to print next, and
  * how to send it. It owns its own query and its own what-if counts, so the
- * page hands it the order and the edit permission and nothing else.
+ * page delegates queue-shortcut review to that same owner.
  */
 export function OrderView({
   id,
@@ -71,6 +73,17 @@ export function OrderView({
   const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  const [fitDraft, setFitDraft] = useState<PlateFitDraft | null>(null);
+  const plateSelection = useRef<Record<number, number[]>>({});
+  const rememberPlates = useCallback((selected: Record<number, number[]>) => { plateSelection.current = selected; }, []);
+  const canFit = (['orders:read', 'orders:update', 'products:read', 'stock:read'] as const).every(p => hasPermission(p));
+  const openFit = () => {
+    if (!canFit) return;
+    actions.plateFit?.({ orderId: id, selectedPlates: plateSelection.current, onApplied: setFitDraft });
+  };
+  const [queueRequest, setQueueRequest] = useState<{
+    orderId: number; lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean;
+  } | null>(null);
   // When the plan was last sent: until the forecast is read again after it, the
   // cached answer is the previous plan's and is not shown as current (R03).
   const [enqueuedAt, setEnqueuedAt] = useState<number | null>(null);
@@ -87,18 +100,49 @@ export function OrderView({
   };
   const [visited, setVisited] = useState<ReadonlySet<OrderSection>>(() => new Set([section]));
   if (!visited.has(section)) setVisited(new Set([...visited, section]));
+  const reviewQueuePlan = (lineId?: number) => {
+    const request = { orderId: id, lineId, requestedAt: Date.now(), refreshing: true };
+    setQueueRequest(request);
+    selectSection('plan');
+    // Captions belong to the order, not the plan. Read that first, then cancel
+    // any earlier plan read and ask again. Neither an old response nor one
+    // successful half of the review may enable Send. Keep the existing editor.
+    const orderKey = ['project', id];
+    const planKey = ['project-plan', id];
+    void (async () => {
+      let refreshFailed = false;
+      try {
+        await Promise.all([
+          queryClient.cancelQueries({ queryKey: orderKey, exact: true }),
+          queryClient.cancelQueries({ queryKey: planKey, exact: true }),
+        ]);
+        await queryClient.refetchQueries({ queryKey: orderKey, exact: true, type: 'active' }, { throwOnError: true });
+        await queryClient.cancelQueries({ queryKey: planKey, exact: true });
+        await queryClient.invalidateQueries({ queryKey: planKey, exact: true }, { throwOnError: true });
+      } catch {
+        refreshFailed = true;
+      }
+      // A cancelled review, another shortcut or navigation owns its own reads.
+      setQueueRequest((current) => current === request ? { ...request, refreshing: false, refreshFailed } : current);
+    })();
+  };
   const tabsId = useId();
   // The plan tab's count READS the plan block's query and never fetches for itself
   // (E1 CN2): no parentheses until the plan has been asked for, «(—)» while it is read.
   const planForCount = useOrderPlan(id, false);
 
-  useEffect(() => setPlanDraftChanged(false), [id]);
+  useEffect(() => {
+    setPlanDraftChanged(false);
+    setQueueRequest(null);
+  }, [id]);
 
   const {
     data: order,
     isLoading,
     isError,
     error,
+    isFetching: orderFetching,
+    dataUpdatedAt: orderUpdatedAt,
   } = useOrderDetail(id);
 
   // Only an active order can still be simulated forward — a completed or
@@ -209,13 +253,30 @@ export function OrderView({
     switch (value) {
       case 'plan':
         return (
+          <div className="space-y-4">
+          {order.status === 'active' && (
+            <OrderForecastPanel
+              view={forecastNow}
+              remaining={order.figures.remaining}
+              onRetry={() => forecast.refetch()}
+              headingLevel={embedded ? 3 : 2}
+            />
+          )}
           <PlanBlock
             order={order}
+            fitDraft={fitDraft?.orderId === id ? fitDraft : null}
+            onPlateSelection={rememberPlates}
+            onPlateFit={canFit && actions.plateFit ? openFit : undefined}
             // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
             canEdit={canFileFuturePrint(hasPermission)}
             onDraftChanged={setPlanDraftChanged}
+            queueRequest={queueRequest?.orderId === id ? queueRequest : null}
+            queueOrderReady={!orderFetching && !isError && orderUpdatedAt >= (queueRequest?.requestedAt ?? 0)}
+            onQueueRequestRetry={() => reviewQueuePlan(queueRequest?.lineId)}
+            onQueueRequestClose={() => setQueueRequest(null)}
             onEnqueued={onPlanSent}
           />
+          </div>
         );
       case 'prints':
         return <OrderPrints order={order} canEdit={canEdit} />;
@@ -272,9 +333,12 @@ export function OrderView({
       <div data-testid="order-grid" className="order-view-grid">
         <WorkshopPanel data-testid="order-main" className="min-w-0">
           <div className="space-y-6">
+            <OrderAutoEject key={order.id} order={order} canEdit={canEdit} />
             <OrderFigures figures={order.figures} forecast={forecastNow} />
 
-            <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2} />
+            <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2}
+              onQueuePlan={order.status === 'active' && canFileFuturePrint(hasPermission) && hasPermission('queue:create')
+                ? reviewQueuePlan : undefined} />
 
             <div className="!mt-5">
               <WorkshopTabs
@@ -310,16 +374,8 @@ export function OrderView({
           </div>
         </WorkshopPanel>
 
-        {/* Forecast (active orders only), filament, queue, activity (WS-13 E3 G01). */}
+        {/* The forecast stays above the plan, before the table on narrow screens. */}
         <div data-testid="order-side" className="order-view-side">
-          {order.status === 'active' && (
-            <OrderForecastPanel
-              view={forecastNow}
-              remaining={order.figures.remaining}
-              onRetry={() => forecast.refetch()}
-              headingLevel={embedded ? 3 : 2}
-            />
-          )}
           <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2} />
           <OrderQueue orderId={order.id} headingLevel={embedded ? 3 : 2} />
           <OrderTimeline orderId={order.id} headingLevel={embedded ? 3 : 2} />

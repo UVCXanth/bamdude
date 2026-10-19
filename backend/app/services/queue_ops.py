@@ -17,12 +17,14 @@ import logging
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services.filament_intake import snapshot_for_copy
 from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
@@ -58,9 +60,61 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
     async with _queue_claim_locks[queue_id]:
         dialect = db.get_bind().dialect.name
         if dialect == "postgresql":
-            await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+            await _lane_db_guard(db, queue_id)
         elif dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
+        yield
+
+
+def lane_held_in_process(db: AsyncSession, queue_id: int) -> bool:
+    """SQLite only: whether another coroutine holds this printer lane's in-process lock right now.
+
+    A caller whose transaction may already hold SQLite's writer (the AutoQueue tick) must not wait for that lock: its
+    holder -- a refresh, a change_table claim, a scheduler claim -- takes the writer next (``claim_lanes``), and each
+    would sit on the other until SQLite's busy timeout. Checked and then entered with no await in between, so the
+    answer still holds when the caller enters ``queue_claim_scope``.
+    """
+    return db.get_bind().dialect.name == "sqlite" and _queue_claim_locks[queue_id].locked()
+
+
+async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
+    await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+
+
+@asynccontextmanager
+async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=()):
+    """The one shared order for a writer that needs printer lanes AND archives (spec r4 §4, T9.7 R4).
+
+    In-process locks, ALL of them before SQLite's writer: the archives ascending, then the lanes ascending. Then
+    the database: SQLite's writer, or on PostgreSQL the archives' guards ascending, then the lanes' guards
+    ascending. The caller locks its ROWS after this, archive rows before queue/job rows (and a library row after
+    those). Archive before queue is the order every archive + queue writer keeps: the terminal acceptance, an
+    archive's hard delete, the change_table claim, a refresh of an archive's jobs, operator print-state recovery
+    and the terminal autorepair.
+
+    A holder of SQLite's single writer must never wait for an in-process lock -- whoever holds that lock takes the
+    writer next, and both would sit until SQLite's busy timeout failed one of them (plan T9.4). The set of lanes is
+    the caller's preflight; a lane found under these locks that is not in it is a refusal, never a lock taken late.
+    """
+    from contextlib import AsyncExitStack
+
+    from backend.app.services.archive_write_scope import archive_db_guard, archive_process_lock
+
+    archives = sorted({*archive_ids, *([archive_id] if archive_id is not None else [])})
+    lanes = sorted(set(queue_ids))
+    async with AsyncExitStack() as stack:
+        for each in archives:
+            await stack.enter_async_context(archive_process_lock(each))
+        for queue_id in lanes:
+            await stack.enter_async_context(_queue_claim_locks[queue_id])
+        dialect = db.get_bind().dialect.name
+        if dialect == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+        if dialect == "postgresql":
+            for each in archives:
+                await archive_db_guard(db, each)
+            for queue_id in lanes:
+                await _lane_db_guard(db, queue_id)
         yield
 
 
@@ -311,7 +365,8 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         # m173: the clone prints the SAME bytes and becomes a second owner of the
         # same blob — never a new read of the original (queue-source-spool spec
         # §9). The snapshot travels beside the id because that is what keeps the
-        # display name and the plate fallback with the copy.
+        # display name and the plate fallback with the copy; the async callers
+        # replace it with ``snapshot_for_copy``, which records the declaration.
         queue_source_id=src.queue_source_id,
         source_snapshot=src.source_snapshot,
         project_id=src.project_id,
@@ -320,6 +375,8 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         # that same print being done again, and must stay as quiet about the
         # queue as the original was.
         origin=src.origin,
+        auto_eject=src.auto_eject,
+        auto_eject_settings=deepcopy(src.auto_eject_settings),
         position=new_position,
         scheduled_time=src.scheduled_time,
         manual_start=src.manual_start,
@@ -402,6 +459,7 @@ async def clone_item(
             )
         ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        clone.source_snapshot = await snapshot_for_copy(db, src)
         _as_new_work(clone, created_by_id, keep_order)
         db.add(clone)
         await db.commit()
@@ -446,6 +504,7 @@ async def clone_batch(
         ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            clone.source_snapshot = await snapshot_for_copy(db, src)
             _as_new_work(clone, created_by_id, keep_order)
             db.add(clone)
             clones.append(clone)

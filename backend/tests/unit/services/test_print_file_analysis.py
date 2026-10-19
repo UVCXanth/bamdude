@@ -13,6 +13,7 @@ import pytest
 
 from backend.app.services.print_file_analysis import (
     PrintFileAnalysis,
+    _slicer_estimates_from_slice_info,
     begin_historical_print_file_analysis_finishing,
     begin_print_file_analysis_finishing,
     bind_print_file_analysis,
@@ -22,6 +23,16 @@ from backend.app.services.print_file_analysis import (
     get_print_file_analysis_diagnostics,
     notify_print_file_analysis_source_ready,
 )
+
+
+def test_slicer_estimates_ignore_xml_entities(tmp_path):
+    path = tmp_path / "entity.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "Metadata/slice_info.config",
+            '<!DOCTYPE config [<!ENTITY x "expanded">]><config>&x;</config>',
+        )
+    assert _slicer_estimates_from_slice_info(path, 1) == {}
 
 
 class _Manager:

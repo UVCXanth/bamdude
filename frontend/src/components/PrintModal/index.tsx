@@ -9,7 +9,7 @@ import type {
   PrintQueueItemUpdate,
   SpoolAssignment,
 } from '../../api/client';
-import { api, macrosApi } from '../../api/client';
+import { api, ApiError, macrosApi } from '../../api/client';
 import { farmQueryResumeOptions } from '../../api/farmReadBudget';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../Button';
@@ -52,6 +52,9 @@ import { PrintOptionsPanel } from './PrintOptions';
 import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
+import { SwapSourceNotice } from './SwapSourceNotice';
+import { decodeSourceSwapFact, decodeSwapFact, type SwapFact, type SwapFactWire } from '../../utils/swapCompatibility';
+import { SwapDeclarationModal } from '../SwapDeclarationModal';
 import { EventMacrosPanel } from './EventMacros';
 import type {
   FilamentReqsData,
@@ -139,7 +142,7 @@ export function PrintModal({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, canModify } = useAuth();
   const headingId = useId();
 
   const isSnapshotSource = sourceQueueItemId !== undefined;
@@ -340,6 +343,7 @@ export function PrintModal({
 
   // Submission state for multi-printer
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [claimPrinters, setClaimPrinters] = useState<number[]>([]);
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
@@ -697,14 +701,14 @@ export function PrintModal({
   });
 
   // Fetch archive details to get sliced_for_model
-  const { data: archiveDetails } = useQuery({
+  const { data: archiveDetails, isError: archiveDetailsError } = useQuery({
     queryKey: ['archive', archiveId],
     queryFn: () => api.getArchive(archiveId!),
     enabled: isArchiveSource,
   });
 
   // Fetch library file details to get sliced_for_model
-  const { data: libraryFileDetails } = useQuery({
+  const { data: libraryFileDetails, isError: libraryFileDetailsError } = useQuery({
     queryKey: ['library-file', libraryFileId],
     queryFn: () => api.getLibraryFile(libraryFileId!),
     enabled: isLibraryFile && !!libraryFileId,
@@ -734,8 +738,58 @@ export function PrintModal({
     );
   }, [lockAutoTarget, slicedForModel]);
 
-  // Check swap compatibility
-  const swapCompatible = queueSourceProfile?.swap_compatible || archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
+  // The job being edited answers for itself too: its own copy source, read off
+  // the bytes it captured — never the archive or library row it came from, which
+  // may say something else by now (swap-source-lifecycle spec r4 §9).
+  const editedJobId = mode === 'edit-queue-item' && !isSnapshotSource ? queueItem?.id : undefined;
+  const { data: editedJobSource, isError: editedJobSourceError } = useQuery({
+    queryKey: ['queue-copy-source', editedJobId],
+    queryFn: () => api.getQueueCopySource(editedJobId!),
+    enabled: editedJobId !== undefined,
+    retry: false,
+  });
+
+  // The source's swap declaration, from ONE active read: a copied or an edited
+  // job its own copy source, a library file or an archive its live row. No OR
+  // across caches — a disabled query still hands back what another source left
+  // in the cache — and a read in flight or one that failed is unknown, never False.
+  // An archive answers for its SOURCE, the pair a future reprint reads — never the
+  // pair of the run it recorded (swap-source-declaration spec r3 §7).
+  const fromWire = (data: SwapFactWire | undefined, failed: boolean) => ({
+    fact: (failed ? 'unknown' : decodeSwapFact(data)) as SwapFact,
+    settled: failed || data !== undefined,
+  });
+  const swapRead: { fact: SwapFact; settled: boolean } = isSnapshotSource
+    ? fromWire(queueSourceProfile, queueSourceProfileError)
+    : editedJobId !== undefined
+      ? fromWire(editedJobSource, editedJobSourceError)
+      : isLibraryFile
+        ? fromWire(libraryFileDetails, libraryFileDetailsError)
+        : isArchiveSource
+          ? {
+              fact: archiveDetailsError ? 'unknown' : decodeSourceSwapFact(archiveDetails),
+              settled: archiveDetailsError || archiveDetails !== undefined,
+            }
+          : { fact: 'unknown', settled: true };
+  const swapFact: SwapFact = swapRead.fact;
+  const swapReadSettled = swapRead.settled;
+  // The source a declaration is made for, from the unknown notice: the live archive or library row being
+  // printed -- never a copied or edited job's own snapshot, which a declaration does not change.
+  const declarableSource: { kind: 'archive' | 'library'; id: number; owner: number | null | undefined } | null =
+    isSnapshotSource || editedJobId !== undefined
+      ? null
+      : isLibraryFile && libraryFileId
+        ? { kind: 'library', id: libraryFileId, owner: libraryFileDetails?.created_by_id }
+        : isArchiveSource && archiveId
+          ? { kind: 'archive', id: archiveId, owner: archiveDetails?.created_by_id }
+          : null;
+  const canDeclareSource =
+    declarableSource !== null &&
+    canModify(declarableSource.kind === 'archive' ? 'archives' : 'library', 'update', declarableSource.owner);
+  const [declaringSource, setDeclaringSource] = useState(false);
+  // "Print without the extra swap macros" — this job only. It is never written
+  // into the saved swap settings, the preference or the next dialog's carry.
+  const [swapOptOut, setSwapOptOut] = useState(false);
 
   // Fetch plates for archives
   const { data: archivePlatesData, isError: archivePlatesError } = useQuery({
@@ -2032,17 +2086,19 @@ export function PrintModal({
     const queuedByPlate = new Map<number, number>();
 
 
-    // Swap-macro payload is only meaningful on a swap-enabled printer AND
-    // when the source file doesn't already ship with swap macros baked in
-    // (swap_compatible → third-party tooling embedded them in the gcode).
-    // For anything else we emit (false, null) so stored state never implies
-    // macros will fire where they can't or would double-fire.
+    // The swap-macro payload is this job's EFFECTIVE request, apart from the
+    // operator's saved swap choices: only a source known not to carry its own
+    // sequence (False), on a swap-enabled printer, with our macros on and not
+    // opted out for this job. A True source, an unknown one (whose request the
+    // submit gate refuses before it gets here) and everything else emit
+    // (false, null), so stored state never implies macros will fire where they
+    // can't or would double-fire.
     const getSwapPayloadForPrinter = (printerId: number): {
       execute_swap_macros: boolean;
       swap_macro_events: string[] | null;
     } => {
       const printer = printers?.find(p => p.id === printerId);
-      if (swapCompatible || !printer?.swap_mode_enabled || !swapMacros.execute || swapMacros.events.length === 0) {
+      if (swapFact !== false || swapOptOut || !printer?.swap_mode_enabled || !swapMacros.execute || swapMacros.events.length === 0) {
         return { execute_swap_macros: false, swap_macro_events: null };
       }
       return { execute_swap_macros: true, swap_macro_events: swapMacros.events };
@@ -2262,6 +2318,8 @@ export function PrintModal({
 
     setIsSubmitting(false);
 
+    setClaimPrinters([...new Set(failures.flatMap(({ error }) =>
+      error instanceof ApiError && error.code === 'active_claim' && error.printerId ? [error.printerId] : []))]);
     // Show result toast (skip for reprint mode - the dispatch toast handles it)
     if (results.failed === 0) {
       // Persist saved-toggles preference once we know at least one submission
@@ -2411,9 +2469,20 @@ export function PrintModal({
         })
   );
 
+  // Our swap macros are requested for this job when a selected printer is in
+  // swap mode and they are on — the saved choice, untouched by the source's
+  // declaration. Over an unknown source that request is refused (D2) until the
+  // operator opts THIS job out; auto mode decides per printer at assignment.
+  const swapPrinterSelected = selectedPrinters.some((id) => printers?.find((p) => p.id === id)?.swap_mode_enabled);
+  const swapMacrosRequested = swapPrinterSelected && swapMacros.execute && swapMacros.events.length > 0;
+  const swapRequestBlocked = !isAutoMode && swapFact === 'unknown' && swapMacrosRequested && !swapOptOut;
+
   const canSubmit = useMemo(() => {
     if (isPending) return false;
     if (incompatibleModelSelection) return false;
+    // Our swap macros are requested over a source nobody declared (D2): refused,
+    // never guessed — until this job opts out of them.
+    if (swapRequestBlocked) return false;
     // The payload names only this queue row. Until its source profile has
     // arrived, or after it has refused, there is no safe substitute source.
     if (isSnapshotSource && (!queueSourceProfile || queueSourceProfileError)) return false;
@@ -2452,6 +2521,7 @@ export function PrintModal({
     perPlateReqsPending,
     perPlateReqsFailed,
     incompatibleModelSelection,
+    swapRequestBlocked,
   ]);
 
   // --- Self-submit for a grouped run ------------------------------------
@@ -2504,7 +2574,10 @@ export function PrintModal({
       // every member in the commit the printer list arrives.
       const printerWillNeverArrive =
         !isAutoMode && printersFetched && selectedPrinters.length === 0 && soleActivePrinterId === null;
-      if (reqsWillNeverAnswer || printerWillNeverArrive) {
+      // An unknown source with our swap macros requested waits for an answer
+      // only the operator can give — this job's opt-out.
+      const swapNeedsTheOperator = swapRequestBlocked && swapReadSettled;
+      if (reqsWillNeverAnswer || printerWillNeverArrive || swapNeedsTheOperator) {
         // Show ourselves: a dialog the operator can finish beats a blank page.
         setAutoSubmitRefused(true);
       }
@@ -2599,6 +2672,8 @@ export function PrintModal({
     verdictBlocks,
     feasibilityPending,
     feasibility.state,
+    swapRequestBlocked,
+    swapReadSettled,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -2992,7 +3067,7 @@ export function PrintModal({
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
                 modelMatrix={modelMatrix?.models}
-                swapCompatible={swapCompatible}
+                swapCompatible={swapFact === true}
               />
             )}
 
@@ -3089,9 +3164,28 @@ export function PrintModal({
               <PrintOptionsPanel options={printOptions} onChange={(o) => { touchedOptionsRef.current = true; setPrintOptions(o); }} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} autoCaps={autoCaps} timelapseBlockers={timelapseBlockers} selectedPrinterCount={selectedPrinters.length} timelapseLowSpace={timelapseLowSpace} canChooseTimelapseStorage={canChooseTimelapseStorage} onFreeTimelapseSpace={(id) => freeTimelapseSpace.mutate(id)} freeingTimelapseSpace={freeTimelapseSpace.isPending} />
             )}
 
-            {/* Swap-mode macros apply only to a known, selected printer. */}
-            {!isAutoMode && !swapCompatible && selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled) && (
+            {/* Swap-mode macros apply only to a known, selected printer, and only
+                over a source known not to carry its own sequence. */}
+            {!isAutoMode && swapFact === false && swapPrinterSelected && (
               <SwapMacrosPanel options={swapMacros} onChange={(o) => { touchedOptionsRef.current = true; setSwapMacros(o); }} />
+            )}
+            {!isAutoMode && swapFact === 'unknown' && swapReadSettled && swapPrinterSelected && (
+              <SwapSourceNotice
+                requested={swapMacrosRequested}
+                optedOut={swapOptOut}
+                onOptOut={() => setSwapOptOut(true)}
+                onUndo={() => setSwapOptOut(false)}
+                onDeclare={canDeclareSource ? () => setDeclaringSource(true) : undefined}
+              />
+            )}
+            {declaringSource && declarableSource && (
+              <SwapDeclarationModal
+                kind={declarableSource.kind}
+                id={declarableSource.id}
+                name={archiveName}
+                canDeclare={canDeclareSource}
+                onClose={() => setDeclaringSource(false)}
+              />
             )}
 
             {/* Event macros also come from the selected printer model's profile
@@ -3192,6 +3286,9 @@ export function PrintModal({
             )}
 
             {/* Error message */}
+            {hasPermission('system:read') && hasPermission('printers:read') && hasPermission('queue:read_all') && hasPermission('archives:read_all') &&
+              claimPrinters.map(printerId => <a key={printerId} className="block mb-3 text-sm text-bambu-green underline"
+                href={`/system?printer_id=${printerId}#print-state`}>{t('printStateRecovery.openForPrinter', { printer: printerId })}</a>)}
             {updateQueueMutation.isError && (
               <div className="mb-4 p-3 bg-red-100 dark:bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
                 {(updateQueueMutation.error as Error)?.message || t('printModal.failedToComplete')}

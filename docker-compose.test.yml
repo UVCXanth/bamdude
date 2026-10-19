@@ -28,6 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - STEP_PREVIEW_CANDIDATE
     container_name: bamdude-integration-test
     ports:
       - "8001:8000"
@@ -56,7 +58,8 @@ services:
     environment:
       - BAMDUDE_TEST_URL=http://integration:8000
       - TESTING=1
-    command: ["pytest", "backend/tests/integration/", "-v", "--tb=short", "-p", "no:cacheprovider", "-n", "auto"]
+    # Match Backend Tests in CI: auto selects only two workers on the hosted runner.
+    command: ["pytest", "backend/tests/integration/", "-v", "--tb=short", "-p", "no:cacheprovider", "-n", "4"]
     volumes:
       - ./backend:/app/backend:ro
 

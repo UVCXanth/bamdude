@@ -235,14 +235,12 @@ export function requestFrom(draft: Draft): FulfilmentLineBody[] {
         issue: p.issue,
         ...(p.writeOff > 0 ? { write_off: p.writeOff } : {}),
       }));
-    if (parts.length > 0) {
-      out.push({ line_id: lineId, parts });
-    } else if (d.assemble > 0 || d.receive > 0 || d.issue > 0 || d.writeOff > 0) {
+    const units = d.assemble > 0 || d.receive > 0 || d.issue > 0 || d.writeOff > 0;
+    if (parts.length > 0 || units) {
       out.push({
         line_id: lineId,
-        assemble: d.assemble,
-        receive: d.receive,
-        issue: d.issue,
+        ...(units ? { assemble: d.assemble, receive: d.receive, issue: d.issue } : {}),
+        ...(parts.length > 0 ? { parts } : {}),
         ...(d.writeOff > 0 ? { write_off: d.writeOff } : {}),
       });
     }
@@ -275,18 +273,17 @@ export function writingOff(draft: Draft): number {
 export function completesOrder(state: FulfilmentState, draft: Draft): boolean {
   return state.lines.every((line) => {
     const d = draft[line.line_id];
-    if (line.mode === 'parts') {
-      return line.parts.every((part) => {
-        const p = d?.parts[part.part_id];
-        if (state.closes_to_stock) {
-          return part.issued + part.held + (p?.receive ?? 0) - (p?.writeOff ?? 0) >= part.wanted;
-        }
-        return part.issued + (p?.issue ?? 0) >= part.wanted;
-      });
-    }
+    const partsDone = line.parts.every((part) => {
+      const p = d?.parts[part.part_id];
+      if (state.closes_to_stock) {
+        return part.issued + part.held + (p?.receive ?? 0) - (p?.writeOff ?? 0) >= part.wanted;
+      }
+      return part.issued + (p?.issue ?? 0) >= part.wanted;
+    });
+    if (line.mode === 'parts') return partsDone;
     if (state.closes_to_stock) {
-      return line.issued + line.held + (d?.assemble ?? 0) + (d?.receive ?? 0) - (d?.writeOff ?? 0) >= line.ordered;
+      return partsDone && line.issued + line.held + (d?.assemble ?? 0) + (d?.receive ?? 0) - (d?.writeOff ?? 0) >= line.ordered;
     }
-    return line.issued + (d?.issue ?? 0) >= line.ordered;
+    return partsDone && line.issued + (d?.issue ?? 0) >= line.ordered;
   });
 }

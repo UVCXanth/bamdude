@@ -1,0 +1,79 @@
+name: Part render acceptance
+
+# Spec part-thumbnails §15, plan E7 D4: macOS under launchd. An acceptance proof run on request -- before a release
+# that changes the Node pin or its provisioning, the installer or the service setup, permissions, or the worker's
+# process lifecycle -- not a regression gate on every push.
+on:
+  # GitHub dispatches only a workflow present on the default branch: until a release carries this file to main,
+  # a run needs a temporary push trigger of its own (E7 did exactly that, then removed it).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launchd:
+    name: Part render under launchd (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Match an ABI with published dependencies; the runner's default Python may be newer than the CAD matrix.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install BamDude as a launchd service
+        run: bash install/install.sh --path "$HOME/bamdude" --port 8000 --yes --branch "$GITHUB_REF_NAME"
+
+      - name: The installation is this run's revision
+        run: |
+          installed=$(git -C "$HOME/bamdude" rev-parse HEAD)
+          echo "intended $GITHUB_SHA, installed $installed" | tee provenance.txt
+          test "$installed" = "$GITHUB_SHA"
+
+      - name: The service runs under launchd
+        run: |
+          # launchd lists the agent before it has a pid ("-"): wait for the process, not for the listing
+          for _ in $(seq 1 30); do
+            pid=$(launchctl list | awk '/com.bamdude.app/ {print $1}')
+            [ -n "$pid" ] && [ "$pid" != "-" ] && break
+            sleep 2
+          done
+          launchctl list | grep com.bamdude.app
+          ps -o pid,ppid,user,command -p "$pid" | tee service-process.txt
+          test "$(ps -o ppid= -p "$pid" | tr -d ' ')" = "1"
+
+      - name: Build the fixture and its expectations in the installation
+        run: |
+          cd "$HOME/bamdude"
+          mkdir -p acceptance
+          venv/bin/python - <<'EOF'
+          import json
+          from pathlib import Path
+          from backend.tests.fixtures.part_render_3mf import gcode, write_3mf
+          write_3mf(Path("acceptance/fixture.gcode.3mf"), {1: gcode("two-objects")}, objects={1: {101: "A", 202: "B"}})
+          Path("acceptance/expect.json").write_text(json.dumps(
+              {"files": [{"path": "fixture.gcode.3mf", "parts": ["A", "B"], "methods": ["toolpath"]}]}))
+          EOF
+
+      - name: Accept through the service, from the installation's own source, Node and bundle
+        run: |
+          cd "$HOME/bamdude"
+          venv/bin/python -m backend.app.part_render_acceptance --base-url http://127.0.0.1:8000 \
+            --expect acceptance/expect.json --install-root "$HOME/bamdude" --expected-sha "$GITHUB_SHA" \
+            --measure backend/app/data/render_probe/two-objects.gcode \
+            --log logs/bamdude.log --report "$GITHUB_WORKSPACE/acceptance-macos.json"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: part-render-acceptance-macos
+          path: |
+            acceptance-macos.json
+            acceptance-macos.measure.json
+            provenance.txt
+            service-process.txt
+            ~/bamdude/logs/bamdude.log

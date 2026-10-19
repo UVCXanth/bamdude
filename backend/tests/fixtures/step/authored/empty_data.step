@@ -1,0 +1,10 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('BamDude stage-0 fixture'),'2;1');
+FILE_NAME('empty','2026-10-16T00:00:00',('BamDude'),('BamDude'),'p21.py','p21.py','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+
+ENDSEC;
+END-ISO-10303-21;

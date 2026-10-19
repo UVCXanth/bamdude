@@ -109,6 +109,12 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps the line quantity free of the duplicate calculator action', () => {
+    render(<OrderLinesTable order={order} canEdit />);
+    const row = screen.getByTestId('line-10-quantity').closest('td')!;
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('renders lines in sort order with six columns, the menu one named only for a screen reader', () => {
     render(<OrderLinesTable order={order} canEdit />);
     const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('data-line'));
@@ -390,4 +396,27 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     expect(await screen.findByRole('dialog', { name: 'Add to order' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Order')).not.toBeInTheDocument();
   });
+  it('delegates whole-order and exact-line shortcuts without requiring line-edit permission', async () => {
+    const queue = vi.fn();
+    const synthetic = makeOrder({ lines: [
+      makeLine({ id: 41, product_id: 7, product_name: 'Product A', sort_order: 0 }),
+      makeLine({ id: 42, product_id: 7, product_name: 'Product A', sort_order: 1 }),
+    ] });
+    render(<OrderLinesTable order={synthetic} canEdit={false} onQueuePlan={queue} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Whole order to auto queue…' }));
+    expect(queue).toHaveBeenLastCalledWith();
+    const row = document.querySelector('[data-line="42"]')!;
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Line actions: Product A' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: 'Edit line…' })).not.toBeInTheDocument();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'This line’s plan to auto queue…' }));
+    expect(queue).toHaveBeenLastCalledWith(42);
+  });
+
+  it('offers no queue shortcuts on a closed order', () => {
+    render(<OrderLinesTable order={makeOrder({ status: 'completed' })} canEdit={false} onQueuePlan={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Whole order to auto queue…' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Line actions:/ })).not.toBeInTheDocument();
+  });
+
 });

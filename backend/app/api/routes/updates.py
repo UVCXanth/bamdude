@@ -1,12 +1,14 @@
 """Update checking and management routes."""
 
 import asyncio
+import json
 import logging
 import os
 import re
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -14,12 +16,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import install_kind
 from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, GITHUB_REPO, settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.services import render_runtime_child
 
 logger = logging.getLogger(__name__)
 
@@ -88,23 +92,8 @@ def _is_github_rate_limit_response(response: httpx.Response) -> bool:
 
 
 def _is_docker_environment() -> bool:
-    """Detect if running inside a Docker/Podman/OCI container."""
-    if os.path.exists("/.dockerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup") as f:
-            if "docker" in f.read():
-                return True
-    except (FileNotFoundError, PermissionError):
-        pass  # cgroup file unavailable; continue with other detection methods
-    # Check systemd container type (avoids false positive on Proxmox LXC)
-    try:
-        with open("/run/systemd/container") as f:
-            container_type = f.read().strip()
-            return container_type in ("docker", "podman", "oci")
-    except (FileNotFoundError, PermissionError):
-        pass
-    return False
+    """Detect if running inside a Docker/Podman/OCI container (core.install_kind)."""
+    return install_kind.is_docker_environment()
 
 
 # Mount points the shipped compose file gives BamDude. ⚠️ Only these are
@@ -192,22 +181,9 @@ def _is_ha_addon() -> bool:
 
 
 def _is_windows_installer_install() -> bool:
-    """Detect a Windows install that came from the Inno Setup installer (B1).
-
-    ``installers/windows/build.py::stage_backend`` stages backend source via
-    ``shutil.copytree`` (no ``.git`` directory) and does not bundle
-    ``git.exe`` — so the git-fetch-and-reset update path used everywhere else
-    is structurally inoperable here. We surface this as a distinct
-    ``update_method`` and direct the user at the release asset instead.
-
-    A Windows developer running from a real ``git clone`` keeps the git path
-    (``.git`` present at ``settings.app_dir``, which is
-    ``C:\\Program Files\\BamDude\\app`` on an installed instance), so this
-    only catches installer users.
-    """
-    if sys.platform != "win32":
-        return False
-    return not (settings.app_dir / ".git").exists()
+    """A Windows install from the Inno Setup installer (core.install_kind): no .git, no git.exe -- the git update
+    path cannot run there (B1)."""
+    return install_kind.is_windows_installer_install(settings.app_dir)
 
 
 def _find_windows_installer_asset(release_data: dict) -> str | None:
@@ -592,6 +568,65 @@ async def check_for_updates(
         }
 
 
+async def _provision_render_runtime(app_dir: Path) -> None:
+    """The pinned Node.js for part thumbnails, as update.sh installs it (spec §6).
+
+    Runs the CHECKED-OUT module in a child process: this process still holds the
+    old code and the old pin. An unchanged pin returns at once without the
+    network. Never fails the update -- a missing runtime is a missing feature,
+    reported on the System page as ``runtime_missing``. The runner logs the start, one outcome with its elapsed
+    time and a bounded reason without the installation's path (the parent-log invariant).
+    """
+    await render_runtime_child.run_provision(app_dir, trigger="update", timeout=render_runtime_child.PROVISION_SECONDS)
+
+
+def _step_preview_command(app_dir: Path) -> list[str]:
+    return [sys.executable, "-m", "backend.app.step_runtime", "install", "--if-enabled", "--app-dir", str(app_dir)]
+
+
+def _step_preview_code(run) -> str:
+    """The helper's closed answer as one code — its reason, never its ``detail`` (which may name a path)."""
+    if run.outcome not in ("ok", "failed"):
+        return run.outcome  # timeout / unproven / helper_unproven
+    for line in reversed((run.stdout_tail or "").strip().splitlines()):
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(answer, dict):
+            if answer.get("ok") is True:
+                return "skipped" if answer.get("skipped") else "ok"
+            reason = answer.get("reason")
+            return reason if isinstance(reason, str) and reason else "failed"
+    return "ok" if run.outcome == "ok" else "failed"
+
+
+async def _provision_step_preview(app_dir: Path) -> str:
+    """The STEP component, as update.sh keeps it (spec stage C R4): only for an install whose administrator enabled
+    it, with the CHECKED-OUT helper, as an owned tree under the update's budget policy. No system packages (there is
+    no root here) and no prune (the service is live): a new bundle serves the next STEP attempt. Never fails the
+    update — the closed code goes into the final status and the log."""
+    from backend.app import step_runtime
+    from backend.app.services import step_runtime_child
+
+    try:
+        run = await step_runtime_child.run_owned(
+            _step_preview_command(app_dir),
+            owner_root=step_runtime.bundle_root(app_dir) / ".owner",
+            timeout=step_runtime.INSTALL_DEADLINE_SECONDS,
+            cwd=app_dir,
+            label="STEP component update",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("STEP component update could not run (%s)", type(exc).__name__)
+        return "failed"
+    code = _step_preview_code(run)
+    logger.info("STEP component update: %s", code)
+    return code
+
+
 async def _perform_update(target_ref: str):
     """Perform the actual update by checking out a specific git tag.
 
@@ -780,6 +815,22 @@ async def _perform_update(target_ref: str):
         if process.returncode != 0:
             logger.warning("pip install warning: %s", stderr.decode() if stderr else "unknown")
 
+        _update_status = {
+            "status": "installing",
+            "progress": 60,
+            "message": "Updating the part-render runtime...",
+            "error": None,
+        }
+        await _provision_render_runtime(app_dir)
+
+        _update_status = {
+            "status": "installing",
+            "progress": 65,
+            "message": "Updating the STEP component...",
+            "error": None,
+        }
+        step_preview = await _provision_step_preview(app_dir)
+
         # Try to build frontend if npm is available (optional - static files are pre-built)
         npm_path = _find_executable("npm")
         frontend_dir = app_dir / "frontend"
@@ -823,6 +874,7 @@ async def _perform_update(target_ref: str):
             "progress": 100,
             "message": "Update complete! Please restart the application.",
             "error": None,
+            "step_preview": step_preview,  # its own field: the message above is overwritten at each step
         }
 
         logger.info("Update completed successfully")

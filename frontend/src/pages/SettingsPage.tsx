@@ -73,7 +73,9 @@ import { PrinterLocationsCard } from '../components/settings/PrinterLocationsCar
 import { PrinterTagsCard } from '../components/settings/PrinterTagsCard';
 import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
+import { StepPreviewUpdateNote } from '../components/StepPreviewUpdateNote';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
+import { invalidateOrderViews, invalidateQueueViews } from '../utils/queryInvalidation';
 import { summarizePlugEnergy } from '../utils/plugEnergySummary';
 
 const validTabs = ['general', 'slicing', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
@@ -129,6 +131,7 @@ const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   virtual_printer_other: 'bg-purple-700',
   downloads: 'bg-cyan-500',
   attachments: 'bg-rose-500',
+  part_renders: 'bg-indigo-500',
   plate_calibration: 'bg-lime-500',
   logs: 'bg-orange-500',
   other_data: 'bg-yellow-500',
@@ -1154,6 +1157,18 @@ export function SettingsPage() {
   const updateMutation = useMutation({
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
+      const previous = serverBaselineRef.current;
+      if (previous && (
+        previous.forecast_operator_absence_enabled !== data.forecast_operator_absence_enabled ||
+        previous.forecast_operator_absence_start !== data.forecast_operator_absence_start ||
+        previous.forecast_operator_absence_end !== data.forecast_operator_absence_end ||
+        previous.forecast_operator_timezone !== data.forecast_operator_timezone
+      )) {
+        // The calendar changes both fleet recipe selection and its ETA. Mark
+        // inactive order/queue views stale too, so returning needs no reload.
+        invalidateOrderViews(queryClient);
+        invalidateQueueViews(queryClient);
+      }
       // #2716: the row we just saved becomes the snapshot to diff against. The
       // setQueryData below would normally let the reconcile effect do this, but
       // only if react-query hands back a new object — setting it here means the
@@ -1300,6 +1315,10 @@ export function SettingsPage() {
       (baseline.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
       (baseline.forecast_upload_seconds ?? 120) !== (localSettings.forecast_upload_seconds ?? 120) ||
       (baseline.forecast_plate_clear_minutes ?? 10) !== (localSettings.forecast_plate_clear_minutes ?? 10) ||
+      (baseline.forecast_operator_absence_enabled ?? false) !== (localSettings.forecast_operator_absence_enabled ?? false) ||
+      (baseline.forecast_operator_absence_start ?? '23:00') !== (localSettings.forecast_operator_absence_start ?? '23:00') ||
+      (baseline.forecast_operator_absence_end ?? '08:00') !== (localSettings.forecast_operator_absence_end ?? '08:00') ||
+      baseline.forecast_operator_timezone !== localSettings.forecast_operator_timezone ||
       (baseline.stagger_split_by_tags ?? false) !== (localSettings.stagger_split_by_tags ?? false) ||
       (baseline.stagger_group_tag_ids ?? '[]') !== (localSettings.stagger_group_tag_ids ?? '[]') ||
       (baseline.stagger_tag_limits ?? '{}') !== (localSettings.stagger_tag_limits ?? '{}') ||
@@ -1428,6 +1447,10 @@ export function SettingsPage() {
         stagger_location_limits: localSettings.stagger_location_limits,
         forecast_upload_seconds: localSettings.forecast_upload_seconds,
         forecast_plate_clear_minutes: localSettings.forecast_plate_clear_minutes,
+        forecast_operator_absence_enabled: localSettings.forecast_operator_absence_enabled,
+        forecast_operator_absence_start: localSettings.forecast_operator_absence_start,
+        forecast_operator_absence_end: localSettings.forecast_operator_absence_end,
+        forecast_operator_timezone: localSettings.forecast_operator_timezone,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
         preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
@@ -2536,9 +2559,12 @@ export function SettingsPage() {
                         </div>
                       </div>
                     ) : updateStatus?.status === 'complete' ? (
-                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
-                        {updateStatus.message}
-                      </div>
+                      <>
+                        <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
+                          {updateStatus.message}
+                        </div>
+                        <StepPreviewUpdateNote code={updateStatus.step_preview} />
+                      </>
                     ) : updateStatus?.status === 'error' ? (
                       <div className="mt-3 p-2 bg-red-100 dark:bg-red-500/20 rounded text-sm text-red-700 dark:text-red-400">
                         {updateStatus.error || updateStatus.message}
@@ -3908,6 +3934,32 @@ export function SettingsPage() {
                     className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-3 border-t border-bambu-dark-tertiary pt-4">
+                <label className="flex items-center gap-2 text-sm text-white">
+                  <input type="checkbox" checked={localSettings.forecast_operator_absence_enabled ?? false}
+                    onChange={(e) => updateSetting('forecast_operator_absence_enabled', e.target.checked)} />
+                  {t('settings.operatorAbsenceTitle')}
+                </label>
+                <p className="text-xs text-bambu-gray">{t('settings.operatorAbsenceDescription')}</p>
+                <fieldset disabled={!localSettings.forecast_operator_absence_enabled} className="grid grid-cols-1 sm:grid-cols-3 gap-3 disabled:opacity-60">
+                  <label className="text-sm text-white">{t('settings.operatorAbsenceStart')}
+                    <input type="time" value={localSettings.forecast_operator_absence_start ?? '23:00'}
+                      onChange={(e) => updateSetting('forecast_operator_absence_start', e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white" />
+                  </label>
+                  <label className="text-sm text-white">{t('settings.operatorAbsenceEnd')}
+                    <input type="time" value={localSettings.forecast_operator_absence_end ?? '08:00'}
+                      onChange={(e) => updateSetting('forecast_operator_absence_end', e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white" />
+                  </label>
+                  <label className="text-sm text-white">{t('settings.operatorTimezone')}
+                    <input type="text" value={localSettings.forecast_operator_timezone ?? 'UTC'} placeholder="Europe/Kyiv"
+                      onChange={(e) => updateSetting('forecast_operator_timezone', e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white" />
+                  </label>
+                </fieldset>
               </div>
 
               {/* Auto-queue routing (SJF) */}

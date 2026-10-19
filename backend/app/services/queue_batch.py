@@ -36,6 +36,7 @@ from backend.app.services.queue_source_capture import (
     discard_staged,
     plan_capture,
     publish_staged,
+    swap_request,
 )
 from backend.app.services.queue_sources import CaptureRequest
 
@@ -222,7 +223,28 @@ async def claim_printer_for_direct_print(
                     session, project_id=project_id, library_file_id=library_file_id, plate_index=columns.get("plate_id")
                 )
 
+            from backend.app.services.order_auto_eject import (
+                archive_mode,
+                archive_settings,
+                capture,
+            )
+
+            prior = await session.get(PrintArchive, archive_id) if archive_id else None
+            eject, eject_settings = (
+                await capture(
+                    session,
+                    project_id=project_id,
+                    options=columns,
+                    inherited=archive_mode(prior),
+                    inherited_settings=archive_settings(prior),
+                    preserve=bool(prior),
+                )
+                if origin == "direct"
+                else (False, None)
+            )
             item = PrintQueueItem(
+                auto_eject=eject,
+                auto_eject_settings=eject_settings,
                 filament_routing=record_queue_source(routing, source),
                 queue_id=queue.id,
                 position=0,
@@ -276,6 +298,8 @@ async def enqueue_batch_copies(
     nozzle_rack_choice: dict[int, int] | None = None,
     bed_levelling: str | bool = True,
     flow_cali: str | bool = True,
+    preheat_override: str = "inherit",
+    preheat_chamber_target_override: int | None = None,
     layer_inspect: bool = False,
     timelapse: bool = False,
     timelapse_storage: str | None = None,
@@ -323,6 +347,10 @@ async def enqueue_batch_copies(
     # load on an async session the day somebody builds one with
     # ``expire_on_commit=True``.
     queue_id = queue.id
+    from backend.app.models.printer import Printer
+
+    printer_row = await db.get(Printer, printer_id)
+    printer_swap_on = bool(printer_row is not None and printer_row.swap_mode_enabled)
 
     # ⚠️ ONE capture for every copy in the batch (spec §5's fan-out rule, A01) —
     # never one per copy — taken with no transaction open, because the copy can
@@ -360,6 +388,16 @@ async def enqueue_batch_copies(
                 "manual_mapping": manual_mapping,
             },
         )
+        # Every copy's swap fields, from the declaration the CAPTURE confirmed -- the
+        # caller's look at the row before the copy was a preview (swap-source-lifecycle
+        # spec r4 §8). A refusal here discards the staging; no copy is written.
+        execute_swap_macros, swap_events = swap_request(
+            staged.receipt.swap_fact.value,
+            execute=execute_swap_macros,
+            events=swap_macro_events,
+            printer_swap_mode=printer_swap_on,
+        )
+        swap_macro_events = swap_events
         if batch_id is None:
             batch_id = str(uuid.uuid4())
         # Tri-state calibration → canonical mode string (accepts legacy bool from
@@ -400,12 +438,33 @@ async def enqueue_batch_copies(
 
                 # Hoisted for the same reason as ``queue_add`` (review m5): one intent
                 # for every copy, parsed once.
+                from backend.app.services.order_auto_eject import (
+                    archive_mode,
+                    archive_settings,
+                    capture,
+                )
+
+                prior = await session.get(PrintArchive, archive_id) if archive_id else None
+                eject, eject_settings = await capture(
+                    session,
+                    project_id=project_id,
+                    options={
+                        "execute_swap_macros": execute_swap_macros,
+                        "selected_macro_ids": selected_macro_ids_json,
+                        "gcode_injection": gcode_injection,
+                    },
+                    inherited=archive_mode(prior),
+                    inherited_settings=archive_settings(prior),
+                    preserve=bool(prior),
+                )
                 stamped_routing = record_queue_source(routing, source)
                 items: list[PrintQueueItem] = []
                 for i in range(count):
                     items.append(
                         PrintQueueItem(
                             queue_source_id=source.id,
+                            auto_eject=eject,
+                            auto_eject_settings=eject_settings,
                             source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                             queue_id=queue_id,
                             archive_id=archive_id,
@@ -418,6 +477,8 @@ async def enqueue_batch_copies(
                             bed_levelling_mode=bed_mode,
                             flow_cali=flow_mode == "on",
                             flow_cali_mode=flow_mode,
+                            preheat_override=preheat_override,
+                            preheat_chamber_target_override=preheat_chamber_target_override,
                             layer_inspect=layer_inspect,
                             timelapse=timelapse,
                             timelapse_storage=timelapse_storage,

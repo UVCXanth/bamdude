@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 _COMPUTE_SECONDS = 180
 _TRANSFER_SECONDS = 60
 _HARD_SECONDS = 240
+# Bootstrap does disk-backed JetStream administration, not a worker control RPC.
+_BOOTSTRAP_SECONDS = 30
+_BOOTSTRAP_REQUEST_SECONDS = 10
+_BOOTSTRAP_ATTEMPTS = 3
+_BOOTSTRAP_RETRY_SECONDS = 0.5
 
 
 class AnalysisRuntime:
@@ -36,6 +41,8 @@ class AnalysisRuntime:
         self.active_task = None
         self.interrupted_task = None
         self.nc = self.store = self.service = self.monitor = None
+        self.startup = self._stop_task = None
+        self._startup_phase = "not_started"
         self.ready = self.closed = self.uncertain = False
         self.reason = "not_started"
         self._last_staging_issue = None
@@ -61,10 +68,23 @@ class AnalysisRuntime:
         }
 
     async def start(self):
-        import nats
-        from nats.js.api import ObjectStoreConfig
+        if self.closed:
+            return
+        if self.startup is None:
+            self.startup = asyncio.create_task(self._start(), name="analysis-service-startup")
+        try:
+            await asyncio.shield(self.startup)
+        except asyncio.CancelledError:
+            await owned(self.stop())
+            raise
+        if not self.ready and self.monitor is None:
+            await self.stop()
 
+    async def _start(self):
         self.reason = "starting"
+        started = time.monotonic()
+        self._startup_phase = "staging"
+        logger.info("3MF analysis startup: generation=%s", self.generation)
         try:
             if self.broker is None:
                 raise RuntimeError("local broker unavailable")
@@ -73,29 +93,32 @@ class AnalysisRuntime:
             await disk((self.staging / "main").mkdir)
             await disk((self.staging / "service").mkdir)
             await disk(self._report_retained_staging)
-            self.nc = await nats.connect(
-                self.broker.url,
-                token=self.broker.token,
-                allow_reconnect=False,
-                connect_timeout=CONTROL_SECONDS,
-                closed_cb=self.disconnected,
-            )
-            js = self.nc.jetstream(timeout=CONTROL_SECONDS)
-            for stream in await js.streams_info():
-                if stream.config.name.startswith("OBJ_bamdude_analysis_"):
-                    await js.delete_stream(stream.config.name)
-            self.store = await js.create_object_store(
-                bucket=self.bucket,
-                config=ObjectStoreConfig(bucket=self.bucket, max_bytes=BUCKET_BYTES, ttl=TTL_SECONDS, storage="file"),
-            )
+            async with asyncio.timeout(_BOOTSTRAP_SECONDS):
+                await self._bootstrap_transport()
+            self._startup_phase = "worker_ready"
             await self.launch()
+            logger.info(
+                "3MF analysis startup_ready: generation=%s elapsed_ms=%.1f",
+                self.generation,
+                (time.monotonic() - started) * 1000,
+            )
             self.monitor = asyncio.create_task(self._monitor(), name="analysis-service-monitor")
+        except asyncio.CancelledError:
+            logger.info(
+                "3MF analysis startup_canceled: generation=%s phase=%s elapsed_ms=%.1f",
+                self.generation,
+                self._startup_phase,
+                (time.monotonic() - started) * 1000,
+            )
+            raise
         except Exception as exc:
             self.reason = "startup_failed"
             logger.warning(
-                "3MF analysis service unavailable: %s service_tail=%s",
+                "3MF analysis service unavailable: generation=%s phase=%s error=%s elapsed_ms=%.1f",
+                self.generation,
+                self._startup_phase,
                 type(exc).__name__,
-                bytes(self.service.tail[-2048:]).decode("utf-8", "replace") if self.service else "",
+                (time.monotonic() - started) * 1000,
             )
             if self.nc and self.nc.is_connected and self.store is not None:
                 # A transient service/child startup failure must not make the
@@ -106,8 +129,81 @@ class AnalysisRuntime:
                     pass
                 if not self.uncertain:
                     self.monitor = asyncio.create_task(self._monitor(), name="analysis-service-monitor")
-            else:
-                await self.stop()
+
+    async def _bootstrap_transport(self):
+        from nats.aio.client import Client
+        from nats.errors import ConnectionClosedError, NoRespondersError, NoServersError, StaleConnectionError
+        from nats.js.api import ObjectStoreConfig
+        from nats.js.errors import ServiceUnavailableError
+
+        for attempt in range(1, _BOOTSTRAP_ATTEMPTS + 1):
+            started = time.monotonic()
+            # Retain the client BEFORE connect: shutdown also owns a connection
+            # whose handshake has not returned yet.
+            client = self.nc = Client()
+
+            async def disconnected(client=client):
+                if self.nc is client:
+                    await self.disconnected()
+
+            async def error(exc):
+                logger.debug("3MF analysis transport error: error=%s", type(exc).__name__)
+
+            try:
+                self._startup_phase = "connect"
+                await client.connect(
+                    self.broker.url,
+                    token=self.broker.token,
+                    allow_reconnect=False,
+                    connect_timeout=_BOOTSTRAP_REQUEST_SECONDS,
+                    closed_cb=disconnected,
+                    error_cb=error,
+                )
+                js = client.jetstream(timeout=_BOOTSTRAP_REQUEST_SECONDS)
+                self._startup_phase = "stream_list"
+                for stream in await js.streams_info():
+                    if stream.config.name.startswith("OBJ_bamdude_analysis_"):
+                        self._startup_phase = "stream_delete"
+                        await js.delete_stream(stream.config.name)
+                self._startup_phase = "store_create"
+                # A timed-out CREATE may already have succeeded. Before any
+                # worker/admission exists, the next attempt sweeps our namespace
+                # again and recreates this SAME bucket, never another consumer's.
+                self.store = await js.create_object_store(
+                    bucket=self.bucket,
+                    config=ObjectStoreConfig(
+                        bucket=self.bucket, max_bytes=BUCKET_BYTES, ttl=TTL_SECONDS, storage="file"
+                    ),
+                )
+                return
+            except (
+                OSError,
+                TimeoutError,
+                ConnectionClosedError,
+                NoRespondersError,
+                ServiceUnavailableError,
+                NoServersError,
+                StaleConnectionError,
+            ) as exc:
+                await self._close_transport()
+                if attempt == _BOOTSTRAP_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "3MF analysis startup_retry: generation=%s attempt=%d phase=%s error=%s elapsed_ms=%.1f",
+                    self.generation,
+                    attempt,
+                    self._startup_phase,
+                    type(exc).__name__,
+                    (time.monotonic() - started) * 1000,
+                )
+                await asyncio.sleep(_BOOTSTRAP_RETRY_SECONDS * attempt)
+
+    async def _close_transport(self):
+        # Detach first: the intentional close callback is not a broker failure.
+        client, self.nc = self.nc, None
+        self.store = None
+        if client is not None:
+            await owned(client.close())
 
     def _report_retained_staging(self):
         empty = 0
@@ -215,6 +311,8 @@ class AnalysisRuntime:
         raise PreviewError("unavailable")
 
     async def disconnected(self):
+        if self.closed:
+            return
         self.ready = False
         self.reason = "broker_disconnected"
         if self.active_task and self.interrupted_task is not self.active_task:
@@ -411,8 +509,18 @@ class AnalysisRuntime:
                     self.active_task = None
 
     async def stop(self):
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(), name="analysis-service-stop")
+        await owned(self._stop_task)
+
+    async def _stop(self):
         self.closed = True
         self.ready = False
+        if self.reason in (None, "starting", "worker_restarting"):
+            self.reason = "stopped"
+        if self.startup and not self.startup.done():
+            self.startup.cancel()
+            await asyncio.gather(self.startup, return_exceptions=True)
         if self.monitor:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
@@ -423,8 +531,7 @@ class AnalysisRuntime:
             await self.retire()
         except Exception:
             logger.exception("3MF analysis worker ownership uncertain; staging retained")
-        if self.nc:
-            await self.nc.close()
+        await self._close_transport()
         if not self.uncertain and hasattr(self, "staging") and not self.slot.locked():
             self._cleanup_result(await disk(cleanup_owned, self.staging), "generation")
 

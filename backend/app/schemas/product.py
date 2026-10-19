@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from backend.app.schemas.farm_forecast import EstimateReasonOut
+from backend.app.schemas.part_image import ImageChoice, InstanceImageRef, PartImageRef
 from backend.app.schemas.project import validate_http_url
 
 
@@ -148,6 +149,7 @@ class ProductPartCreate(BaseModel):
     kind: str = Field(pattern="^(printed|purchased)$")
     name: str = Field(min_length=1, max_length=512)
     qty_per_unit: int = Field(default=1, ge=0)
+    extra_percent: float = Field(default=0, ge=0, le=1000, allow_inf_nan=False, strict=True)
     #: «Не рахувати» (spec workshop-order-issue-followups, rule 34) — only with a zero.
     ignored: bool = False
     unit_price: float | None = None
@@ -174,6 +176,7 @@ class ProductPartCreate(BaseModel):
 class ProductPartUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=512)
     qty_per_unit: int | None = Field(default=None, ge=0)
+    extra_percent: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False, strict=True)
     unit_price: float | None = None
     sourcing_url: str | None = Field(default=None, max_length=512)
     remarks: str | None = None
@@ -194,7 +197,7 @@ class ProductPartUpdate(BaseModel):
     def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("qty_per_unit", "sort_order", "ignored")
+    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent")
     @classmethod
     def _number_is_never_null(cls, v: int | None) -> int | None:
         return _never_null(v, "value")
@@ -219,6 +222,7 @@ class ProductPartResponse(BaseModel):
     name: str
     name_key: str
     qty_per_unit: int
+    extra_percent: float = 0
     aliases: list[str] = []
     auto: bool = False
     unit_price: float | None = None
@@ -234,6 +238,11 @@ class ProductPartResponse(BaseModel):
     # balance to have and reads 0 for good.
     # Null for a caller without stock:read (WS-13 E13 O12).
     stock_balance: int | None = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
+    #: The editor's state (spec §10.4) -- only on the editor's routes.
+    image_choice: ImageChoice | None = None
 
     @field_validator("aliases", mode="before")
     @classmethod
@@ -251,11 +260,18 @@ class PlateYieldEntry(BaseModel):
     part_id: int
     name: str
     count: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class PlateUnassignedEntry(BaseModel):
     name_key: str
     count: int
+    #: The smallest id of the name on this plate; ``None`` when the file names its objects without
+    #: ids (plan E4, D2). Its picture is that object's.
+    identify_id: int | None = None
+    image: InstanceImageRef | None = None
 
 
 class PlateRecipeResponse(BaseModel):
@@ -787,6 +803,9 @@ class StockBalanceOut(BaseModel):
     held_for_orders: int | None = None
     #: WS-13 E1 ST4 — the option the part is bound to, when it is.
     variant: ProductPartVariantOut | None = None
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class KitsByOptionOut(BaseModel):
@@ -835,6 +854,9 @@ class StockMovementOut(BaseModel):
     note: str | None = None
     created_by: int | None = None
     created_at: datetime
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class ProductStockOut(BaseModel):

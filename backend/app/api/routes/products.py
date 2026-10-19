@@ -135,6 +135,7 @@ from backend.app.services import (
     finished_stock,
     finished_stock_views,
     line_config,
+    part_images,
     part_stock,
     plan_engine,
     product_delete,
@@ -155,7 +156,7 @@ from backend.app.services.list_paging import (
     slice_page,
     sort_computed,
 )
-from backend.app.services.part_names import canonicalize, name_key
+from backend.app.services.part_names import canonicalize, name_key, tally_objects
 from backend.app.services.product_card import (
     export_zip,
     fill_from_file,
@@ -174,6 +175,7 @@ from backend.app.services.product_composition import (
     estimate_seconds,
     merge_parts,
     part_sources,
+    plate_objects,
     purchased_name_key,
     recipes_for_product,
     recipes_for_products,
@@ -1115,6 +1117,7 @@ async def _folder_names(db: AsyncSession, files: Sequence[LibraryFile]) -> dict[
 
 
 @router.get("/parts", response_model=ProductPartsPage)
+@part_images.attach
 async def list_product_parts(
     request: Request,
     q: str | None = Query(None, max_length=200),
@@ -1225,6 +1228,7 @@ async def list_product_facets(
 
 @router.post("", response_model=ProductResponse)
 @router.post("/", response_model=ProductResponse)
+@part_images.attach
 async def create_product(
     data: ProductCreate,
     db: AsyncSession = Depends(get_db),
@@ -1239,6 +1243,7 @@ async def create_product(
 
 
 @router.post("/from-file/{library_file_id}", response_model=ProductFromFileResponse)
+@part_images.attach
 async def create_product_from_file(
     library_file_id: int,
     request: Request,
@@ -1324,6 +1329,7 @@ def _measure_upload(file: UploadFile) -> int:
 
 
 @router.post("/import", response_model=ProductImportResponse)
+@part_images.attach
 async def import_product(
     request: Request,
     file: UploadFile = File(...),
@@ -1342,7 +1348,11 @@ async def import_product(
         raise HTTPException(status_code=413, detail=f"An import may be at most {import_limit()} bytes")
     # ``file.file`` is seekable, which is all ``zipfile`` asks for — so the
     # archive is read where it already is, member by member.
-    product, warnings = await import_zip(db, file.file, folder_id=folder_id, user=current_user)
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    product, warnings = await import_zip(
+        db, file.file, folder_id=folder_id, user=current_user, authority=await request_authority(request, current_user)
+    )
     return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
 
 
@@ -1373,6 +1383,7 @@ async def export_product(
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
+@part_images.attach(editor=True)
 async def get_product(
     product_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PRODUCTS_READ)
 ):
@@ -1380,6 +1391,7 @@ async def get_product(
 
 
 @router.patch("/{product_id}", response_model=ProductResponse)
+@part_images.attach
 async def update_product(
     product_id: int,
     data: ProductUpdate,
@@ -1494,6 +1506,7 @@ def _copy_attachment_files(
 
 
 @router.post("/{product_id}/duplicate", response_model=ProductResponse)
+@part_images.attach
 async def duplicate_product(
     product_id: int,
     data: ProductDuplicate,
@@ -1527,26 +1540,28 @@ async def duplicate_product(
     await db.flush()
     # Groups first: the parts' bindings go through the old → new option map.
     option_map = await product_variants.copy_groups(db, source.id, copy.id)
+    pairs: list[tuple[ProductPart, ProductPart]] = []
     for part in source.parts:
-        db.add(
-            ProductPart(
-                product_id=copy.id,
-                kind=part.kind,
-                name=part.name,
-                name_key=part.name_key,
-                qty_per_unit=part.qty_per_unit,
-                ignored=part.ignored,
-                # NULL for a purchased part, and it stays NULL on the copy: the
-                # column is printed-only, and [] would read as "no aliases yet".
-                aliases=list(part.aliases) if part.aliases is not None else None,
-                auto=part.auto,
-                unit_price=part.unit_price,
-                sourcing_url=part.sourcing_url,
-                remarks=part.remarks,
-                sort_order=part.sort_order,
-                variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
-            )
+        new = ProductPart(
+            product_id=copy.id,
+            kind=part.kind,
+            name=part.name,
+            name_key=part.name_key,
+            qty_per_unit=part.qty_per_unit,
+            extra_percent=part.extra_percent,
+            ignored=part.ignored,
+            # NULL for a purchased part, and it stays NULL on the copy: the
+            # column is printed-only, and [] would read as "no aliases yet".
+            aliases=list(part.aliases) if part.aliases is not None else None,
+            auto=part.auto,
+            unit_price=part.unit_price,
+            sourcing_url=part.sourcing_url,
+            remarks=part.remarks,
+            sort_order=part.sort_order,
+            variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
         )
+        db.add(new)
+        pairs.append((part, new))
     # ⚠️ No hand-copied ``ProductPlate`` rows. The syncs below plant the plates
     # for every file the copy ends up linked to, from the file's own metadata —
     # copying them here as well only avoided ``uq_product_plates_file_plate``
@@ -1573,6 +1588,9 @@ async def duplicate_product(
         folders = []
     for folder in folders:
         await _apply_folder(db, folder.id, await _folder_product_ids(db, folder.id) | {copy.id})
+    # The parts' pictures: a photo is copied as a file; a pin only where its file really linked to the copy
+    # (spec part-thumbnails §10.3) -- after the links, which is what it checks against.
+    await part_images.copy_for_duplicate(db, pairs, copy.id)
 
     # Read the JSON column into plain dicts HERE, on the loop, before the thread
     # touches anything: the worker gets data, never an ORM row.
@@ -1645,6 +1663,7 @@ async def _part(db: AsyncSession, product: Product, part_id: int) -> ProductPart
 
 
 @router.post("/{product_id}/parts", response_model=ProductPartResponse)
+@part_images.attach(editor=True)
 async def create_part(
     product_id: int,
     data: ProductPartCreate,
@@ -1652,6 +1671,8 @@ async def create_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
+    if data.extra_percent and data.kind != "printed":
+        raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
     if data.ignored and data.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if data.ignored and data.qty_per_unit > 0:
@@ -1675,6 +1696,7 @@ async def create_part(
         name=data.name.strip(),
         name_key=key,
         qty_per_unit=data.qty_per_unit,
+        extra_percent=data.extra_percent,
         ignored=data.ignored,
         aliases=[key] if data.kind == "printed" else None,
         auto=False,
@@ -1691,10 +1713,12 @@ async def create_part(
     db.add(part)
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
 @router.patch("/{product_id}/parts/{part_id}", response_model=ProductPartResponse)
+@part_images.attach(editor=True)
 async def update_part(
     product_id: int,
     part_id: int,
@@ -1703,7 +1727,9 @@ async def update_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
-    if "variant_option_id" in data.model_fields_set:
+    if data.model_fields_set & {"variant_option_id", "qty_per_unit", "ignored"}:
+        # Composition edits affect saved lines too. Serialize the snapshot guard
+        # with order configuration and stock writers using the existing gate.
         # Rebinding rewrites the configurations of the product's lines and positions:
         # the gate, then that footprint without waiting (WS-13 E1 BL3 / BL5).
         await product_gate.product_gate(db, [product.id])
@@ -1716,6 +1742,8 @@ async def update_part(
         # ``freeze_binding`` freezes from, and the one the new value is written over.
         product = await _get(db, product_id, fresh=True)
     part = await _part(db, product, part_id)
+    if data.extra_percent and part.kind != "printed":
+        raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
     if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
         await _ensure_own_option(db, product, data.variant_option_id)
     if data.aliases is not None and part.kind != "printed":
@@ -1740,6 +1768,14 @@ async def update_part(
             raise HTTPException(status_code=409, detail="A part with this name already exists")
     ignored_after = data.ignored if "ignored" in data.model_fields_set else part.ignored
     qty_after = data.qty_per_unit if "qty_per_unit" in data.model_fields_set else part.qty_per_unit
+    if qty_after != part.qty_per_unit or (ignored_after and not part.ignored):
+        # The percent is snapshotted, but its base count comes from composition.
+        # Removing or changing that base in the catalog must not erase an order's
+        # extras, including when no explicit line-count row was ever needed.
+        try:
+            await line_config.ensure_no_extra_snapshot(db, product.id, [part.id])
+        except line_config.LineConfigError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
     if ignored_after and not part.ignored and part.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if ignored_after and qty_after > 0:
@@ -1770,6 +1806,7 @@ async def update_part(
         part.auto = False
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
@@ -1791,6 +1828,10 @@ async def delete_part(
         raise _busy(e) from e
     product = await _get(db, product_id, fresh=True)  # the part as it stands behind the gate
     part = await _part(db, product, part_id)
+    try:
+        await line_config.ensure_no_extra_snapshot(db, product.id, [part_id])
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
     # What the delete destroys beyond the catalog asks that domain's right too (WS-13 E13
     # O24), behind the locks and before a write: the part's shelf history and balance; an
     # order's acquisitions of it and a parts line's counters.
@@ -1817,11 +1858,13 @@ async def delete_part(
         await line_config.forget_part(db, part_id)
     except line_config.LineConfigError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
+    part_images.forget_part(db, part)  # its photo goes after the commit (spec part-thumbnails §10.3)
     await db.delete(part)
     return {"message": "Part deleted"}
 
 
 @router.post("/{product_id}/parts/{part_id}/merge", response_model=ProductPartResponse)
+@part_images.attach(editor=True)
 async def merge_part(
     product_id: int,
     part_id: int,
@@ -1850,6 +1893,12 @@ async def merge_part(
         raise HTTPException(
             status_code=409, detail="A part that is ordered cannot be merged into one marked as not counted"
         )
+    try:
+        await line_config.ensure_no_extra_snapshot(db, product.id, [target.id, source.id])
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    if (target.extra_percent or 0) != (source.extra_percent or 0):
+        raise HTTPException(status_code=409, detail="Parts with different additional percentages cannot be merged")
     merge_parts(target, source)
     # Free stock, unlike the procurement counts below, MOVES: it is parts on a
     # shelf, and the merge says those parts are these parts. Before the source
@@ -1870,6 +1919,8 @@ async def merge_part(
     # the acquired counts onto the target: PostgreSQL's cascade would drop them
     # anyway, and a backend-dependent answer here is worse than a plain one.
     await db.execute(delete(ProjectProcurement).where(ProjectProcurement.product_part_id == source.id))
+    # The target keeps its own picture choice, as it keeps its name; the source's photo goes after the commit.
+    part_images.absorb(db, target, source)
     await db.delete(source)
     await db.flush()
     await db.refresh(target)
@@ -1877,6 +1928,7 @@ async def merge_part(
 
 
 @router.post("/{product_id}/parts/{part_id}/aliases", response_model=ProductPartResponse)
+@part_images.attach(editor=True)
 async def add_part_alias(
     product_id: int,
     part_id: int,
@@ -1894,10 +1946,12 @@ async def add_part_alias(
     _apply_alias_change(lambda: add_alias(product.parts, part, data.name_key.strip().lower()))
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
 @router.delete("/{product_id}/parts/{part_id}/aliases", response_model=ProductPartResponse)
+@part_images.attach(editor=True)
 async def remove_part_alias(
     product_id: int,
     part_id: int,
@@ -1910,6 +1964,7 @@ async def remove_part_alias(
     _apply_alias_change(lambda: remove_alias(part, name_key))
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
@@ -1929,6 +1984,7 @@ def _busy(e: product_gate.ProductBusy) -> HTTPException:
 
 
 @router.post("/{product_id}/variant-groups", response_model=ProductResponse)
+@part_images.attach
 async def create_variant_group(
     product_id: int,
     data: VariantGroupCreate,
@@ -1946,6 +2002,7 @@ async def create_variant_group(
 
 
 @router.put("/{product_id}/variants", response_model=ProductResponse)
+@part_images.attach
 async def apply_variants(
     product_id: int,
     data: VariantsApplyIn,
@@ -1973,6 +2030,7 @@ async def apply_variants(
 
 
 @router.patch("/{product_id}/variant-groups/{group_id}", response_model=ProductResponse)
+@part_images.attach
 async def update_variant_group(
     product_id: int,
     group_id: int,
@@ -1993,6 +2051,7 @@ async def update_variant_group(
 
 
 @router.delete("/{product_id}/variant-groups/{group_id}", response_model=ProductResponse)
+@part_images.attach
 async def delete_variant_group(
     product_id: int,
     group_id: int,
@@ -2010,6 +2069,7 @@ async def delete_variant_group(
 
 
 @router.post("/{product_id}/variant-groups/{group_id}/options", response_model=ProductResponse)
+@part_images.attach
 async def create_variant_option(
     product_id: int,
     group_id: int,
@@ -2026,6 +2086,7 @@ async def create_variant_option(
 
 
 @router.patch("/{product_id}/variant-groups/{group_id}/options/{option_id}", response_model=ProductResponse)
+@part_images.attach
 async def update_variant_option(
     product_id: int,
     group_id: int,
@@ -2045,6 +2106,7 @@ async def update_variant_option(
 
 
 @router.delete("/{product_id}/variant-groups/{group_id}/options/{option_id}", response_model=ProductResponse)
+@part_images.attach
 async def delete_variant_option(
     product_id: int,
     group_id: int,
@@ -2063,6 +2125,7 @@ async def delete_variant_option(
 
 
 @router.get("/{product_id}/stock", response_model=ProductStockOut)
+@part_images.attach
 async def get_product_stock(
     product_id: int,
     limit: int = Query(200, ge=1, le=500),
@@ -2151,6 +2214,7 @@ async def get_product_kits(
 
 
 @router.post("/{product_id}/stock/adjust", response_model=StockMovementOut)
+@part_images.attach
 async def adjust_product_stock(
     product_id: int,
     data: StockAdjustIn,
@@ -2202,7 +2266,12 @@ async def adjust_product_stock(
 
 def _plate_out(plate: ProductPlate, file: LibraryFile, r, names: dict[int, str], shown: bool) -> PlateRecipeResponse:
     """One plate on the wire — ``/plates`` and ``/files`` alike. A file the library
-    would not show keeps its plate and loses its name (WS-13 E1 K5, LV4)."""
+    would not show keeps its plate and loses its name (WS-13 E1 K5, LV4). An unassigned
+    name carries its first object's id, the one its picture is of (plan E4, D2)."""
+    first = {
+        tally.name_key: min(tally.identify_ids)
+        for tally in tally_objects(plate_objects(file.file_metadata, plate.plate_index))
+    }
     return PlateRecipeResponse(
         id=plate.id,
         library_file_id=plate.library_file_id,
@@ -2216,7 +2285,9 @@ def _plate_out(plate: ProductPlate, file: LibraryFile, r, names: dict[int, str],
                 for pid, n in sorted(r.yield_by_part.items())
             ]
         },
-        unassigned=[PlateUnassignedEntry(name_key=k, count=n) for k, n in sorted(r.unassigned.items())],
+        unassigned=[
+            PlateUnassignedEntry(name_key=k, count=n, identify_id=first.get(k)) for k, n in sorted(r.unassigned.items())
+        ],
         materials=sorted(r.materials),
         colors=sorted(r.colors),
         printer_model=r.printer_model,
@@ -2230,6 +2301,7 @@ def _plate_out(plate: ProductPlate, file: LibraryFile, r, names: dict[int, str],
 
 
 @router.get("/{product_id}/plates", response_model=list[PlateRecipeResponse])
+@part_images.attach
 async def list_plates(
     product_id: int,
     request: Request,
@@ -2352,6 +2424,7 @@ async def get_product_sources(
 
 
 @router.get("/{product_id}/files", response_model=ProductFilesOut)
+@part_images.attach
 async def get_product_files(
     product_id: int,
     request: Request,
@@ -2426,6 +2499,7 @@ async def get_product_files(
 
 
 @router.put("/{product_id}/files", response_model=ProductResponse)
+@part_images.attach
 async def set_files(
     product_id: int,
     data: FileLinkRequest,
@@ -2448,6 +2522,7 @@ async def set_files(
 
 
 @router.delete("/{product_id}/files/{file_id}", response_model=ProductResponse)
+@part_images.attach
 async def unlink_file(
     product_id: int,
     file_id: int,
@@ -2463,6 +2538,7 @@ async def unlink_file(
 
 
 @router.put("/{product_id}/folders", response_model=ProductResponse)
+@part_images.attach
 async def set_folders(
     product_id: int,
     data: FolderLinkRequest,
@@ -2490,6 +2566,7 @@ async def set_folders(
 
 
 @router.delete("/{product_id}/folders/{folder_id}", response_model=ProductResponse)
+@part_images.attach
 async def unlink_folder(
     product_id: int,
     folder_id: int,
@@ -2526,6 +2603,7 @@ async def _linked_file(db: AsyncSession, product: Product, file_id: int) -> Libr
 
 
 @router.post("/{product_id}/card/reread", response_model=RereadResponse)
+@part_images.attach
 async def reread_card(
     product_id: int,
     file_id: int,

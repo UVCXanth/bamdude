@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import install_kind
 from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
@@ -28,6 +29,7 @@ from backend.app.schemas.system import DbHealth
 from backend.app.services import db_health
 from backend.app.services.log_health import ScanResult, scan_logs
 from backend.app.services.log_reader import collect_sensitive_strings
+from backend.app.services.preview_artifacts import disk
 from backend.app.services.preview_runtime import get_preview_health
 from backend.app.services.printer_manager import printer_manager
 
@@ -164,6 +166,7 @@ def _get_data_dirs() -> list[Path]:
         settings.library_dir,
         settings.projects_dir,
         settings.products_dir,
+        settings.part_renders_dir,
         settings.log_dir,
         settings.plate_calibration_dir,
         settings.base_dir / "virtual_printer",
@@ -258,6 +261,11 @@ def _get_storage_rules() -> list[tuple[str, str, Callable]]:
             "plate_calibration",
             "Plate Calibration",
             lambda path: _is_under(path, settings.plate_calibration_dir),
+        ),
+        (
+            "part_renders",
+            "Part Renders",
+            lambda path: _is_under(path, settings.part_renders_dir),
         ),
         (
             "logs",
@@ -485,6 +493,20 @@ async def _get_storage_usage_cached(refresh: bool, max_age_seconds: int) -> dict
         }
 
 
+async def step_preview_state() -> dict:
+    """The STEP component on the System page (spec stage C R11): the cheap status, off the event loop — the
+    administrator's choice and what the receipt says, never "works" — and the install's kind, so the page knows
+    whether to show the administrator's commands. Nothing here installs or checks heavily."""
+    from backend.app import step_runtime
+
+    kind = install_kind.kind(settings.app_dir)
+    try:
+        _rc, answer = await disk(step_runtime.status, settings.app_dir)
+    except Exception:
+        return {"choice": "none", "bundle": "unknown", "install_kind": kind}
+    return {"choice": answer.get("choice", "none"), "bundle": answer.get("bundle", "unknown"), "install_kind": kind}
+
+
 @router.get("/info")
 async def get_system_info(
     db: AsyncSession = Depends(get_db),
@@ -612,6 +634,7 @@ async def get_system_info(
     from backend.app.services.analysis_runtime import get_analysis_health
     from backend.app.services.camera_runtime import camera_runtime_health
     from backend.app.services.library_file_runtime import get_library_file_health
+    from backend.app.services.part_render_runtime import get_part_render_health
 
     return {
         "app": {
@@ -623,8 +646,10 @@ async def get_system_info(
             "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
         "preview": get_preview_health().model_dump(),
+        "step_preview": await step_preview_state(),
         "analysis_worker": get_analysis_health(),
         "library_file_worker": get_library_file_health(),
+        "part_render_worker": get_part_render_health(),
         "camera_worker": camera_runtime_health(),
         "database": {
             "engine": engine_name,

@@ -72,6 +72,7 @@ from backend.app.services.archive import (
     sd_stem,
 )
 from backend.app.services.archive_defects import DefectsWrite
+from backend.app.services.auto_stock_spool import NAMESPACE as AUTO_STOCK_NAMESPACE, policy_for
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
     get_storage_info_async,
@@ -131,6 +132,7 @@ from backend.app.utils.timelapse import capability_for as timelapse_capability_f
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
+_may_change_stock_policy = require_permission(Permission.INVENTORY_UPDATE)
 
 
 def _caller_can_view_printer_secrets(user: User | None) -> bool:
@@ -257,6 +259,7 @@ async def create_printer(
     printer_data: PrinterCreate,
     _=RequirePermission(Permission.PRINTERS_CREATE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add a new printer."""
     # Check if serial number already exists. An archived printer keeps its
@@ -280,8 +283,10 @@ async def create_printer(
     # that sent nothing and shadow the column default).
     patch = printer_data.ams_policies
     data.pop("ams_policies", None)
-    if patch is not None and patch.backup_compatibility is not None:
-        data["ams_policies"] = {AMS_BACKUP_COMPAT_NAMESPACE: patch.backup_compatibility.model_dump()}
+    if patch is not None:
+        data["ams_policies"] = {k: v.model_dump() for k, v in patch if v is not None}
+        if patch.auto_stock_spool and patch.auto_stock_spool.enabled:
+            await creds.check(_may_change_stock_policy)
     printer = Printer(**data)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
@@ -535,6 +540,7 @@ async def update_printer(
     printer_data: PrinterUpdate,
     _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a printer."""
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -585,8 +591,19 @@ async def update_printer(
         patch = printer_data.ams_policies
         if patch is not None and patch.backup_compatibility is not None:
             merged[AMS_BACKUP_COMPAT_NAMESPACE] = patch.backup_compatibility.model_dump()
+        if patch is not None and patch.auto_stock_spool is not None:
+            if patch.auto_stock_spool != policy_for(printer):
+                await creds.check(_may_change_stock_policy)
+            merged[AUTO_STOCK_NAMESPACE] = patch.auto_stock_spool.model_dump()
         update_data["ams_policies"] = merged
 
+    if update_data.get("is_active") is False and printer.is_active and is_printer_busy(printer_id):
+        raise HTTPException(409, "Printer is busy — cannot enter maintenance mode during a print")
+
+    connection_changed = any(
+        key in update_data and update_data[key] != getattr(printer, key)
+        for key in ("ip_address", "access_code", "is_active")
+    )
     for field, value in update_data.items():
         setattr(printer, field, value)
 
@@ -599,7 +616,7 @@ async def update_printer(
         printer_manager.update_printer_name(printer_id, printer.name)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
+    if connection_changed:
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)
@@ -856,6 +873,9 @@ async def delete_printer(
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.archive import ArchiveService
+    from backend.app.services.macro_trigger import stop_event_macro_tasks
+    from backend.app.services.print_completion_tasks import stop_print_completion_tasks
+    from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.queue_counters import detach_print_queue_refs
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -863,6 +883,15 @@ async def delete_printer(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    revoke_print_effects(printer_manager, printer_id)
+    await stop_print_completion_tasks(printer_id)
+    await stop_event_macro_tasks(printer_id)
+    from backend.app.services.smart_plug_manager import smart_plug_manager
+
+    await smart_plug_manager.stop_auto_off_tasks(printer_id)
+    from backend.app.main import stop_bed_cooldown_tasks
+
+    await stop_bed_cooldown_tasks(printer_id)
     printer_manager.disconnect_printer(printer_id)
     from backend.app.services.print_file_analysis import discard_printer_print_file_analysis
 
@@ -2808,9 +2837,29 @@ async def start_calibration(
         # routines moves the toolhead across the plate.
         raise HTTPException(409, "Printer is busy — cannot calibrate while a job is on it")
 
+    if not client.status_received_at or client.is_stale() or client.state.state not in ("IDLE", "FINISH", "FAILED"):
+        raise HTTPException(409, "Fresh idle printer status is required for calibration")
+
     # Check that at least one option is selected
     if not any([bed_leveling, vibration, motor_noise, nozzle_offset, high_temp_heatbed, lidar, clump_pos]):
         raise HTTPException(400, "At least one calibration option must be selected")
+
+    from backend.app.utils.printer_configs import resolve_device_calibrations
+
+    available = resolve_device_calibrations(
+        printer.model, client.state.device_cali_support, client.state.firmware_version
+    )
+    requested = {
+        "bed_leveling": bed_leveling,
+        "vibration": vibration,
+        "motor_noise": motor_noise,
+        "nozzle_offset": nozzle_offset,
+        "high_temp_heatbed": high_temp_heatbed,
+        "lidar": lidar,
+        "clump_pos": clump_pos,
+    }
+    if any(value and not available[key] for key, value in requested.items()):
+        raise HTTPException(409, "A selected calibration is not supported by this printer")
 
     success = client.start_calibration(
         bed_leveling=bed_leveling,
@@ -3902,7 +3951,7 @@ async def home_axes(
         raise HTTPException(404, "Printer not found")
 
     client = printer_manager.get_client(printer_id)
-    if not client:
+    if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
     if is_printer_busy(printer_id):
@@ -3923,6 +3972,9 @@ async def home_axes(
         # implement. An X-only mid-print home would be a new capability, not a
         # guard, and belongs with the rest of the motion work.
         raise HTTPException(409, "Printer is busy — cannot home while a job is on it")
+
+    if not client.status_received_at or client.is_stale() or client.state.state not in ("IDLE", "FINISH", "FAILED"):
+        raise HTTPException(409, "Fresh idle printer status is required for homing")
 
     if not client.send_gcode("G28"):
         raise HTTPException(500, "Failed to send home command")

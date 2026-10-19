@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 GITHUB_REPO = "kainpl/bamdude"
 
 # Bug-report relay endpoint. The relay holds the GitHub PAT and creates issues
@@ -188,6 +188,8 @@ class Settings(BaseSettings):
     library_dir: Path = _data_dir / "library"
     projects_dir: Path = _data_dir / "projects"
     products_dir: Path = _data_dir / "products"
+    # Derived renders of part thumbnails (spec §8.3): rebuilt by the queue, so NOT in backup_files.directories()
+    part_renders_dir: Path = _data_dir / "part-renders"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
     database_url: str = (
@@ -280,6 +282,7 @@ class Settings(BaseSettings):
         object.__setattr__(self, "library_dir", self.data_dir / "library")
         object.__setattr__(self, "projects_dir", self.data_dir / "projects")
         object.__setattr__(self, "products_dir", self.data_dir / "products")
+        object.__setattr__(self, "part_renders_dir", self.data_dir / "part-renders")
         # DATABASE_URL reaches us two ways: from the process environment, classified
         # at import above, or from .env, which pydantic pours into the field only
         # now — as the raw word "embedded" or a URL. Resolve from the field's final

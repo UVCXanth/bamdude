@@ -1,0 +1,1668 @@
+{
+ "schema": 1,
+ "component": "step-preview",
+ "closure_sha256": "533f263356f9eae283d68c76468f89a7d02db17c8f2020ace511fa2bfdcd43aa",
+ "families": {
+  "linux": {
+   "platforms": [
+    "manylinux_2_28_x86_64",
+    "manylinux_2_28_aarch64"
+   ],
+   "origin": "auditwheel SBOM in each wheel (AlmaLinux 8 / EPEL 8 RPMs); libtiff rebuilt from the AlmaLinux 8 SRPM without JBIG by the wheel build",
+   "components": [
+    {
+     "id": "ocp",
+     "name": "OCP (cadquery-ocp-novtk)",
+     "version": "8.0.1.1.0",
+     "licence": "Apache-2.0",
+     "terms": null,
+     "libraries": [
+      "OCP.cpython-3*-linux-gnu.so"
+     ],
+     "texts": [
+      "upstream/ocp/LICENSE"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/CadQuery/OCP",
+      "ref": "8.0.1.1"
+     },
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     },
+     "embedded": [
+      {
+       "name": "pybind11",
+       "version": "2.13.6",
+       "licence": "BSD-3-Clause",
+       "texts": [
+        "upstream/pybind11/LICENSE"
+       ],
+       "source": {
+        "kind": "git",
+        "url": "https://github.com/pybind/pybind11",
+        "ref": "v2.13.6"
+       }
+      }
+     ]
+    },
+    {
+     "id": "occt",
+     "name": "Open CASCADE Technology",
+     "version": "8.0.1",
+     "licence": "LGPL-2.1-only WITH OCCT-exception-1.0",
+     "terms": null,
+     "libraries": [
+      "libTK*"
+     ],
+     "texts": [
+      "upstream/occt/LICENSE_LGPL_21.txt",
+      "upstream/occt/OCCT_LGPL_EXCEPTION.txt"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/Open-Cascade-SAS/OCCT",
+      "ref": "V8_0_1",
+      "commit": "b8f597c677811d1f9f4d8a97f5ae2825c0353a42"
+     },
+     "embedded": [
+      {
+       "name": "RapidJSON",
+       "version": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f",
+       "licence": "MIT",
+       "texts": [
+        "upstream/rapidjson/license.txt"
+       ],
+       "source": {
+        "kind": "git",
+        "url": "https://github.com/Tencent/rapidjson",
+        "commit": "24b5e7a8b27f42fa16b96fc70aade9106cf7102f"
+       }
+      }
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
+    },
+    {
+     "id": "libraw",
+     "name": "LibRaw",
+     "version": "0.19.5-6.el8_10",
+     "licence": "BSD-3-Clause and (CDDL-1.0 or LGPL-2.1-only)",
+     "terms": "LGPL-2.1-only",
+     "libraries": [
+      "libraw-*"
+     ],
+     "texts": [
+      "rpm/LibRaw/COPYRIGHT",
+      "rpm/LibRaw/LICENSE.CDDL",
+      "rpm/LibRaw/LICENSE.LGPL"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "LibRaw-0.19.5-6.el8_10.src.rpm",
+      "vendor": "AlmaLinux",
+      "url": "https://vault.almalinux.org/8.10/AppStream/Source/Packages/LibRaw-0.19.5-6.el8_10.src.rpm",
+      "sha256": "31b9a716f8d401ba9e36a992444d7ad20b5ac72f67e8d125ee03c9e5462826ac",
+      "signed_by": "AlmaLinux OS 8 (key ced7258b)"
+     }
+    },
+    {
+     "id": "openexr",
+     "name": "OpenEXR-libs",
+     "version": "2.2.0-12.el8_10.1",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libIlmImf-*"
+     ],
+     "texts": [
+      "rpm/OpenEXR-libs/LICENSE"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "OpenEXR-2.2.0-12.el8_10.1.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "ilmbase",
+     "name": "ilmbase",
+     "version": "2.2.0-13.el8",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libHalf-*",
+      "libIex-2_2-*",
+      "libIexMath-2_2-*",
+      "libIlmThread-2_2-*",
+      "libImath-2_2-*"
+     ],
+     "texts": [
+      "rpm/ilmbase/COPYING"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "ilmbase-2.2.0-13.el8.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "bzip2",
+     "name": "bzip2-libs",
+     "version": "1.0.6-28.el8_10",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libbz2-*"
+     ],
+     "texts": [
+      "rpm/bzip2-libs/LICENSE"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "bzip2-1.0.6-28.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "fmt",
+     "name": "fmt",
+     "version": "6.2.1-1.el8",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libfmt-*"
+     ],
+     "texts": [
+      "rpm/fmt/LICENSE.rst"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "fmt-6.2.1-1.el8.src.rpm",
+      "vendor": "Fedora Project"
+     }
+    },
+    {
+     "id": "fontconfig",
+     "name": "fontconfig",
+     "version": "2.13.1-4.el8",
+     "licence": "MIT and Public Domain and UCD",
+     "terms": null,
+     "libraries": [
+      "libfontconfig-*"
+     ],
+     "texts": [
+      "rpm/fontconfig/COPYING"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "fontconfig-2.13.1-4.el8.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "freeimage",
+     "name": "freeimage",
+     "version": "3.17.0-5.el8",
+     "licence": "GPLv2 or GPLv3 or MPLv1.0",
+     "terms": "FreeImage",
+     "libraries": [
+      "libfreeimage-*"
+     ],
+     "texts": [
+      "rpm/freeimage/license-fi.txt",
+      "rpm/freeimage/license-gplv2.txt",
+      "rpm/freeimage/license-gplv3.txt"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "freeimage-3.17.0-5.el8.src.rpm",
+      "vendor": "Fedora Project",
+      "url": "https://dl.fedoraproject.org/pub/epel/8/Everything/source/tree/Packages/f/freeimage-3.17.0-5.el8.src.rpm",
+      "sha256": "352df150c5b7c28a389a42a3652d5e258df2029e8b06926ce8e4f130cfc6dd0c",
+      "signed_by": "Fedora EPEL 8 (key 2f86d6a1)"
+     }
+    },
+    {
+     "id": "freetype",
+     "name": "freetype",
+     "version": "2.9.1-10.el8_10",
+     "licence": "(FTL or GPLv2+) and BSD and MIT and Public Domain and zlib with acknowledgement",
+     "terms": "FTL",
+     "libraries": [
+      "libfreetype-*"
+     ],
+     "texts": [
+      "rpm/freetype/FTL.TXT",
+      "rpm/freetype/GPLv2.TXT",
+      "rpm/freetype/LICENSE.TXT"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "freetype-2.9.1-10.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "jasper",
+     "name": "jasper-libs",
+     "version": "2.0.14-6.el8_10",
+     "licence": "JasPer",
+     "terms": null,
+     "libraries": [
+      "libjasper-*"
+     ],
+     "texts": [
+      "rpm/jasper-libs/LICENSE"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "jasper-2.0.14-6.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "jxrlib",
+     "name": "jxrlib",
+     "version": "1.1-1.el8",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libjpegxr-*",
+      "libjxrglue-*"
+     ],
+     "texts": [
+      "upstream/jxrlib/LICENSE-from-JXRGlue.h.txt"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "jxrlib-1.1-1.el8.src.rpm",
+      "vendor": "Fedora Project"
+     }
+    },
+    {
+     "id": "lcms2",
+     "name": "lcms2",
+     "version": "2.9-2.el8",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "liblcms2-*"
+     ],
+     "texts": [
+      "rpm/lcms2/COPYING"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "lcms2-2.9-2.el8.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "libgomp",
+     "name": "libgomp",
+     "version": "8.5.0-29.el8_10.alma.1",
+     "licence": "GPLv3+ and GPLv3+ with exceptions and GPLv2+ with exceptions and LGPLv2+ and BSD",
+     "terms": "GPL-3.0-or-later WITH GCC-exception-3.1",
+     "libraries": [
+      "libgomp-*"
+     ],
+     "texts": [
+      "upstream/gcc/COPYING3",
+      "upstream/gcc/COPYING.RUNTIME"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "gcc-8.5.0-29.el8_10.alma.1.src.rpm",
+      "vendor": "AlmaLinux",
+      "url": "https://vault.almalinux.org/8.10/BaseOS/Source/Packages/gcc-8.5.0-29.el8_10.alma.1.src.rpm",
+      "sha256": "66aa234be56b435ee99420540cff9ee41d89a555e541f6b3e523962e361450fc",
+      "signed_by": "AlmaLinux OS 8 (key ced7258b)"
+     }
+    },
+    {
+     "id": "libjpeg-turbo",
+     "name": "libjpeg-turbo",
+     "version": "1.5.3-14.el8_10",
+     "licence": "IJG",
+     "terms": null,
+     "libraries": [
+      "libjpeg-*"
+     ],
+     "texts": [
+      "rpm/libjpeg-turbo/LICENSE.md"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "libjpeg-turbo-1.5.3-14.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "libpng",
+     "name": "libpng",
+     "version": "1.6.34-11.el8_10",
+     "licence": "zlib",
+     "terms": null,
+     "libraries": [
+      "libpng16-*"
+     ],
+     "texts": [
+      "rpm/libpng/LICENSE"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "libpng-1.6.34-11.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "libuuid",
+     "name": "libuuid",
+     "version": "2.32.1-48.el8_10",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libuuid-*"
+     ],
+     "texts": [
+      "rpm/libuuid/COPYING",
+      "rpm/libuuid/COPYING.BSD-3"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "util-linux-2.32.1-48.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "libwebp",
+     "name": "libwebp",
+     "version": "1.0.0-11.el8_10",
+     "licence": "BSD",
+     "terms": null,
+     "libraries": [
+      "libwebp-*",
+      "libwebpmux-*"
+     ],
+     "texts": [
+      "rpm/libwebp/COPYING"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "libwebp-1.0.0-11.el8_10.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "openjpeg",
+     "name": "openjpeg2",
+     "version": "2.4.0-5.el8",
+     "licence": "BSD and MIT",
+     "terms": null,
+     "libraries": [
+      "libopenjp2-*"
+     ],
+     "texts": [
+      "rpm/openjpeg2/LICENSE"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "openjpeg2-2.4.0-5.el8.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "xz",
+     "name": "xz-libs",
+     "version": "5.2.4-4.el8_6",
+     "licence": "Public Domain",
+     "terms": null,
+     "libraries": [
+      "liblzma-*"
+     ],
+     "texts": [
+      "rpm/xz-libs/COPYING"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "xz-5.2.4-4.el8_6.src.rpm",
+      "vendor": "AlmaLinux"
+     }
+    },
+    {
+     "id": "libtiff",
+     "name": "libtiff",
+     "version": "4.0.9",
+     "licence": "libtiff",
+     "terms": null,
+     "libraries": [
+      "libtiff-*"
+     ],
+     "texts": [
+      "upstream/libtiff/COPYRIGHT"
+     ],
+     "source": {
+      "kind": "srpm",
+      "name": "libtiff-4.0.9 (AlmaLinux 8 SRPM, rebuilt by the wheel build without JBIG)",
+      "vendor": "AlmaLinux",
+      "note": "release current on 2026-10-16: libtiff-4.0.9-39.el8_10.src.rpm sha256 e26dd5ae6f96bd76de3d5bfc06dbff743861bbe022c7e0772e43df1dc61eaea8; its tarball tiff-4.0.9.tar.gz sha256 6e7bdeec2c310734e734d19aae3a71ebe37a4d842e0e23dbb1b8921c0026cfcd. The build ran `dnf download --source libtiff` on 2026-10-02 and did not print the release it got."
+     }
+    }
+   ]
+  },
+  "windows": {
+   "platforms": [
+    "win_amd64"
+   ],
+   "origin": "conda-forge packages linked by the wheel build (exact files from its logs), delvewheel-vendored",
+   "components": [
+    {
+     "id": "ocp",
+     "name": "OCP (cadquery-ocp-novtk)",
+     "version": "8.0.1.1.0",
+     "licence": "Apache-2.0",
+     "terms": null,
+     "libraries": [
+      "OCP.cp3*-win_amd64.pyd"
+     ],
+     "texts": [
+      "upstream/ocp/LICENSE"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/CadQuery/OCP",
+      "ref": "8.0.1.1"
+     },
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     },
+     "embedded": [
+      {
+       "name": "pybind11",
+       "version": "2.13.6",
+       "licence": "BSD-3-Clause",
+       "texts": [
+        "upstream/pybind11/LICENSE"
+       ],
+       "source": {
+        "kind": "git",
+        "url": "https://github.com/pybind/pybind11",
+        "ref": "v2.13.6"
+       }
+      }
+     ]
+    },
+    {
+     "id": "occt",
+     "name": "Open CASCADE Technology",
+     "version": "8.0.1",
+     "licence": "LGPL-2.1-only WITH OCCT-exception-1.0",
+     "terms": null,
+     "libraries": [
+      "TK*.dll"
+     ],
+     "texts": [
+      "upstream/occt/LICENSE_LGPL_21.txt",
+      "upstream/occt/OCCT_LGPL_EXCEPTION.txt"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/Open-Cascade-SAS/OCCT",
+      "ref": "V8_0_1",
+      "commit": "b8f597c677811d1f9f4d8a97f5ae2825c0353a42"
+     },
+     "embedded": [
+      {
+       "name": "RapidJSON",
+       "version": "1.1.0.post20250205",
+       "licence": "MIT",
+       "texts": [
+        "upstream/rapidjson/license.txt"
+       ],
+       "source": {
+        "kind": "conda",
+        "name": "conda-forge rapidjson 1.1.0.post20250205"
+       }
+      }
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
+    },
+    {
+     "id": "freeimage",
+     "name": "freeimage",
+     "version": "3.18.0",
+     "licence": "GPL-2.0-or-later OR GPL-3.0-or-later OR FreeImage",
+     "terms": "FreeImage",
+     "libraries": [
+      "FreeImage-*.dll"
+     ],
+     "texts": [
+      "source/freeimage/FreeImage__license-fi.txt",
+      "source/freeimage/FreeImage__license-gplv2.txt",
+      "source/freeimage/FreeImage__license-gplv3.txt"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "http://downloads.sourceforge.net/freeimage/FreeImage3180.zip",
+      "sha256": "f41379682f9ada94ea7b34fe86bf9ee00935a3147be41b6569c9605a53e438fd"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/freeimage-3.18.0-h81f0cfa_25.conda",
+       "sha256": "cb60aec276cf6188599aa333bf156242347fd8b20d25a8b4c7f61258c0d7fcfb"
+      }
+     }
+    },
+    {
+     "id": "libraw",
+     "name": "libraw",
+     "version": "0.22.2",
+     "licence": "LGPL-2.1-only",
+     "terms": null,
+     "libraries": [
+      "raw-*.dll"
+     ],
+     "texts": [
+      "conda/libraw/libraw/LICENSE.LGPL"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/LibRaw/LibRaw/archive/0.22.2.tar.gz",
+      "sha256": "627928088300ecde6ca91ffd202e189203f04ad61ad12f0fe9dc57b9a7a0fb3c"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libraw-0.22.2-h345c428_0.conda",
+       "sha256": "347df3aa8db67e51702d3478bcba7a85745dde82c6824b252744e8de676e5e23"
+      }
+     }
+    },
+    {
+     "id": "freetype",
+     "name": "freetype",
+     "version": "2.12.1",
+     "licence": "GPL-2.0-only OR FTL",
+     "terms": "FTL",
+     "libraries": [
+      "freetype-*.dll"
+     ],
+     "texts": [
+      "source/freetype/freetype-2.12.1__LICENSE.TXT",
+      "source/freetype/freetype-2.12.1__docs__FTL.TXT",
+      "source/freetype/freetype-2.12.1__docs__GPLv2.TXT"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.12.1.tar.gz",
+      "sha256": "efe71fd4b8246f1b0b1b9bfca13cfff1c9ad85930340c27df469733bbb620938"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/freetype-2.12.1-hdaf720e_2.conda",
+       "sha256": "2c53ee8879e05e149a9e525481d36adfd660a6abda26fd731376fa64ff03e728"
+      }
+     }
+    },
+    {
+     "id": "imath",
+     "name": "imath",
+     "version": "3.2.2",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "Imath-*.dll"
+     ],
+     "texts": [
+      "source/imath/Imath-3.2.2__LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/AcademySoftwareFoundation/Imath/archive/v3.2.2.tar.gz",
+      "sha256": "b4275d83fb95521510e389b8d13af10298ed5bed1c8e13efd961d91b1105e462"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/imath-3.2.2-h1608b31_0.conda",
+       "sha256": "2aa57a5ed668ab34cc061b61082e3cee893d2e45ebc33f9432d13f7f292a990e"
+      }
+     }
+    },
+    {
+     "id": "openexr",
+     "name": "openexr",
+     "version": "3.4.15",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "Iex-*.dll",
+      "IlmThread-*.dll",
+      "OpenEXR-*.dll",
+      "OpenEXRCore-*.dll"
+     ],
+     "texts": [
+      "conda/openexr/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/AcademySoftwareFoundation/openexr/archive/v3.4.15.tar.gz",
+      "sha256": "445ed5b0ea4d9cf98be3a4f219e419628b123b61dec65ccb743ab9b07fbebdaa"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/openexr-3.4.15-hea798b2_0.conda",
+       "sha256": "bdfba4f17815c7a27d02a9a90a753909f59dbd3ca9093ab134978ae7ed531b33"
+      }
+     }
+    },
+    {
+     "id": "lerc",
+     "name": "lerc",
+     "version": "4.2.0",
+     "licence": "Apache-2.0",
+     "terms": null,
+     "libraries": [
+      "Lerc-*.dll"
+     ],
+     "texts": [
+      "conda/lerc/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/Esri/lerc/archive/v4.2.0.tar.gz",
+      "sha256": "a1fb593ed1fcb5b38800caf3c4454f872745202e961d00d745e53d81447e17c9"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/lerc-4.2.0-hd936e49_0.conda",
+       "sha256": "93d666f63f284ef77b87b0b1f77b70f7d36d315a132f9afa64bc0012d937ba39"
+      }
+     }
+    },
+    {
+     "id": "libdeflate",
+     "name": "libdeflate",
+     "version": "1.25",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "deflate-*.dll"
+     ],
+     "texts": [
+      "conda/libdeflate/COPYING"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/ebiggers/libdeflate/archive/v1.25.tar.gz",
+      "sha256": "d11473c1ad4c57d874695e8026865e38b47116bbcb872bfc622ec8f37a86017d"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libdeflate-1.25-h1a1d4e4_1.conda",
+       "sha256": "af1cda21d4653f594fbef20aa4e1ff158a546902b3307ef8af9a9b44b43862d2"
+      }
+     }
+    },
+    {
+     "id": "libjpeg-turbo",
+     "name": "libjpeg-turbo",
+     "version": "3.2.0",
+     "licence": "IJG AND BSD-3-Clause AND Zlib",
+     "terms": null,
+     "libraries": [
+      "jpeg8-*.dll"
+     ],
+     "texts": [
+      "conda/libjpeg-turbo/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/3.2.0.tar.gz",
+      "sha256": "980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libjpeg-turbo-3.2.0-hfd05255_1.conda",
+       "sha256": "df78ab4c0eecb3dd9331898f96baeed8e5ca1c363346332517abeb0b614b9a53"
+      }
+     }
+    },
+    {
+     "id": "lcms2",
+     "name": "lcms2",
+     "version": "2.19.1",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "lcms2-*.dll"
+     ],
+     "texts": [
+      "conda/lcms2/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz",
+      "sha256": "bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/lcms2-2.19.1-hf2c6c5f_3.conda",
+       "sha256": "7c5f96b473b721a4279708b448591dc3d89ed274280ff480dea1b4f9b13e1fcd"
+      }
+     }
+    },
+    {
+     "id": "xz",
+     "name": "liblzma",
+     "version": "5.8.3",
+     "licence": "0BSD",
+     "terms": null,
+     "libraries": [
+      "liblzma-*.dll"
+     ],
+     "texts": [
+      "conda/liblzma/COPYING",
+      "conda/liblzma/COPYING.0BSD"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz",
+      "sha256": "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/liblzma-5.8.3-hfd05255_1.conda",
+       "sha256": "d36c4a1e1f80fd08e18a407e03622ff2f34dfdd022da6488ad19603dea19e6d5"
+      }
+     }
+    },
+    {
+     "id": "libpng",
+     "name": "libpng",
+     "version": "1.6.59",
+     "licence": "zlib-acknowledgement",
+     "terms": null,
+     "libraries": [
+      "libpng16-*.dll"
+     ],
+     "texts": [
+      "conda/libpng/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.gz",
+      "sha256": "86a3e4b501f7f50e392c4e456ea158893e9a595b1c63eb88c7bb9f6cf8772dad"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libpng-1.6.59-hdc8cecf_0.conda",
+       "sha256": "36050852deae6edc98d7b71489b8d07254e2753c69bd524bf5784927cd1f0b2c"
+      }
+     }
+    },
+    {
+     "id": "libwebp",
+     "name": "libwebp-base",
+     "version": "1.6.0",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "libsharpyuv-*.dll",
+      "libwebp-*.dll",
+      "libwebpmux-*.dll"
+     ],
+     "texts": [
+      "conda/libwebp-base/COPYING"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "http://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libwebp-base-1.6.0-h4d5522a_1.conda",
+       "sha256": "4470d98d3178b0d45492eed4808afe421d2e7808352b8d06c2dc29166b75d94d"
+      }
+     }
+    },
+    {
+     "id": "openjpeg",
+     "name": "openjpeg",
+     "version": "2.5.4",
+     "licence": "BSD-2-Clause",
+     "terms": null,
+     "libraries": [
+      "openjp2-*.dll"
+     ],
+     "texts": [
+      "conda/openjpeg/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/uclouvain/openjpeg/archive/v2.5.4.tar.gz",
+      "sha256": "a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/openjpeg-2.5.4-h90fa87c_2.conda",
+       "sha256": "d1c630ccd9ae0898b48d84e986f4c330f66a25e535f99efe8cbf03f042b33da5"
+      }
+     }
+    },
+    {
+     "id": "openjph",
+     "name": "openjph",
+     "version": "0.31.0",
+     "licence": "BSD-2-Clause",
+     "terms": null,
+     "libraries": [
+      "openjph-*.dll"
+     ],
+     "texts": [
+      "conda/openjph/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/aous72/OpenJPH/archive/0.31.0.tar.gz",
+      "sha256": "fe169dbbaae71a169a0a6a68dccb346616193252c1ca044217afa0d5d1dc436f"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/openjph-0.31.0-hf13a347_0.conda",
+       "sha256": "37a5104c0adb4bbdccc856dd9458c631fc260da4ba1aaced3fb27b4a08a0c341"
+      }
+     }
+    },
+    {
+     "id": "libtiff",
+     "name": "libtiff",
+     "version": "4.7.2",
+     "licence": "HPND",
+     "terms": null,
+     "libraries": [
+      "tiff-*.dll"
+     ],
+     "texts": [
+      "conda/libtiff/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.gz",
+      "sha256": "672bd7d10aee4606171afb864f3570b83340f6a33e2c186dc0512f7145ffdf6a"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libtiff-4.7.2-h8f73337_1.conda",
+       "sha256": "3575a092e3e52625a1767804a4ebd321becaadf61b63dcd6735ebb88c0b3c359"
+      }
+     }
+    },
+    {
+     "id": "zlib",
+     "name": "libzlib",
+     "version": "1.3.2",
+     "licence": "Zlib",
+     "terms": null,
+     "libraries": [
+      "zlib-*.dll"
+     ],
+     "texts": [
+      "conda/libzlib/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "-",
+      "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/libzlib-1.3.2-hfd05255_3.conda",
+       "sha256": "0629c2cc0404d3bb29d6baa7b4ba62da80797015e86de050db81ea5a07050527"
+      }
+     }
+    },
+    {
+     "id": "zstd",
+     "name": "zstd",
+     "version": "1.5.7",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "zstd-*.dll"
+     ],
+     "texts": [
+      "conda/zstd/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/facebook/zstd/archive/v1.5.7.tar.gz",
+      "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/zstd-1.5.7-h534d264_7.conda",
+       "sha256": "ca7daae4f218a11fab82cc2857f0ea518ec3f46acec60490485347a4c22c6b3e"
+      }
+     }
+    },
+    {
+     "id": "msvc-runtime",
+     "name": "vc14_runtime",
+     "version": "14.51.36247",
+     "licence": "LicenseRef-MicrosoftVisualCpp2015-2022Runtime",
+     "terms": null,
+     "libraries": [
+      "msvcp140-*.dll"
+     ],
+     "texts": [
+      "conda/vc14_runtime/LICENSE.TXT"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/vc_redist.x64.exe",
+      "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/vc14_runtime-14.51.36247-habf1de7_41.conda",
+       "sha256": "4e4cb599cdc41bf2109d1464c127b5bcbddf548ce3e322e612afb691338b48f8"
+      }
+     }
+    },
+    {
+     "id": "msvc-openmp",
+     "name": "vcomp14",
+     "version": "14.51.36247",
+     "licence": "LicenseRef-MicrosoftVisualCpp2015-2022Runtime",
+     "terms": null,
+     "libraries": [
+      "vcomp140-*.dll"
+     ],
+     "texts": [
+      "conda/vcomp14/LICENSE.TXT"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/vc_redist.x64.exe",
+      "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
+     },
+     "packages": {
+      "win_amd64": {
+       "file": "win-64/vcomp14-14.51.36247-habf1de7_41.conda",
+       "sha256": "731e043390c9457299484d39e427221fc868a9249540a498a5a4f6456c7744d1"
+      }
+     }
+    }
+   ]
+  },
+  "macos": {
+   "platforms": [
+    "macosx_11_0_arm64",
+    "macosx_11_0_x86_64"
+   ],
+   "origin": "conda-forge packages linked by the wheel build (exact files from its logs), delocate-vendored",
+   "components": [
+    {
+     "id": "ocp",
+     "name": "OCP (cadquery-ocp-novtk)",
+     "version": "8.0.1.1.0",
+     "licence": "Apache-2.0",
+     "terms": null,
+     "libraries": [
+      "OCP.cpython-3*-darwin.so"
+     ],
+     "texts": [
+      "upstream/ocp/LICENSE"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/CadQuery/OCP",
+      "ref": "8.0.1.1"
+     },
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     },
+     "embedded": [
+      {
+       "name": "pybind11",
+       "version": "2.13.6",
+       "licence": "BSD-3-Clause",
+       "texts": [
+        "upstream/pybind11/LICENSE"
+       ],
+       "source": {
+        "kind": "git",
+        "url": "https://github.com/pybind/pybind11",
+        "ref": "v2.13.6"
+       }
+      }
+     ]
+    },
+    {
+     "id": "occt",
+     "name": "Open CASCADE Technology",
+     "version": "8.0.1",
+     "licence": "LGPL-2.1-only WITH OCCT-exception-1.0",
+     "terms": null,
+     "libraries": [
+      "libTK*.dylib"
+     ],
+     "texts": [
+      "upstream/occt/LICENSE_LGPL_21.txt",
+      "upstream/occt/OCCT_LGPL_EXCEPTION.txt"
+     ],
+     "source": {
+      "kind": "git",
+      "url": "https://github.com/Open-Cascade-SAS/OCCT",
+      "ref": "V8_0_1",
+      "commit": "b8f597c677811d1f9f4d8a97f5ae2825c0353a42"
+     },
+     "embedded": [
+      {
+       "name": "RapidJSON",
+       "version": "1.1.0.post20250205",
+       "licence": "MIT",
+       "texts": [
+        "upstream/rapidjson/license.txt"
+       ],
+       "source": {
+        "kind": "conda",
+        "name": "conda-forge rapidjson 1.1.0.post20250205"
+       }
+      }
+     ],
+     "built_by": {
+      "url": "https://github.com/bernhard-42/ocp-build-system",
+      "commit": "eace4e42cfa2c162ac39bc36864534fe5f5787a6",
+      "run": "37027154604"
+     }
+    },
+    {
+     "id": "freeimage",
+     "name": "freeimage",
+     "version": "3.18.0",
+     "licence": "GPL-2.0-or-later OR GPL-3.0-or-later OR FreeImage",
+     "terms": "FreeImage",
+     "libraries": [
+      "libfreeimage.*"
+     ],
+     "texts": [
+      "source/freeimage/FreeImage__license-fi.txt",
+      "source/freeimage/FreeImage__license-gplv2.txt",
+      "source/freeimage/FreeImage__license-gplv3.txt"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "http://downloads.sourceforge.net/freeimage/FreeImage3180.zip",
+      "sha256": "f41379682f9ada94ea7b34fe86bf9ee00935a3147be41b6569c9605a53e438fd"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/freeimage-3.18.0-h87663b4_25.conda",
+       "sha256": "3223ff0cb9719748f86b1d5644fb60302a9d8c656b568b0821bba673f1eaae65"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/freeimage-3.18.0-h0f7f9a8_25.conda",
+       "sha256": "663bca3ceac75a73868ab558730ca881c46ccc20b32d5e81708ecd201370d388"
+      }
+     }
+    },
+    {
+     "id": "libraw",
+     "name": "libraw",
+     "version": "0.22.2",
+     "licence": "LGPL-2.1-only",
+     "terms": null,
+     "libraries": [
+      "libraw.*"
+     ],
+     "texts": [
+      "conda/libraw/libraw/LICENSE.LGPL"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/LibRaw/LibRaw/archive/0.22.2.tar.gz",
+      "sha256": "627928088300ecde6ca91ffd202e189203f04ad61ad12f0fe9dc57b9a7a0fb3c"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libraw-0.22.2-h2d05ff4_0.conda",
+       "sha256": "e3e654527f10346ca39fe628bb6f81dadf946647e5c081f84703ab654ae15a45"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libraw-0.22.2-h3650196_0.conda",
+       "sha256": "a39f49ab1c0f7fbb7598e573e14ce72214d8bc5805fc92888d9702633971e3fe"
+      }
+     }
+    },
+    {
+     "id": "freetype",
+     "name": "freetype",
+     "version": "2.12.1",
+     "licence": "GPL-2.0-only OR FTL",
+     "terms": "FTL",
+     "libraries": [
+      "libfreetype.*"
+     ],
+     "texts": [
+      "source/freetype/freetype-2.12.1__LICENSE.TXT",
+      "source/freetype/freetype-2.12.1__docs__FTL.TXT",
+      "source/freetype/freetype-2.12.1__docs__GPLv2.TXT"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.12.1.tar.gz",
+      "sha256": "efe71fd4b8246f1b0b1b9bfca13cfff1c9ad85930340c27df469733bbb620938"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/freetype-2.12.1-hadb7bae_2.conda",
+       "sha256": "791673127e037a2dc0eebe122dc4f904cb3f6e635bb888f42cbe1a76b48748d9"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/freetype-2.12.1-h60636b9_2.conda",
+       "sha256": "b292cf5a25f094eeb4b66e37d99a97894aafd04a5683980852a8cbddccdc8e4e"
+      }
+     }
+    },
+    {
+     "id": "imath",
+     "name": "imath",
+     "version": "3.2.2",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "libImath.*"
+     ],
+     "texts": [
+      "conda/imath/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/AcademySoftwareFoundation/Imath/archive/v3.2.2.tar.gz",
+      "sha256": "b4275d83fb95521510e389b8d13af10298ed5bed1c8e13efd961d91b1105e462"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/imath-3.2.2-h13e8271_0.conda",
+       "sha256": "18986a94213497b9e60880fbbb71c54ac4f34adf948373d8298af8316fab17fc"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/imath-3.2.2-h6337977_0.conda",
+       "sha256": "d1fb13e40349261077c9fbd91c848513cf3e130ced9141496329f0f31d5e54d1"
+      }
+     }
+    },
+    {
+     "id": "openexr",
+     "name": "openexr",
+     "version": "3.4.15",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "libIex.*",
+      "libIlmThread.*",
+      "libOpenEXR.*",
+      "libOpenEXRCore.*"
+     ],
+     "texts": [
+      "conda/openexr/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/AcademySoftwareFoundation/openexr/archive/v3.4.15.tar.gz",
+      "sha256": "445ed5b0ea4d9cf98be3a4f219e419628b123b61dec65ccb743ab9b07fbebdaa"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/openexr-3.4.15-h3105456_0.conda",
+       "sha256": "eaca051eac49700b2d06b3d55fb8c15eb04e641f52959edf47130b90b7e5d919"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/openexr-3.4.15-ha5ed679_0.conda",
+       "sha256": "8c17544b2de5605f846ddb713def1abd0694509e626b9c675b1f2294f4bccc58"
+      }
+     }
+    },
+    {
+     "id": "lerc",
+     "name": "lerc",
+     "version": "4.2.0",
+     "licence": "Apache-2.0",
+     "terms": null,
+     "libraries": [
+      "libLerc.*"
+     ],
+     "texts": [
+      "conda/lerc/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/Esri/lerc/archive/v4.2.0.tar.gz",
+      "sha256": "a1fb593ed1fcb5b38800caf3c4454f872745202e961d00d745e53d81447e17c9"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/lerc-4.2.0-h1eee2c3_0.conda",
+       "sha256": "c97aa17d16d2ac332ba9f184e82ce8f72dcb10e9a10c5f299030be2d44e191b9"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/lerc-4.2.0-h35c7297_0.conda",
+       "sha256": "5ae9e18ec7f8134a009765bd1454687d5057482fbe9a4c661a672746d4a29b0b"
+      }
+     }
+    },
+    {
+     "id": "libdeflate",
+     "name": "libdeflate",
+     "version": "1.25",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "libdeflate.*"
+     ],
+     "texts": [
+      "conda/libdeflate/COPYING"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/ebiggers/libdeflate/archive/v1.25.tar.gz",
+      "sha256": "d11473c1ad4c57d874695e8026865e38b47116bbcb872bfc622ec8f37a86017d"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libdeflate-1.25-he7e0567_1.conda",
+       "sha256": "d896f4aa4ce4c590c2838678cb1917356fdb461d2a189991c0280c818c362172"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libdeflate-1.25-h7ad9622_1.conda",
+       "sha256": "210ee1d6a5aa201cf6d02b10edd02738cc35a4e8fb0866e4fb425010d6dd2c49"
+      }
+     }
+    },
+    {
+     "id": "fmt",
+     "name": "fmt",
+     "version": "12.2.0",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "libfmt.*"
+     ],
+     "texts": [
+      "conda/fmt/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/fmtlib/fmt/archive/12.2.0.tar.gz",
+      "sha256": "8b852bb5aa6e7d8564f9e81394055395dd1d1936d38dfd3a17792a02bebd7af0"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/fmt-12.2.0-h99e4e11_1.conda",
+       "sha256": "d2de3d3aef29e8ca37589228c76b3c1dd7f6d8ccbdd40160b8a6f34e3dd72199"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/fmt-12.2.0-he6aba6a_1.conda",
+       "sha256": "bc73a5d4de05f2552bd2c86301803465268dbc35c407cea139e56607cfbe03fd"
+      }
+     }
+    },
+    {
+     "id": "libjpeg-turbo",
+     "name": "libjpeg-turbo",
+     "version": "3.2.0",
+     "licence": "IJG AND BSD-3-Clause AND Zlib",
+     "terms": null,
+     "libraries": [
+      "libjpeg.*"
+     ],
+     "texts": [
+      "conda/libjpeg-turbo/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/3.2.0.tar.gz",
+      "sha256": "980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libjpeg-turbo-3.2.0-h84a0fba_1.conda",
+       "sha256": "05006418f9392c9b723e8428808db106de0350a497832f95f921b85ff1072310"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libjpeg-turbo-3.2.0-ha1e9b39_1.conda",
+       "sha256": "0792824360a9e59802c9464157c1098c3d84330dcab5dbde762abaca16f580a8"
+      }
+     }
+    },
+    {
+     "id": "jxrlib",
+     "name": "jxrlib",
+     "version": "1.1",
+     "licence": "BSD-2-Clause",
+     "terms": null,
+     "libraries": [
+      "libjpegxr.*",
+      "libjxrglue.*"
+     ],
+     "texts": [
+      "upstream/jxrlib/LICENSE-from-JXRGlue.h.txt"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "http://http.debian.net/debian/pool/main/j/jxrlib/jxrlib_1.1.orig.tar.gz",
+      "sha256": "c7287b86780befa0914f2eeb8be2ac83e672ebd4bd16dc5574a36a59d9708303"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/jxrlib-1.1-h93a5062_3.conda",
+       "sha256": "c9e0d3cf9255d4585fa9b3d07ace3bd934fdc6a67ef4532e5507282eff2364ab"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/jxrlib-1.1-h10d778d_3.conda",
+       "sha256": "a548a4be14a4c76d6d992a5c1feffcbb08062f5c57abc6e4278d40c2c9a7185b"
+      }
+     }
+    },
+    {
+     "id": "lcms2",
+     "name": "lcms2",
+     "version": "2.19.1",
+     "licence": "MIT",
+     "terms": null,
+     "libraries": [
+      "liblcms2.*"
+     ],
+     "texts": [
+      "conda/lcms2/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz",
+      "sha256": "bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/lcms2-2.19.1-hce41798_3.conda",
+       "sha256": "5f9b511f918e13dfddb8495c1764aec894b66c5a88359737aa302b8899ae25fa"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/lcms2-2.19.1-h4e6bd4b_3.conda",
+       "sha256": "3cad2aa6ee744240e5012f6647fcfa95bb4375e718983d65ce154297357b1321"
+      }
+     }
+    },
+    {
+     "id": "xz",
+     "name": "liblzma",
+     "version": "5.8.3",
+     "licence": "0BSD",
+     "terms": null,
+     "libraries": [
+      "liblzma.*"
+     ],
+     "texts": [
+      "conda/liblzma/COPYING",
+      "conda/liblzma/COPYING.0BSD"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz",
+      "sha256": "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/liblzma-5.8.3-h8088a28_1.conda",
+       "sha256": "23d0630046a3e8b164d8f80f2b74ed2605af2e7050ab9913018056402fae4311"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/liblzma-5.8.3-hbb4bfdb_1.conda",
+       "sha256": "7915dac7c71c208e40e716e2f6d3eff41a8d5584e0e7c2d46f9bf9bd5f9aa739"
+      }
+     }
+    },
+    {
+     "id": "libpng",
+     "name": "libpng",
+     "version": "1.6.59",
+     "licence": "zlib-acknowledgement",
+     "terms": null,
+     "libraries": [
+      "libpng16.*"
+     ],
+     "texts": [
+      "conda/libpng/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.gz",
+      "sha256": "86a3e4b501f7f50e392c4e456ea158893e9a595b1c63eb88c7bb9f6cf8772dad"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libpng-1.6.59-hf5e6511_0.conda",
+       "sha256": "4de4dc4cb7432c328c1eaf4f7cc9c6b48c073eab1e9c6723d4533e6d57e7d595"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libpng-1.6.59-h4382c61_0.conda",
+       "sha256": "4576bdf533292672b4aa955a43029343e25dcffaf8048d255b88e66b0860e602"
+      }
+     }
+    },
+    {
+     "id": "libwebp",
+     "name": "libwebp-base",
+     "version": "1.6.0",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "libsharpyuv.*",
+      "libwebp.*",
+      "libwebpmux.*"
+     ],
+     "texts": [
+      "conda/libwebp-base/COPYING"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "http://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libwebp-base-1.6.0-h202fb40_1.conda",
+       "sha256": "0ff54650d470c7e54cbeffdd53a8c063e055a7bcf784388c0385ce5c4741b0f4"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libwebp-base-1.6.0-hb276fe9_1.conda",
+       "sha256": "96263e9134164b6ca015a8cfba3a4cac9ca2429ddfebd25c120817fa608d2fdc"
+      }
+     }
+    },
+    {
+     "id": "openjpeg",
+     "name": "openjpeg",
+     "version": "2.5.4",
+     "licence": "BSD-2-Clause",
+     "terms": null,
+     "libraries": [
+      "libopenjp2.*"
+     ],
+     "texts": [
+      "conda/openjpeg/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/uclouvain/openjpeg/archive/v2.5.4.tar.gz",
+      "sha256": "a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/openjpeg-2.5.4-h4d1e80c_2.conda",
+       "sha256": "e71bd04b5d0e39f39a3c039d021d3b76cd65bee3032e7f859ab7082f0ace8be5"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/openjpeg-2.5.4-he4eae51_1.conda",
+       "sha256": "2d9eef746dc20c5e829b0b10de6731c5c5ab01c55160364ecf05a1bfaea0cca6"
+      }
+     }
+    },
+    {
+     "id": "openjph",
+     "name": "openjph",
+     "version": "0.31.0",
+     "licence": "BSD-2-Clause",
+     "terms": null,
+     "libraries": [
+      "libopenjph.*"
+     ],
+     "texts": [
+      "conda/openjph/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/aous72/OpenJPH/archive/0.31.0.tar.gz",
+      "sha256": "fe169dbbaae71a169a0a6a68dccb346616193252c1ca044217afa0d5d1dc436f"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/openjph-0.31.0-h2a4d681_0.conda",
+       "sha256": "853c41f0e041a5c1acce60490ec065e4ca1b43d7b63fbad504980de3a822f719"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/openjph-0.31.0-h2c0e27e_0.conda",
+       "sha256": "aa1a9be70abca41b4e94ddd9e29e30c53252c2a2160b7dd44282f3c01fb0b06d"
+      }
+     }
+    },
+    {
+     "id": "libtiff",
+     "name": "libtiff",
+     "version": "4.7.2",
+     "licence": "HPND",
+     "terms": null,
+     "libraries": [
+      "libtiff.*"
+     ],
+     "texts": [
+      "conda/libtiff/LICENSE.md"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.gz",
+      "sha256": "672bd7d10aee4606171afb864f3570b83340f6a33e2c186dc0512f7145ffdf6a"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libtiff-4.7.2-hf67920b_1.conda",
+       "sha256": "847d22a86ae28f66d3888702698254d25bb4eac3a0f64c1fabfb1842ac00be4c"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libtiff-4.7.2-h01c3a8c_1.conda",
+       "sha256": "661b0befbb6e2300e0d25d9aac8f66be7003297c757fbb3e016985bf43a72638"
+      }
+     }
+    },
+    {
+     "id": "zlib",
+     "name": "libzlib",
+     "version": "1.3.2",
+     "licence": "Zlib",
+     "terms": null,
+     "libraries": [
+      "libz.*"
+     ],
+     "texts": [
+      "conda/libzlib/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "-",
+      "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libzlib-1.3.2-h8088a28_3.conda",
+       "sha256": "a18fa5d5bac452401459f966cf0d872224e8080c4ff93c77e168d43ab42ef9d7"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libzlib-1.3.2-hbb4bfdb_3.conda",
+       "sha256": "b2dba286dd6632292b12296e761193b5ef9fb0eaeecaa481f5ba9af72c0c18e1"
+      }
+     }
+    },
+    {
+     "id": "zstd",
+     "name": "zstd",
+     "version": "1.5.7",
+     "licence": "BSD-3-Clause",
+     "terms": null,
+     "libraries": [
+      "libzstd.*"
+     ],
+     "texts": [
+      "conda/zstd/LICENSE"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/facebook/zstd/archive/v1.5.7.tar.gz",
+      "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/zstd-1.5.7-hf451053_7.conda",
+       "sha256": "da867f5092eb0cb746d353694f0098031fd9817a4ce7d5743121209ae0f406ca"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/zstd-1.5.7-hbc1a06c_7.conda",
+       "sha256": "5277886d9704a624dc9b79ac985861e1e431bdb39a57c082507ab577a138ec6c"
+      }
+     }
+    },
+    {
+     "id": "libcxx",
+     "name": "libcxx",
+     "version": "23.1.2",
+     "licence": "Apache-2.0 WITH LLVM-exception",
+     "terms": null,
+     "libraries": [
+      "libc++.*"
+     ],
+     "texts": [
+      "conda/libcxx/libcxx/LICENSE.TXT"
+     ],
+     "source": {
+      "kind": "archive",
+      "url": "https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-23.1.2.tar.gz",
+      "sha256": "75788d759e6987a910975b902f554dc77c08b076b945b2cebde54116d8e831ca"
+     },
+     "packages": {
+      "macosx_arm64": {
+       "file": "osx-arm64/libcxx-23.1.2-h55c6f16_0.conda",
+       "sha256": "087a610bacee7901d259ef72c6f060d795ab26831bd7541ba75ced786a5a63f9"
+      },
+      "macosx_x86_64": {
+       "file": "osx-64/libcxx-23.1.2-h19cb2f5_0.conda",
+       "sha256": "0ad8c788c3681674f100820cf5e76fcc8ec88502e7aa64f4776581985009a7be"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

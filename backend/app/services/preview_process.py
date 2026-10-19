@@ -5,42 +5,54 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import psutil
 
+from backend.app.services.part_render_tree import launch_arg
 from backend.app.services.preview_protocol import LOG_BYTES, PreviewError, encode
-from backend.app.services.worker_containment import WorkerContainment
+from backend.app.services.worker_containment import WorkerContainment, contained_interpreter
+from backend.app.services.worker_env import worker_environment
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
 
+class SpawnUnproven(PreviewError):
+    """The guardian was started, its start failed, and the cleanup could not prove its tree gone.
+
+    A PreviewError("unavailable"), so every existing caller sees what it always saw; one that keeps proof
+    of what it spawned (part render, plan E3, R20) tells it apart from a start that failed cleanly."""
+
+    def __init__(self, pid: int) -> None:
+        super().__init__("unavailable")
+        self.pid = pid
+
+
 class PreviewProcess:
-    def __init__(self, module: str, bootstrap: dict, cache: Path):
-        # No .env, database URL, API credentials or NATS token in renderer env.
-        keys = {
-            "PATH",
-            "SYSTEMROOT",
-            "WINDIR",
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "LANG",
-            "LC_ALL",
-            "LD_LIBRARY_PATH",
-            "DYLD_LIBRARY_PATH",
-            "MPLCONFIGDIR",
-        }
-        env = {key: value for key, value in os.environ.items() if key.upper() in keys}
-        env.update(BAMDUDE_IGNORE_DOTENV="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-            env[key] = "1"
-        cache.mkdir(parents=True, exist_ok=True)
-        env.setdefault("MPLCONFIGDIR", str(cache))
+    def __init__(
+        self,
+        module: str,
+        bootstrap: dict,
+        cache: Path,
+        *,
+        on_spawn: Callable[[int], None] | None = None,
+        launch_token: str | None = None,
+        job_memory_limit: int | None = None,
+    ):
+        # No .env, database URL, API credentials or NATS token in renderer env. The base interpreter in a
+        # Windows venv: the redirector's own child could run before the Job attach (contained_interpreter).
+        interpreter, env = contained_interpreter(worker_environment(cache))
         self.tail = bytearray()
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "backend.app.worker_guardian"],
+            # the launch's token on the command line: how a guardian whose record never reached the disk is
+            # found after its parent died (part_render_tree, consilium r2 R2.1)
+            [
+                interpreter,
+                "-m",
+                "backend.app.worker_guardian",
+                *([launch_arg(launch_token)] if launch_token else []),
+            ],
             cwd=Path(__file__).resolve().parents[3],
             env=env,
             stdin=subprocess.PIPE,
@@ -51,13 +63,18 @@ class PreviewProcess:
         )
         self.containment = None
         try:
-            self.containment = WorkerContainment.attach(self.process.pid)
+            self.containment = WorkerContainment.attach(self.process.pid, job_memory_limit=job_memory_limit)
+            if on_spawn is not None:
+                on_spawn(self.process.pid)  # the guardian has no bootstrap yet, so it has spawned nothing
             self.reader = threading.Thread(target=self._drain, daemon=True)
             self.reader.start()
             self.process.stdin.write(encode({"module": module, **bootstrap}) + b"\n")
             self.process.stdin.flush()
         except BaseException:
-            self.stop()
+            try:
+                self.stop()
+            except Exception as unproven:
+                raise SpawnUnproven(self.process.pid) from unproven  # consilium E3.2-R1
             raise
 
     def _drain(self):

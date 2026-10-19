@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import Mock
 
 import pytest
 
@@ -8,6 +9,67 @@ from backend.app.services.camera_worker_live import (
     LiveExternalSubscription,
     LiveProducerRegistry,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["raw", "probe", "subscriber_limit", "producer_limit"])
+async def test_live_admission_refuses_without_changing_existing_owners(monkeypatch, reason):
+    import backend.app.services.camera_worker_live as module
+
+    monkeypatch.setattr(module, "MAX_LIVE_SUBSCRIBERS", 1)
+    registry = LiveProducerRegistry()
+    leases = []
+    raw = None
+
+    async def producer():
+        await asyncio.Event().wait()
+
+    factory = Mock(side_effect=producer)
+    identity = "rejected"
+    try:
+        if reason == "raw":
+            raw = await registry.acquire_raw(identity)
+        elif reason == "probe":
+            assert await registry.acquire_probe(identity)
+        else:
+            owner = identity if reason == "subscriber_limit" else "other"
+            lease, _queue = await registry.subscribe(owner, factory)
+            leases.append(lease)
+            await asyncio.sleep(0)
+        before = (
+            dict(registry._producers),
+            {key: dict(value) for key, value in registry._subscribers.items()},
+            dict(registry._raw_leases),
+            set(registry._probe_leases),
+        )
+        factory.reset_mock()
+        with pytest.raises(RuntimeError) as caught:
+            await registry.subscribe(identity, factory)
+        assert type(caught.value).__name__ == "LiveAdmissionRejected"
+        assert caught.value.reason == ("busy" if reason in {"raw", "probe"} else reason)
+        factory.assert_not_called()
+        assert before == (
+            registry._producers,
+            registry._subscribers,
+            registry._raw_leases,
+            registry._probe_leases,
+        )
+
+        if raw:
+            await registry.release_raw(raw)
+        await registry.release_probe(identity)
+        for lease in leases:
+            await registry.unsubscribe(lease)
+        leases.clear()
+        lease, _queue = await registry.subscribe(identity, factory)
+        leases.append(lease)
+        factory.assert_called_once()
+    finally:
+        if raw:
+            await registry.release_raw(raw)
+        await registry.release_probe(identity)
+        for lease in leases:
+            await registry.unsubscribe(lease)
 
 
 @pytest.mark.asyncio

@@ -167,6 +167,7 @@ show_help() {
     echo "  --no-service       Skip systemd service setup (Linux only)"
     echo "  --set-system-tz    Set system timezone to match (for unattended installs)"
     echo "  --yes, -y          Non-interactive mode, accept defaults"
+    echo "  --with-step-preview  Install the STEP preview component (3D thumbnails of STEP files)"
     echo "  --help, -h         Show this help message"
     echo ""
     echo "Examples:"
@@ -438,6 +439,340 @@ setup_virtualenv() {
     fi
 
     log_success "Virtual environment configured"
+}
+
+provision_render_runtime() {
+    log_info "Installing the part-render runtime (pinned Node.js)..."
+    cd "$INSTALL_PATH"
+    local python="$INSTALL_PATH/venv/bin/python"
+    local as_service=()
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        # Same contract as setup_virtualenv: the install tree belongs to the
+        # service user, so the runtime is unpacked by that user too.
+        as_service=(sudo -u "$SERVICE_USER")
+    fi
+    # ${arr[@]+...}: an empty array must expand to nothing under `set -u` on bash 3.2 (macOS).
+    local code=0
+    ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_runtime provision --runtime "$INSTALL_PATH/runtime" || code=$?
+    if [[ $code -eq 3 ]]; then
+        # No official Node.js for this machine (armv6 -- Pi 1 / Zero --, an armel or musl
+        # 32-bit userland, RISC-V ...): part thumbnails use the top-view fallback, and the
+        # System page says so. 32-bit armhf (Raspberry Pi OS 32-bit) runs Node 22.
+        log_info "No official Node.js build for this machine ($(uname -m)): part thumbnails will use the top-view fallback"
+        return 0
+    fi
+    if [[ $code -ne 0 ]]; then
+        # A blocked download host or a hash mismatch: nothing unverified was
+        # unpacked, and a missing feature must not fail the whole install --
+        # part thumbnails report it on the System page; re-running the
+        # installer or update.sh tries again.
+        log_warn "Render runtime download or verification failed; part thumbnails will report it on the System page"
+        return 0
+    fi
+    log_success "Render runtime installed"
+}
+
+# -----------------------------------------------------------------------------
+# STEP preview component (CAD) — native installs carry it only by the
+# administrator's choice (spec stage C). The choice is a marker that only the
+# helper (python -m backend.app.step_runtime) reads and writes; these functions
+# install the system libraries (root) and run the helper as the install's owner.
+# No failure here ever stops the installer or the service.
+# -----------------------------------------------------------------------------
+
+# yes / no from the question or --with-step-preview; empty = not offered here.
+STEP_PREVIEW="${STEP_PREVIEW:-}"
+STEP_PREVIEW_UNASKED=""  # set only by ask_step_preview: --yes let the default say no
+
+# The system libraries the Linux wheels leave to the machine (what Docker
+# installs on Debian; Fedora's names are confirmed by the native acceptance).
+step_preview_packages() {
+    case "$PKG_MANAGER" in
+        apt) echo "libgl1 libx11-6 libexpat1 zlib1g" ;;
+        dnf|yum) echo "mesa-libGL libX11 expat zlib" ;;
+        *) echo "" ;;
+    esac
+}
+
+# The package of one soname the helper names (smoke_failed:system_library:<soname>).
+step_preview_package_for() {
+    case "$PKG_MANAGER:$1" in
+        apt:libGL.so.1) echo libgl1 ;;
+        apt:libX11.so.6) echo libx11-6 ;;
+        apt:libexpat.so.1) echo libexpat1 ;;
+        apt:libz.so.1) echo zlib1g ;;
+        dnf:libGL.so.1|yum:libGL.so.1) echo mesa-libGL ;;
+        dnf:libX11.so.6|yum:libX11.so.6) echo libX11 ;;
+        dnf:libexpat.so.1|yum:libexpat.so.1) echo expat ;;
+        dnf:libz.so.1|yum:libz.so.1) echo zlib ;;
+        *) echo "the package that provides $1" ;;
+    esac
+}
+
+# Asked only where the component is supported and its libraries are known.
+step_preview_offered() {
+    case "$OS_TYPE" in
+        debian|rhel|macos) ;;
+        *) return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|aarch64|arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The helper of THIS install, run as its owner; prints the helper's one JSON line.
+step_preview_helper() {
+    local python="$INSTALL_PATH/venv/bin/python"
+    local as_service=()
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        as_service=(sudo -u "$SERVICE_USER")
+    fi
+    # ${arr[@]+...}: an empty array must expand to nothing under `set -u` on bash 3.2 (macOS).
+    (cd "$INSTALL_PATH" && ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.step_runtime "$@" --app-dir "$INSTALL_PATH")
+}
+
+# The closed reason of a helper answer, for a hint (never shown raw beyond it).
+step_preview_reason() {
+    sed -n 's/.*"reason": "\([^"]*\)".*/\1/p' <<<"$1" | head -n 1
+}
+
+# What the installed tree's own helper says its administrator chose: enabled,
+# disabled or none — or "unknown" when there is no helper to ask yet, or it
+# could not answer (a refused sudo read, an old helper without `status`).
+step_preview_existing_choice() {
+    local answer
+    if [[ ! -x "$INSTALL_PATH/venv/bin/python" ]]; then
+        echo unknown
+        return 0
+    fi
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        # Through sudo: say so before a password prompt appears among the questions. Stderr: stdout is the answer.
+        log_info "Reading the STEP preview choice of the existing install (as $SERVICE_USER)..." >&2
+    fi
+    if ! answer=$(step_preview_helper status 2>/dev/null); then
+        echo unknown
+        return 0
+    fi
+    case "$answer" in
+        *'"choice": "enabled"'*) echo enabled ;;
+        *'"choice": "disabled"'*) echo disabled ;;
+        *'"choice": '*) echo none ;;
+        *) echo unknown ;;
+    esac
+}
+
+# "yes" only when the installed tree's helper says its administrator enabled the component.
+step_preview_default() {
+    if [[ "$(step_preview_existing_choice)" == "enabled" ]]; then
+        echo yes
+    else
+        echo no
+    fi
+}
+
+ask_step_preview() {
+    if ! step_preview_offered; then
+        if [[ "$STEP_PREVIEW" == "yes" ]]; then
+            log_warn "--with-step-preview is ignored here: the installer does not set the component up on this machine"
+        fi
+        STEP_PREVIEW=""
+        case "$OS_TYPE" in
+            arch|suse)
+                log_info "STEP previews are not offered on this distribution; to try them, install libGL, libX11 and expat, then run install/step-preview.sh enable"
+                ;;
+            *)
+                log_info "STEP previews are not available on this machine ($(uname -m))"
+                ;;
+        esac
+        return 0
+    fi
+    [[ -n "$STEP_PREVIEW" ]] && return 0
+    local default
+    default=$(step_preview_default)
+    if prompt_yes_no "Install the STEP preview component (3D thumbnails of STEP files, about 170 MB)?" "${default:0:1}"; then
+        STEP_PREVIEW="yes"
+    else
+        STEP_PREVIEW="no"
+        # Nobody answered: the default spoke, and it may have been read before the venv could answer.
+        [[ "$NON_INTERACTIVE" == "true" ]] && STEP_PREVIEW_UNASKED="yes"
+    fi
+}
+
+install_step_preview_libraries() {
+    local packages
+    packages=$(step_preview_packages)
+    [[ -n "$packages" ]] || return 0
+    # shellcheck disable=SC2086  # one word per package
+    case "$PKG_MANAGER" in
+        apt)
+            # `enable` and update.sh run this alone, on an index that may be weeks old: a package the mirror has
+            # moved on from is a 404 until the index is refreshed. dnf/yum refresh stale metadata themselves.
+            sudo apt-get update -qq || log_warn "The package index could not be refreshed; installing from the one on disk"
+            sudo apt-get install -y $packages
+            ;;
+        dnf|yum) sudo "$PKG_MANAGER" install -y $packages ;;
+    esac
+}
+
+# A tree root owns would get its component as root, and the service would later
+# meet it as `permission`: the CAD step leaves such an install alone and says why.
+step_preview_owner_refused() {
+    [[ "$OS_TYPE" != "macos" && "$SERVICE_USER" == "root" ]] || return 1
+    log_warn "$INSTALL_PATH belongs to root, not to the user BamDude runs as: the STEP preview component is left alone. Give the install back to its service user (sudo chown -R <user> \"$INSTALL_PATH\"), then run install/step-preview.sh enable"
+    return 0
+}
+
+# select -> the choice FIRST -> the libraries -> the component (spec stage C
+# R5b). Returns the helper's code (3: not for this machine); the last answer is
+# left in STEP_PREVIEW_ANSWER for the hint.
+run_step_preview_step() {
+    local by="$1" rc=0
+    STEP_PREVIEW_ANSWER=""
+    step_preview_helper select >/dev/null 2>&1 || rc=$?
+    if [[ $rc -eq 3 ]]; then
+        log_info "STEP previews are not available for this Python on this machine"
+        return 3
+    fi
+    if [[ $rc -ne 0 ]]; then
+        log_warn "The STEP preview component could not be selected for this machine"
+        return "$rc"
+    fi
+    if ! STEP_PREVIEW_ANSWER=$(step_preview_helper choose enabled --by "$by"); then
+        log_warn "The STEP preview choice could not be recorded ($(step_preview_reason "$STEP_PREVIEW_ANSWER")); nothing was installed"
+        return 1
+    fi
+    if ! install_step_preview_libraries; then
+        log_warn "The system libraries for STEP previews could not be installed; trying the component anyway"
+    fi
+    rc=0
+    STEP_PREVIEW_ANSWER=$(step_preview_helper install) || rc=$?
+    return "$rc"
+}
+
+# The hint for a failed component: the package of a named library, and the repair.
+step_preview_hint() {
+    local reason
+    reason=$(step_preview_reason "$1")
+    case "$reason" in
+        smoke_failed:system_library:*)
+            echo "install $(step_preview_package_for "${reason##*:}"), then run install/step-preview.sh enable"
+            ;;
+        *)
+            echo "${reason:-it did not say why}; run install/step-preview.sh enable to try again"
+            ;;
+    esac
+}
+
+provision_step_preview() {
+    [[ -n "$STEP_PREVIEW" ]] || return 0  # not offered here: no choice is recorded
+    local answer rc=0
+    if [[ "$STEP_PREVIEW" == "no" && "${STEP_PREVIEW_UNASKED:-}" == "yes" ]]; then
+        # `--yes` is no disable command: with the venv rebuilt, ask the tree again before writing anything.
+        case "$(step_preview_existing_choice)" in
+            enabled)
+                log_info "This install has the STEP preview component enabled; --yes keeps it"
+                STEP_PREVIEW="yes"
+                ;;
+            unknown)
+                log_warn "The STEP preview choice of this install could not be read; it was left as it is"
+                return 0
+                ;;
+        esac
+    fi
+    if [[ "$STEP_PREVIEW" == "no" ]]; then
+        if ! answer=$(step_preview_helper choose disabled --by install); then
+            log_warn "The STEP preview choice could not be recorded ($(step_preview_reason "$answer"))"
+        fi
+        return 0
+    fi
+    log_info "Installing the STEP preview component..."
+    run_step_preview_step install || rc=$?
+    case "$rc" in
+        0) log_success "STEP preview component installed" ;;
+        3) ;;  # said so already
+        *) log_warn "The STEP preview component was not installed: $(step_preview_hint "$STEP_PREVIEW_ANSWER")" ;;
+    esac
+    return 0
+}
+
+# Whether an old bundle may go: only a caller that PROVES the service stopped
+# says so (update.sh defines it from its cgroup proof); by default, never.
+step_preview_may_prune() {
+    return 1
+}
+
+# For update.sh, with the service stopped (spec stage C R4): an ENABLED
+# component gets its libraries and the new pin. The old bundle is left for
+# prune_old_step_preview, which update.sh runs last. Always 0.
+refresh_enabled_step_preview() {
+    local answer rc=0
+    if ! answer=$(step_preview_helper status 2>/dev/null); then
+        log_warn "The STEP preview component's state could not be read; it was left as it is (install/step-preview.sh status says why)"
+        return 0
+    fi
+    [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
+    if step_preview_owner_refused; then
+        return 0
+    fi
+    if ! install_step_preview_libraries; then
+        log_warn "The system libraries for STEP previews could not be installed; trying the component anyway"
+    fi
+    STEP_PREVIEW_ANSWER=$(step_preview_helper install --if-enabled) || rc=$?
+    if [[ $rc -eq 3 ]]; then
+        log_info "STEP previews are not available for this Python on this machine; the component was left as it is"
+        return 0
+    fi
+    if [[ $rc -ne 0 ]]; then
+        log_warn "The STEP preview component was not updated: $(step_preview_hint "$STEP_PREVIEW_ANSWER")"
+    fi
+    return 0
+}
+
+# How many bundles of earlier pins sit beside the current one: a digest
+# directory per pin under each key. Staging and trash are the helper's own.
+step_preview_old_bundles() {
+    local root="$INSTALL_PATH/runtime/step-preview" key dir count=0 n
+    for key in "$root"/*/; do
+        [[ -d "$key" ]] || continue
+        n=0
+        for dir in "$key"*/; do
+            [[ -d "$dir" && "$(basename "$dir")" =~ ^[0-9a-f]{32}$ ]] && n=$((n + 1))
+        done
+        if (( n > 1 )); then
+            count=$((count + n - 1))
+        fi
+    done
+    echo "$count"
+}
+
+# Last, just before update.sh starts the service (spec stage C R4a; shell
+# review S2): an earlier pin's bundle goes only when the stop is proven both
+# right after the stop and again now — and only after the frontend build, so a
+# failed build that rolls the code back still finds the old code's bundle. The
+# helper itself prunes nothing while the current pin is not installed. With
+# nothing old there, no proof is needed and nothing is said. Always 0.
+prune_old_step_preview() {
+    local answer
+    answer=$(step_preview_helper status 2>/dev/null) || return 0  # the refresh already said so
+    [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
+    [[ "$answer" == *'"bundle": "installed"'* ]] || return 0  # the new pin did not install: keep what renders
+    if [[ "$OS_TYPE" != "macos" && "$SERVICE_USER" == "root" ]]; then
+        return 0  # the refresh already said why it left the component alone
+    fi
+    [[ "$(step_preview_old_bundles)" -gt 0 ]] || return 0
+    # The pin of the code before this update: a start that fails rolls back to it, so its bundle stays (Codex
+    # F1-R1) until a later update, whose own rollback target is this code, lets it go.
+    local keep=()
+    if [[ -n "${STEP_PREVIEW_ROLLBACK_MANIFEST:-}" ]]; then
+        keep=(--keep-manifest "$STEP_PREVIEW_ROLLBACK_MANIFEST")
+    fi
+    if step_preview_may_prune; then
+        step_preview_helper prune ${keep[@]+"${keep[@]}"} >/dev/null || log_warn "Old STEP preview components could not be removed"
+    else
+        log_warn "The old STEP preview component was kept: the service's stop could not be proven"
+    fi
+    return 0
 }
 
 # macOS attributes Local Network permission (TCC) to a process's code
@@ -924,6 +1259,10 @@ parse_args() {
                 NON_INTERACTIVE="true"
                 shift
                 ;;
+            --with-step-preview)
+                STEP_PREVIEW="yes"
+                shift
+                ;;
             --help|-h)
                 show_help
                 ;;
@@ -1065,6 +1404,9 @@ gather_config() {
     # Database backend
     gather_db_config
 
+    # STEP preview component: only by the administrator's choice
+    ask_step_preview
+
     # Debug mode
     if [[ -z "$DEBUG_MODE" ]]; then
         if prompt_yes_no "Enable debug mode?" "n"; then
@@ -1101,6 +1443,7 @@ gather_config() {
         external) echo -e "  Database:      ${GREEN}external PostgreSQL${NC}" ;;
         *)        echo -e "  Database:      ${GREEN}SQLite${NC}" ;;
     esac
+    [[ -n "$STEP_PREVIEW" ]] && echo -e "  STEP previews: ${GREEN}$STEP_PREVIEW${NC}"
     echo -e "  Debug mode:    ${GREEN}$DEBUG_MODE${NC}"
     echo -e "  Log level:     ${GREEN}$LOG_LEVEL${NC}"
     echo ""
@@ -1196,6 +1539,8 @@ main() {
 
     download_bamdude
     setup_virtualenv
+    provision_render_runtime
+    provision_step_preview
     sign_python_for_tcc
     build_frontend
     create_directories
@@ -1250,4 +1595,8 @@ main() {
     echo ""
 }
 
-main "$@"
+# Run only when executed (`./install.sh`, `bash install.sh`, `curl … | bash`):
+# update.sh sources this file for its functions and package lists.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    main "$@"
+fi

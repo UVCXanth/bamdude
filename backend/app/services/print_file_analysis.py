@@ -23,7 +23,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FunctionType
 from typing import TYPE_CHECKING, Literal
-from xml.etree import ElementTree
+
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 
 if TYPE_CHECKING:
     from backend.app.services.printer_manager import PrinterManager
@@ -193,7 +195,7 @@ def _slicer_estimates_from_slice_info(path: Path | zipfile.ZipFile, plate_id: in
             except KeyError:
                 return {}
         root = ElementTree.fromstring(raw)
-    except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+    except (OSError, zipfile.BadZipFile, ElementTree.ParseError, DefusedXmlException) as exc:
         logger.debug("3MF slicer estimates unavailable for %s: %s", path, exc)
         return {}
 
