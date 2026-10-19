@@ -5,6 +5,7 @@ import { Calculator, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, ApiError, type Order, type PlanRow, type PlateFitResponse } from '../../api/client';
 import { Modal } from '../Modal';
 import { Button } from '../Button';
+import { Select } from '../Select';
 import { formatDuration } from '../../utils/date';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { useAuth } from '../../contexts/AuthContext';
@@ -125,10 +126,10 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
       {order.isPending && <p role="status">{t('common.loading')}</p>}
       {order.data && <>
         <label className="block text-sm">{t('plateFit.line')}
-          <select className="mt-1 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-2 text-white" value={line?.id ?? ''} disabled={busy || !!saved}
+          <Select className="mt-1 w-full" value={line?.id ?? ''} disabled={busy || !!saved}
             onChange={e => { reset(); setLineId(Number(e.target.value)); setTyped(null); }}>
             {lines.map(l => <option key={l.id} value={l.id}>{l.product_name} · #{l.id} · {l.quantity.toLocaleString()}</option>)}
-          </select>
+          </Select>
         </label>
         {line && <p className="text-sm font-medium">{line.product_name} · {t('plateFit.current', { quantity: line.quantity.toLocaleString() })}</p>}
         <div className="flex flex-wrap items-end gap-3">
@@ -168,12 +169,12 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
         {(data.lower === 'none' || data.upper === 'none') && <p className="text-xs text-bambu-gray">{t('plateFit.bounds', { quantity: data.quantity_limit.toLocaleString() })}</p>}
       </>}
       {current && data && <>
-        {removedCount > 0 && <div className="rounded-xl border border-amber-500 bg-amber-500/10 p-4 text-sm">
+        {removedCount > 0 && <div className="rounded-xl border border-amber-600 dark:border-amber-500 bg-amber-500/10 p-4 text-sm">
           <p className="font-semibold">{t('plateFit.queueWarning', { count: removedCount })}</p>
           <details className="mt-2"><summary>{t('plateFit.queueIds')}</summary><p className="break-words">{data.removable_auto_ids.map(id => `#${id}`).join(', ')}</p></details>
           <label className="mt-3 flex items-start gap-2"><input type="checkbox" className="mt-1 accent-bambu-green" checked={queueAck} disabled={busy || !!saved} onChange={e => setQueueAck(e.target.checked)} />{t('plateFit.queueAck', { count: removedCount })}</label>
         </div>}
-        <div className={`rounded-xl border p-4 ${large ? 'border-amber-500 bg-amber-500/10' : 'border-bambu-dark-tertiary'}`}>
+        <div className={`rounded-xl border p-4 ${large ? 'border-amber-600 dark:border-amber-500 bg-amber-500/10' : 'border-bambu-dark-tertiary'}`}>
           <p className="text-xl font-semibold tabular-nums">{data.current_quantity.toLocaleString()} → {current.quantity.toLocaleString()}</p>
           <p className="font-semibold tabular-nums">{delta(change)} · {delta(Math.round(change / data.current_quantity * 1000) / 10)}%</p>
           <p className="mt-2 text-sm">{t('plateFit.summary', { runs: current.runs.reduce((n, r) => n + r.count, 0), time: current.print_time_seconds == null ? '—' : formatDuration(current.print_time_seconds), grams: current.filament_used_grams?.toFixed(1) ?? '—' })}</p>
