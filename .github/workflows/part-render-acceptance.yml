@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Match an ABI with published dependencies; the runner's default Python may be newer than the CAD matrix.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
       - name: Install BamDude as a launchd service
         run: bash install/install.sh --path "$HOME/bamdude" --port 8000 --yes --branch "$GITHUB_REF_NAME"
 

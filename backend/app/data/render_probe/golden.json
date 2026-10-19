@@ -2,7 +2,7 @@
   "renderer": 3,
   "node": [
     "v22.23.3",
-    "v24.21.0"
+    "v24.22.0"
   ],
   "png_sha256": {
     "two-objects": {
