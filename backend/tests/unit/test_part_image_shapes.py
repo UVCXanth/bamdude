@@ -21,6 +21,7 @@ NOT_A_SURFACE = {
     "product.StockAdjustIn": "a request body",
     "project.FulfilmentPartIn": "a request body",
     "product.EstimateSurplusOut": "the product estimate's surplus figures -- no surface of spec §12.2",
+    "plate_fit.PlateFitPart": "the quantity calculator's what-if coverage figures, like EstimateSurplusOut; not a part-image surface",
     "product.PartSourcesOut": "a part's sources, shown under the part's own row, which carries the picture",
     "project.LineChangedPartOut": "a configuration caption; the variant chips stay as they are (spec §12.2)",
     "project.ProcurementOut": "the order's procurement figures -- no surface of spec §12.2",

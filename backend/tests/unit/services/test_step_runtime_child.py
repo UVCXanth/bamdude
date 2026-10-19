@@ -24,20 +24,67 @@ def _script(tmp_path: Path, body: str) -> Path:
 
 
 GRANDCHILD = """
-import subprocess, sys, time
+import subprocess, sys, time, psutil
 from pathlib import Path
 out = Path(sys.argv[1])
 g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+(out.parent / "grandchild.created").write_text(str(psutil.Process(g.pid).create_time()))
 out.write_text(str(g.pid))
 {tail}
 """
 
 
-def _alive(pid: int) -> bool:
+def _alive(pid: int, created: float | None = None) -> bool:
     try:
-        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        process = psutil.Process(pid)
+        if created is not None and process.create_time() != created:
+            return False  # a reused PID is not the reader this test launched
+        if process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        process.wait(timeout=0)  # no grace period: Windows status alone can describe a stale process-table entry
+        return False
+    except psutil.TimeoutExpired:
+        return True
     except psutil.NoSuchProcess:
         return False
+
+
+def test_the_liveness_oracle_does_not_mistake_a_terminated_process_entry_for_a_reader(monkeypatch):
+    class Ended:
+        def status(self):
+            return psutil.STATUS_RUNNING  # a stale process-table entry is not a waitable live process
+
+        def wait(self, timeout):
+            assert timeout == 0
+            return 1
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Ended())
+    assert not _alive(123)
+
+
+def test_the_liveness_oracle_still_rejects_a_reader_that_has_not_ended(monkeypatch):
+    class Reading:
+        def status(self):
+            return psutil.STATUS_RUNNING
+
+        def wait(self, timeout):
+            assert timeout == 0
+            raise psutil.TimeoutExpired(timeout, pid=123)
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Reading())
+    assert _alive(123)
+
+
+def test_the_liveness_oracle_does_not_mistake_a_reused_pid_for_its_reader(monkeypatch):
+    class Replacement:
+        def create_time(self):
+            return 200.0
+
+        def status(self):
+            raise AssertionError("another process is not our reader")
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Replacement())
+    assert not _alive(123, created=100.0)
 
 
 def test_a_command_runs_and_only_a_bounded_tail_of_its_output_is_kept(tmp_path):
@@ -58,7 +105,7 @@ def test_a_grandchild_left_behind_is_ended_before_the_call_returns(tmp_path):
     script = _script(tmp_path, GRANDCHILD.format(tail=""))
     result = child.run_tree([sys.executable, str(script), str(marker)], timeout=60)
     assert result.returncode == 0
-    assert not _alive(int(marker.read_text()))  # owned with the tree, not left running
+    assert not _alive(int(marker.read_text()), float((tmp_path / "grandchild.created").read_text()))
 
 
 def test_a_timeout_ends_the_whole_tree_and_waits_for_it(tmp_path):
@@ -68,7 +115,7 @@ def test_a_timeout_ends_the_whole_tree_and_waits_for_it(tmp_path):
     with pytest.raises(subprocess.TimeoutExpired):
         child.run_tree([sys.executable, str(script), str(marker)], timeout=3)
     assert time.monotonic() - started < 60
-    assert not _alive(int(marker.read_text()))
+    assert not _alive(int(marker.read_text()), float((tmp_path / "grandchild.created").read_text()))
 
 
 def test_nothing_runs_before_the_tree_is_owned(tmp_path, monkeypatch):
@@ -172,7 +219,7 @@ def test_a_late_attach_in_a_windows_venv_lets_nothing_escape_the_job(tmp_path, m
     script = _script(tmp_path, GRANDCHILD.format(tail=""))
     result = child.run_tree([sys.executable, str(script), str(marker)], timeout=60)
     assert result.returncode == 0
-    assert not _alive(int(marker.read_text()))
+    assert not _alive(int(marker.read_text()), float((tmp_path / "grandchild.created").read_text()))
 
 
 def test_a_contained_child_starts_the_base_interpreter_told_its_venv():

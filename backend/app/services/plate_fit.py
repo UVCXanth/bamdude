@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.schemas.plate_fit import PlateFitOption, PlateFitPart, PlateFitRequest, PlateFitRun
-from backend.app.services import order_metrics, plan_engine, queue_rebalance, stock_offers
+from backend.app.services import order_metrics, order_queue, plan_engine, queue_rebalance, stock_offers
 from backend.app.services.line_composition import counted, has_shelf
 from backend.app.services.preview_artifacts import disk
 from backend.app.services.product_composition import recipes_for_products
@@ -144,8 +144,7 @@ async def load(
             select(AutoQueueItem)
             .where(
                 AutoQueueItem.project_line_id == line_id,
-                AutoQueueItem.status == "pending",
-                AutoQueueItem.assigned_to_item_id.is_(None),
+                *order_queue.awaiting_auto_row_conditions(),
                 AutoQueueItem.cancelled_at.is_(None),
             )
             .order_by(AutoQueueItem.id)
@@ -686,8 +685,7 @@ async def remove_reviewed_pending(db: AsyncSession, snapshot: Snapshot) -> None:
     result = await db.execute(
         delete(AutoQueueItem).where(
             AutoQueueItem.id.in_(ids),
-            AutoQueueItem.status == "pending",
-            AutoQueueItem.assigned_to_item_id.is_(None),
+            *order_queue.awaiting_auto_row_conditions(),
             AutoQueueItem.cancelled_at.is_(None),
         )
     )
