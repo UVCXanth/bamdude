@@ -284,7 +284,10 @@ def _verify(notices, release_after, bundle, digest, *, polls=None, wait=60.0):
     answers = list(release_after)
 
     def get_release(repo, tag, token):
-        return answers.pop(0) if len(answers) > 1 else answers[0]
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def download(url, dest):
         src = bundle if url.endswith(".tar") else digest
@@ -358,12 +361,194 @@ def test_a_bundle_missing_a_source_holds_the_publishers(published, tmp_path):
         _verify(notices, [_release(cut, digest)], cut, digest)
 
 
+def _http(code: int):
+    import urllib.error
+
+    return urllib.error.HTTPError("https://api.github.com/x", code, "x", {}, None)
+
+
+def test_a_passing_github_error_is_waited_out(published):
+    """One 502, a rate limit or a dropped connection during the wait is GitHub having a moment, not a verdict:
+    both publishers would otherwise have to be re-run by hand."""
+    import urllib.error
+
+    notices, bundle, digest = published
+    answers = [_http(502), urllib.error.URLError("reset"), TimeoutError(), _http(429), _release(bundle, digest)]
+    assert _verify(notices, answers, bundle, digest, wait=600) == hashlib.sha256(bundle.read_bytes()).hexdigest()
+
+
+def test_an_error_that_never_passes_holds_the_publishers_and_says_which(published):
+    notices, bundle, digest = published
+    with pytest.raises(sources.SourceError, match=r"after 60 s.*HTTP 503"):
+        _verify(notices, [_http(503)], bundle, digest)
+
+
+def test_a_refusal_that_waiting_cannot_change_holds_the_publishers_at_once(published):
+    notices, bundle, digest = published
+    with pytest.raises(sources.SourceError, match="401"):
+        _verify(notices, [_http(401), _release(bundle, digest)], bundle, digest)
+
+
+def _verify_published(notices, releases, bundle, digest):
+    def download(url, dest):
+        dest.write_bytes((bundle if url.endswith(".tar") else digest).read_bytes())
+
+    return sources.verify_published(
+        notices, "kainpl/bamdude", list_releases=lambda repo, token: releases, download=download
+    )
+
+
+def test_an_image_off_the_tag_flow_needs_this_closures_bundle_on_some_published_release(published):
+    """`:dev` and the emergency script publish the same image without a tag of their own: what they ship must
+    already have its source on a published release — a draft, an unfinished upload or another release's bundle
+    is no copy."""
+    notices, bundle, digest = published
+    releases = [
+        {**_release(bundle, digest, draft=True), "tag_name": "v0.8.1b1"},
+        {"draft": False, "assets": [], "tag_name": "v0.8.0.1"},
+        {**_release(bundle, digest, state="starter"), "tag_name": "v0.8.0b2"},
+        {**_release(bundle, digest), "tag_name": "v0.8.0"},
+    ]
+    tag, sha = _verify_published(notices, releases, bundle, digest)
+    assert (tag, sha) == ("v0.8.0", hashlib.sha256(bundle.read_bytes()).hexdigest())
+    with pytest.raises(sources.SourceError, match="no published release carries"):
+        _verify_published(notices, releases[:3], bundle, digest)
+
+
+def test_a_published_bundle_that_does_not_verify_holds_an_image_off_the_tag_flow(published, tmp_path):
+    notices, bundle, digest = published
+    wrong = tmp_path / digest.name
+    wrong.write_text("0" * 64 + f"  {bundle.name}\n", encoding="ascii")
+    with pytest.raises(sources.SourceError, match="its .sha256 says"):
+        _verify_published(notices, [{**_release(bundle, wrong), "tag_name": "v0.8.0"}], bundle, wrong)
+
+
+def _reuse(notices, releases, bundle, digest, out, **fakes):
+    def download(url, dest):
+        dest.write_bytes((bundle if url.endswith(".tar") else digest).read_bytes())
+
+    return sources.collect_or_reuse(
+        notices, out, repo="kainpl/bamdude", list_releases=lambda repo, token: releases, download=download, **fakes
+    )
+
+
+def test_a_closure_already_published_is_reused_and_upstream_is_not_asked(published, tmp_path):
+    """The same closure gives the same bundle: once a release carries it, it is that copy — EPEL keeps only a
+    package's newest build, so the upstream of an older pin may be gone for good (review R11)."""
+    notices, bundle, digest = published
+    asked = []
+
+    def upstream(*args, **kwargs):
+        asked.append(args[0])
+        raise AssertionError("upstream asked")
+
+    made = _reuse(
+        notices,
+        [{**_release(bundle, digest), "tag_name": "v0.8.0"}],
+        bundle,
+        digest,
+        tmp_path / "out",
+        fetch=upstream,
+        archive_git=upstream,
+        read_recipe=upstream,
+    )
+    assert asked == [] and made.name == bundle.name and made.read_bytes() == bundle.read_bytes()
+    assert (made.parent / f"{made.name}.sha256").read_text(encoding="ascii").split()[0] == (
+        hashlib.sha256(bundle.read_bytes()).hexdigest()
+    )
+
+
+def test_without_a_published_copy_the_sources_come_from_upstream(published, tmp_path):
+    notices, bundle, digest = published
+    made = _reuse(
+        notices, [{"draft": False, "assets": [], "tag_name": "v0.7.0"}], bundle, digest, tmp_path / "o", **_fakes()
+    )
+    assert made.read_bytes() == bundle.read_bytes()  # the same pins, the same bytes
+
+
+def test_a_published_copy_that_does_not_verify_holds_the_release(published, tmp_path):
+    notices, bundle, digest = published
+    wrong = tmp_path / digest.name
+    wrong.write_text("0" * 64 + f"  {bundle.name}\n", encoding="ascii")
+    with pytest.raises(sources.SourceError, match="its .sha256 says"):
+        _reuse(notices, [{**_release(bundle, wrong), "tag_name": "v0.8.0"}], bundle, wrong, tmp_path / "o", **_fakes())
+    assert not (tmp_path / "o" / bundle.name).exists()
+
+
+def test_the_workflow_reuses_a_published_copy_before_it_asks_upstream():
+    collect = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["collect"]
+    step = next(s for s in collect["steps"] if "step_preview_sources.py collect" in s.get("run", ""))
+    assert '--reuse-from "$REPO"' in step["run"] and step["env"]["REPO"] == "${{ github.repository }}"
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+
+
 def _waits_for_sources(workflow: Path, publisher: str) -> dict:
     jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
     needs = jobs[publisher]["needs"]
     needs = needs if isinstance(needs, list) else [needs]
-    (check,) = [n for n in needs if any("verify-release" in s.get("run", "") for s in jobs[n].get("steps", []))]
+    (check,) = [
+        n
+        for n in needs
+        if any(w in s.get("run", "") for s in jobs[n].get("steps", []) for w in ("verify-release", "verify-published"))
+    ]
     return jobs[check]
+
+
+DEV = ROOT / ".github" / "workflows" / "docker-publish-dev.yml"
+EMERGENCY = ROOT / "docker-publish.sh"
+CAD_PUBLISHERS = [(DOCKER, "publish"), (INSTALLER, "release"), (DEV, "publish")]
+
+
+def _image_pushers():
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        for name, job in (yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                if "build-push-action" in str(step.get("uses", "")) and str(step["with"].get("push")).lower() == "true":
+                    yield workflow.name, name
+
+
+def test_every_job_that_pushes_the_image_is_a_known_publisher():
+    """The image carries the CAD component: a job that pushes it without being listed here would ship it with no
+    look at its sources."""
+    assert set(_image_pushers()) <= {(w.name, job) for w, job in CAD_PUBLISHERS}
+
+
+@pytest.mark.parametrize(("workflow", "publisher"), CAD_PUBLISHERS)
+def test_a_publisher_runs_only_when_its_sources_check_succeeded(workflow, publisher):
+    """`needs:` alone is not the gate: an `if:` with always() / !cancelled() / failure() runs the publisher after
+    a failed sources job — and every test of the edge would stay green."""
+    jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+    job = jobs[publisher]
+    needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+    (check,) = [
+        jobs[n]
+        for n in needs
+        if any(
+            word in s.get("run", "")
+            for s in jobs[n].get("steps", [])
+            for word in ("verify-release", "verify-published")
+        )
+    ]
+    condition = str(job.get("if", ""))
+    for word in ("always()", "cancelled()", "failure()"):
+        assert word not in condition, f"{workflow.name}:{publisher} runs past its sources check ({word})"
+    assert not job.get("continue-on-error") and not check.get("continue-on-error")
+    assert not any(s.get("continue-on-error") for s in check["steps"])
+
+
+def test_the_dev_image_needs_this_closures_bundle_on_a_published_release():
+    check = _waits_for_sources(DEV, "publish")
+    step = next(s for s in check["steps"] if "verify-published" in s.get("run", ""))
+    assert '--repo "$REPO"' in step["run"] and step["env"]["REPO"] == "${{ github.repository }}"
+    assert check.get("permissions") == {"contents": "read"}
+    checkout = next(s for s in check["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
+
+
+def test_the_emergency_script_checks_the_sources_before_it_builds_anything():
+    text = EMERGENCY.read_text(encoding="utf-8")
+    check = text.find("step_preview_sources.py verify-published")
+    assert check != -1 and check < text.find("docker buildx build")
 
 
 @pytest.mark.parametrize(("workflow", "publisher"), [(DOCKER, "publish"), (INSTALLER, "release")])

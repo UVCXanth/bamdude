@@ -195,6 +195,9 @@ def main(argv=None) -> int:
         ap.error("--wheels and --index are required to pin or --check")
     if a.now:
         now = parse_time(a.now)
+        if not a.check and now > datetime.now(UTC):
+            # the age rule counts against pinned_at: a time to come would make a release pin early (owner, Q9)
+            ap.error(f"--now {a.now} has not come yet; a pin is written at the present time or an earlier one")
     elif a.check:  # the committed pin's own time, or every check would be stale
         now = parse_time(json.loads((DATA / MANIFEST_NAME).read_text(encoding="utf-8"))["pinned_at"])
     else:

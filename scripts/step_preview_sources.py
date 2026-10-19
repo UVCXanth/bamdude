@@ -406,6 +406,32 @@ def _get_release(repo: str, tag: str, token: str | None) -> dict | None:
         raise
 
 
+def _list_releases(repo: str, token: str | None) -> list[dict]:
+    request = urllib.request.Request(
+        f"{API}/repos/{repo}/releases?per_page=100",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+    )
+    if token:
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response)
+
+
+# What waiting can change: GitHub busy, a rate limit, a dropped connection. Any other answer is a verdict.
+_PASSING_HTTP = {403, 429, 500, 502, 503, 504}
+
+
+def _verify_found(notices: dict, found: tuple[dict, dict], download) -> str:
+    bundle_asset, digest_asset = found
+    name = bundle_asset["name"]
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle, digest = Path(tmp) / name, Path(tmp) / f"{name}.sha256"
+        download(bundle_asset["browser_download_url"], bundle)
+        download(digest_asset["browser_download_url"], digest)
+        verify_bundle(notices, bundle, digest.read_text(encoding="ascii"), bundle_asset.get("digest"))
+        return _sha256(bundle)
+
+
 def verify_release(
     notices: dict,
     repo: str,
@@ -419,23 +445,79 @@ def verify_release(
     clock=time.monotonic,
     sleep=time.sleep,
 ) -> str:
-    """Wait for this closure's bundle on the tag's published release, then verify it; returns its SHA-256."""
+    """Wait for this closure's bundle on the tag's published release, then verify it; returns its SHA-256.
+    A passing GitHub error is waited out to the same deadline and named if it never passes."""
     name = bundle_name(notices)
     deadline = clock() + wait
+    last_error = None
     while True:
-        found = published_bundle(get_release(repo, tag, token), name)
+        release = None
+        try:
+            release = get_release(repo, tag, token)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _PASSING_HTTP:
+                raise SourceError(f"GitHub answered HTTP {exc.code} for the release of {tag}") from None
+            last_error = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = type(exc).__name__
+        if release is None and last_error:
+            print(f"sources: {tag}: {last_error}; still waiting", file=sys.stderr)
+        found = published_bundle(release, name)
         if found:
             break
         if clock() >= deadline:
-            raise SourceError(f"{tag} has no published, uploaded {name} with its .sha256 after {wait:.0f} s")
+            said = f" (last error: {last_error})" if last_error else ""
+            raise SourceError(f"{tag} has no published, uploaded {name} with its .sha256 after {wait:.0f} s{said}")
         sleep(poll)
-    bundle_asset, digest_asset = found
-    with tempfile.TemporaryDirectory() as tmp:
-        bundle, digest = Path(tmp) / name, Path(tmp) / f"{name}.sha256"
-        download(bundle_asset["browser_download_url"], bundle)
-        download(digest_asset["browser_download_url"], digest)
-        verify_bundle(notices, bundle, digest.read_text(encoding="ascii"), bundle_asset.get("digest"))
-        return _sha256(bundle)
+    return _verify_found(notices, found, download)
+
+
+def collect_or_reuse(
+    notices: dict,
+    out: Path,
+    *,
+    repo: str,
+    token: str | None = None,
+    list_releases=_list_releases,
+    download=_fetch,
+    **upstream,
+) -> Path:
+    """This closure's bundle, from the published release that already carries it — verified, the same bytes the
+    same pins give — or, when none does, collected from upstream. An upstream source of an older pin may be gone for
+    good (EPEL keeps a package's newest build only); the published bundle is then the only copy left. A published
+    copy that does not verify is refused, never replaced behind it."""
+    name = bundle_name(notices)
+    for release in list_releases(repo, token):
+        found = published_bundle(release, name)
+        if not found:
+            continue
+        out = Path(out)
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, digest = Path(tmp) / name, Path(tmp) / f"{name}.sha256"
+            download(found[0]["browser_download_url"], bundle)
+            download(found[1]["browser_download_url"], digest)
+            verify_bundle(notices, bundle, digest.read_text(encoding="ascii"), found[0].get("digest"))
+            out.mkdir(parents=True, exist_ok=True)
+            partial = out / f"{name}.part"
+            shutil.copyfile(bundle, partial)
+            partial.replace(out / name)
+        (out / f"{name}.sha256").write_text(f"{_sha256(out / name)}  {name}\n", encoding="ascii")
+        print(f"sources: {name} reused from {release.get('tag_name', '?')}")
+        return out / name
+    return collect(notices, out, **upstream)
+
+
+def verify_published(
+    notices: dict, repo: str, *, token: str | None = None, list_releases=_list_releases, download=_fetch
+) -> tuple[str, str]:
+    """For an image published off the tag flow (`:dev`, the emergency script): this closure's bundle must already
+    be on a published release, uploaded with its .sha256, and verify. Returns that release's tag and the SHA-256."""
+    name = bundle_name(notices)
+    for release in list_releases(repo, token):
+        found = published_bundle(release, name)
+        if found:
+            return release.get("tag_name", "?"), _verify_found(notices, found, download)
+    raise SourceError(f"no published release carries {name} with its .sha256 — publish a tag's sources first")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -444,22 +526,32 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("plan")
     collecting = commands.add_parser("collect")
     collecting.add_argument("--out", type=Path, required=True)
+    collecting.add_argument("--reuse-from", metavar="REPO", help="take this closure's bundle from a published release")
     verifying = commands.add_parser("verify-release")
     verifying.add_argument("--repo", required=True)
     verifying.add_argument("--tag", required=True)
     verifying.add_argument("--wait", type=float, required=True)
+    any_release = commands.add_parser("verify-published")
+    any_release.add_argument("--repo", required=True)
     args = parser.parse_args(argv)
     notices = load_notices()
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         if args.command == "plan":
             print(json.dumps({"bundle": bundle_name(notices), "sources": plan(notices)}, indent=1, sort_keys=True))
             return 0
         if args.command == "verify-release":
-            token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             digest = verify_release(notices, args.repo, args.tag, wait=args.wait, token=token)
             print(f"sources: {bundle_name(notices)} on {args.tag} verified ({digest})")
             return 0
-        bundle = collect(notices, args.out)
+        if args.command == "verify-published":
+            tag, digest = verify_published(notices, args.repo, token=token)
+            print(f"sources: {bundle_name(notices)} on {tag} verified ({digest})")
+            return 0
+        if args.reuse_from:
+            bundle = collect_or_reuse(notices, args.out, repo=args.reuse_from, token=token)
+        else:
+            bundle = collect(notices, args.out)
     except SourceError as exc:
         print(f"sources: FAILED: {exc}", file=sys.stderr)
         return 1

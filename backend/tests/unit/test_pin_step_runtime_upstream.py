@@ -102,6 +102,21 @@ def test_a_candidate_pin_old_enough_is_due_for_a_release_repin():
     assert due["actions"] == ["release_repin_due"]
 
 
+def test_a_pin_is_never_written_with_a_time_still_to_come(tmp_path, capsys):
+    """`--now` decides `pinned_at`, and the 14 days are counted against it: a time still to come would mint a
+    `release` pin before the wheels are old enough (owner, Q9). Writing refuses it before reading anything."""
+    import pytest
+
+    later = datetime.now(UTC).replace(microsecond=0) + pin.timedelta(days=30)
+    data = ROOT / "backend" / "app" / "data"
+    before = {p.name: p.read_bytes() for p in data.glob("step_runtime_*.json")}
+    with pytest.raises(SystemExit) as refused:
+        pin.main(["--wheels", str(tmp_path), "--index", str(tmp_path / "missing.json"), "--now", pin.iso(later)])
+    assert refused.value.code == 2
+    assert "has not come yet" in capsys.readouterr().err
+    assert {p.name: p.read_bytes() for p in data.glob("step_runtime_*.json")} == before
+
+
 def test_the_check_reads_a_saved_index_and_writes_nothing(tmp_path, capsys):
     index = tmp_path / "pypi.json"
     index.write_text(json.dumps(pypi(**{PINNED: CURRENT})), encoding="utf-8")

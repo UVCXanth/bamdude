@@ -47,8 +47,14 @@ jobs:
         with:
           python-version: '3.14'
 
+      # A closure an earlier release already carries is that release's bundle,
+      # verified: the upstream of an older pin may be gone for good (EPEL keeps
+      # a package's newest build only), and the same pins give the same bytes.
       - name: Collect and verify
-        run: python scripts/step_preview_sources.py collect --out dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python scripts/step_preview_sources.py collect --out dist --reuse-from "$REPO"
 
       - name: Keep it
         uses: actions/upload-artifact@v7
