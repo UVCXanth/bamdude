@@ -58,8 +58,12 @@ HEALING = (
     "Edges were intersecting, corrected",
     "Surface forced to be periodic",
     "Segments were disordered; fixed",
-    # A real library model (2026-10-19, owner): transferred whole and passed every later check, refused only on
-    # these shape-healing notes — the shape was repaired, not lost; the mesh checks still guard completeness.
+    # A real library model (2026-10-19, owner) transferred whole and passed every later check, refused only on these
+    # notes. Two are repairs OpenCascade made: a wire split into several, faces turned the right way in their shell.
+    # The projection note is no repair: the curve stays as it is and OCCT raises the vertex tolerances to the gap it
+    # measured (StepToTopoDS_TranslateEdge, OCCT V8_0_1; Codex F1-M1). Accepted for a thumbnail — a picture, not a
+    # promise of geometric accuracy: a whole transfer and every face triangulated show the model is all there, not
+    # that the result is exact.
     "Wire was split on several wires",
     "Poor result from projection vertex / curve 3d",
     "Faces were incorrectly oriented in the shell, corrected",

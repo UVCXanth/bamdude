@@ -295,7 +295,8 @@ def test_a_briefly_held_marker_or_result_is_still_written(tmp_path, monkeypatch)
         "Edges were intersecting, corrected",
         # Measured on a real library model (2026-10-19, owner): it transferred whole (one root, one shape, no fail)
         # and met every later check — 128 faces all triangulated, mesher flags 0, finite bounds — yet was refused on
-        # these three shape-healing notes the stage-0 measurement had not met.
+        # three notes the stage-0 measurement had not met: two repairs, and a raised vertex tolerance (the projection
+        # note — no repair of the curve; accepted for a picture, not as proof of accuracy, Codex F1-M1).
         "Wire was split on several wires",
         "Poor result from projection vertex / curve 3d",
         "Faces were incorrectly oriented in the shell, corrected",
