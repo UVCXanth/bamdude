@@ -2172,6 +2172,7 @@ export interface ProjectLineCreate {
 }
 
 export interface ProjectLineUpdate {
+  plate_fit?: PlateFitConfirmation;
   quantity?: number;
   material?: string | null;
   color?: string | null;
@@ -2185,6 +2186,28 @@ export interface ProjectLineUpdate {
   /** Ready units — absent leaves them alone, a number rewrites them; only an
    *  ACTIVE order takes them (409 otherwise). */
   from_finished?: number | null;
+}
+
+export interface PlateFitConfirmation {
+  basis: string; plate_ids: number[]; runs: { plate_id: number; count: number }[];
+  acknowledge_large_change: boolean;
+  replace_pending?: boolean; acknowledge_queue_change?: boolean;
+}
+export interface PlateFitOption {
+  quantity: number;
+  from_finished?: number; from_kits?: number; stock_parts?: Record<string, number>;
+  runs: { plate_id: number; count: number }[];
+  parts: { part_id: number; name: string; required: number; allocated: number; completed: number; printing: number; queued: number; new_printed: number; other_coverage?: number; free_stock?: number }[];
+  print_time_seconds: number | null; filament_used_grams: number | null;
+}
+export interface PlateFitResponse {
+  line_id: number; current_quantity: number; around: number; basis: string; plate_ids: number[];
+  plates: { plate_id: number; library_file_id: number; plate_index: number; filename: string | null; hidden: boolean;
+    printer_model: string | null; print_time_seconds: number | null; filament_used_grams: number | null }[];
+  options: PlateFitOption[];
+  lower: 'found' | 'none' | 'limited'; upper: 'found' | 'none' | 'limited'; current: 'found' | 'none' | 'limited';
+  quantity_limit: number;
+  removable_auto_ids: number[];
 }
 
 /** A purchased part rolled up across every line of the order. */
@@ -13011,6 +13034,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  getPlateFit: (orderId: number, lineId: number, data: { around: number; plate_ids?: number[]; steps: number; replace_pending?: boolean }) =>
+    request<PlateFitResponse>(`/projects/${orderId}/lines/${lineId}/plate-fit`, { method: 'POST', body: JSON.stringify(data) }),
   deleteOrderLine: (orderId: number, lineId: number) =>
     request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),
   updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number) =>

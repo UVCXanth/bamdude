@@ -7,14 +7,14 @@ import { useOrderActions, type OrderActions } from '../../components/projects/or
  */
 export function WithOrderActions({ children }: { children: (actions: OrderActions) => ReactNode }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: heading });
+  const actions = useOrderActions({ fallbackFocusRef: heading });
   return (
     <>
       <h1 ref={heading} tabIndex={-1}>
         Test page
       </h1>
-      {children({ run, create })}
-      {dialogs}
+      {children(actions)}
+      {actions.dialogs}
     </>
   );
 }

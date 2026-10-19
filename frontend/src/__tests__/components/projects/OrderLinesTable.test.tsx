@@ -109,6 +109,12 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps the line quantity free of the duplicate calculator action', () => {
+    render(<OrderLinesTable order={order} canEdit />);
+    const row = screen.getByTestId('line-10-quantity').closest('td')!;
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('renders lines in sort order with six columns, the menu one named only for a screen reader', () => {
     render(<OrderLinesTable order={order} canEdit />);
     const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('data-line'));

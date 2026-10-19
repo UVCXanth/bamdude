@@ -850,7 +850,7 @@ async def _load_operator_hours(db: AsyncSession, now: datetime) -> OperatorHours
     )
 
 
-async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
+async def load_snapshot(db: AsyncSession, now: datetime, *, exclude_auto_ids: tuple[int, ...] = ()) -> FarmSnapshot:
     """What the farm already owes, from its database rows.
 
     A held completion uses the existing automatic-predecessor proof only to
@@ -965,7 +965,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
             requires_operator=bool(require_plate_clear and not swap_mode_enabled),
             awaiting_operator=awaiting_operator,
         )
-    staged = await _staged(db)
+    staged = await _staged(db, exclude_auto_ids=exclude_auto_ids)
     caveats: tuple[str, ...] = (("drying",) if gates.drying_blocks else ()) + (
         ("operator_service_parallel",) if operator_hours else ()
     )
@@ -1062,7 +1062,7 @@ async def load_snapshot(db: AsyncSession, now: datetime) -> FarmSnapshot:
     )
 
 
-async def _staged(db: AsyncSession) -> list[StagedJob]:
+async def _staged(db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = ()) -> list[StagedJob]:
     rows = (
         await db.execute(
             select(
@@ -1070,7 +1070,10 @@ async def _staged(db: AsyncSession) -> list[StagedJob]:
                 AutoQueueItem.target_model,
                 AutoQueueItem.print_time_seconds,
                 AutoQueueItem.auto_eject,
-            ).where(*awaiting_auto_row_conditions())
+            ).where(
+                *awaiting_auto_row_conditions(),
+                *([AutoQueueItem.id.not_in(exclude_auto_ids)] if exclude_auto_ids else []),
+            )
         )
     ).all()
     return [

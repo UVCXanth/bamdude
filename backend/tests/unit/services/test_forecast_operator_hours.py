@@ -7,7 +7,7 @@ import pytest
 
 from backend.app.schemas.settings import AppSettingsUpdate
 from backend.app.services.farm_forecast import FarmSnapshot, MachineState, QueuedRow, forecast_orders, simulate_farm
-from backend.app.services.forecast_operator_hours import OperatorHours
+from backend.app.services.forecast_operator_hours import OperatorHours, _service_finish
 from backend.app.services.plan_engine import FleetCapacity, FleetMachine
 from backend.tests.unit.services.test_farm_forecast import _plan
 from backend.tests.unit.services.test_plan_engine import _cand
@@ -43,6 +43,31 @@ def test_missing_and_repeated_end_times_normalize_forward():
     autumn = hours(datetime(2026, 10, 25, 0), end="03:30", zone="Europe/Kyiv")
     assert spring.service_finish(0, 0) == 90 * 60
     assert autumn.service_finish(0, 0) == 90 * 60
+
+
+def test_repeated_fleet_prefixes_never_reuse_a_different_operator_policy():
+    origin = datetime(2026, 10, 24, 21)
+    policies = [
+        hours(origin),
+        hours(origin, zone="Europe/Kyiv"),
+        hours(origin, end="09:00", zone="Europe/Kyiv"),
+        hours(origin, start="21:00", zone="Europe/Kyiv"),
+        hours(origin + timedelta(hours=12), zone="Europe/Kyiv"),
+    ]
+    for _ in range(2):
+        for policy in policies:
+            for offset, duration in [(0, 0), (0, 600), (3600, 600), (86400, 600)]:
+                assert policy.service_finish(offset, duration) == _service_finish.__wrapped__(
+                    policy, policy.origin.replace(tzinfo=timezone.utc), offset, duration
+                )
+
+
+def test_repeated_local_origins_keep_their_distinct_utc_instants_in_cached_calculations():
+    local = datetime(2026, 10, 25, 3, 30, tzinfo=ZoneInfo("Europe/Kyiv"))
+    earlier, later = hours(local), hours(local.replace(fold=1))
+    # Python compares these local datetimes equal; elapsed time is different.
+    assert earlier == later
+    assert earlier.service_finish(0, 0) == later.service_finish(0, 0) + H
 
 
 def test_multiday_service_and_aware_origin():

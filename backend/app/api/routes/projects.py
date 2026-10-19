@@ -98,6 +98,7 @@ from backend.app.schemas.order_print_options import (
     capabilities,
 )
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
+from backend.app.schemas.plate_fit import PlateFitPlate, PlateFitRequest, PlateFitResponse
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
     PROJECT_STAGES,
@@ -173,6 +174,7 @@ from backend.app.services import (
     order_journal,
     part_images,
     part_stock,
+    plate_fit,
     product_delete,
     product_gate as product_gate_module,
     queue_rebalance,
@@ -1951,6 +1953,71 @@ async def _get_line(db: AsyncSession, project_id: int, line_id: int, *, fresh: b
     return line
 
 
+def _fit_error(error: plate_fit.FitError) -> HTTPException:
+    return HTTPException(
+        status_code=error.status,
+        detail={
+            "error": "plate_fit_" + error.code,
+            "message": "The whole-plate quantity proposal is unavailable or has changed",
+        },
+    )
+
+
+_plate_fit_slot = asyncio.Semaphore(1)
+_plate_fit_queue_gate = require_permission(Permission.QUEUE_DELETE_ALL, Permission.QUEUE_READ)
+
+
+@router.post("/{project_id}/lines/{line_id}/plate-fit", response_model=PlateFitResponse)
+async def preview_plate_fit(
+    project_id: int,
+    line_id: int,
+    data: PlateFitRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(
+        Permission.ORDERS_READ, Permission.ORDERS_UPDATE, Permission.PRODUCTS_READ, Permission.STOCK_READ
+    ),
+    creds: RequestCredentials = Depends(request_credentials),
+):
+    """Read only. Never reserve stock, edit a line, enqueue or command hardware."""
+    if _plate_fit_slot.locked():
+        raise _fit_error(plate_fit.FitError("busy", 429))
+    if data.replace_pending:
+        await creds.check(_plate_fit_queue_gate)
+    async with _plate_fit_slot:
+        try:
+            snapshot = await plate_fit.load(
+                db, project_id, line_id, data.plate_ids, replace_pending=data.replace_pending
+            )
+            result = await plate_fit.proposals(snapshot, data)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
+    scope = await library_name_scope(request, db, user)
+    file_names = await _plan_file_names(db, {f.id for _p, f, _r in snapshot.candidates}, user, scope)
+    return PlateFitResponse(
+        line_id=line_id,
+        current_quantity=snapshot.quantity,
+        around=data.around,
+        basis=snapshot.basis,
+        removable_auto_ids=[item.id for item in snapshot.removable],
+        plate_ids=[p.id for p in snapshot.plates],
+        plates=[
+            PlateFitPlate(
+                plate_id=p.id,
+                library_file_id=f.id,
+                plate_index=p.plate_index,
+                print_time_seconds=r.print_time_seconds,
+                filament_used_grams=r.filament_used_grams,
+                filename=file_names.get(f.id),
+                hidden=f.id not in file_names,
+                printer_model=r.printer_model,
+            )
+            for p, f, r in snapshot.candidates
+        ],
+        **result,
+    )
+
+
 @router.patch("/{project_id}/lines/{line_id}", response_model=ProjectResponse)
 @part_images.attach
 async def update_line(
@@ -1962,6 +2029,14 @@ async def update_line(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     line = await _get_line(db, project_id, line_id)
+    if data.plate_fit is not None:
+        await ensure(creds, Permission.ORDERS_READ)
+        await ensure(creds, Permission.PRODUCTS_READ)
+        await ensure(creds, Permission.STOCK_READ)
+        # The shared-stock offer visits all lines. Acquire their canonical
+        # position -> line -> part locks together before the ordinary edit.
+        project = await _get_project(db, project_id)
+        await finished_stock.lock_lines_with_parts(db, project.lines)
     if line.mode == "parts":
         # Rules 15–16: one set of parts, never kits.
         if "quantity" in data.model_fields_set and data.quantity != 1:
@@ -1976,6 +2051,27 @@ async def update_line(
             await finished_stock.lock_line(db, line)
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
+    fit_snapshot = None
+    fit_selection = None
+    if data.plate_fit is not None:
+        if data.plate_fit.replace_pending:
+            await creds.check(_plate_fit_queue_gate)
+        if data.quantity is None or data.model_fields_set - {"quantity", "plate_fit"}:
+            raise _fit_error(plate_fit.FitError("invalid_plan", 422))
+        try:
+            fit_snapshot = await plate_fit.load(
+                db,
+                project_id,
+                line_id,
+                data.plate_fit.plate_ids,
+                replace_pending=data.plate_fit.replace_pending,
+                lock_pending=data.plate_fit.replace_pending,
+            )
+            fit_selection = await plate_fit.disk(lambda: plate_fit.confirm(fit_snapshot, data.quantity, data.plate_fit))
+            if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+                await ensure(creds, Permission.STOCK_MOVE)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
     if line.mode != "parts" and finished_stock.moved(line):
         # After the first movement the ready units are only added to — through «take from
         # stock» — the kits only come DOWN (spec workshop-order-issue-followups, rule 42: back
@@ -2026,7 +2122,7 @@ async def update_line(
     )
     if takes_more:
         await ensure(creds, Permission.STOCK_MOVE)
-    for field_name in data.model_fields_set - {"from_stock_units", "from_finished"}:
+    for field_name in data.model_fields_set - {"from_stock_units", "from_finished", "plate_fit"}:
         setattr(line, field_name, getattr(data, field_name))
     try:
         if wants_finished:
@@ -2073,6 +2169,39 @@ async def update_line(
             await _reserve(db, line, fitted, current_user)
         elif data.model_fields_set & {"quantity", "from_finished"}:
             await part_stock.fit_reservation_for_line(db, line, fitted)
+    if fit_snapshot is not None:
+        # The ordinary writer may fit reservations down. Accept only if its
+        # actual result still has exactly the reviewed whole-plate solution.
+        try:
+            await plate_fit.remove_reviewed_pending(db, fit_snapshot)
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
+        if fit_selection.from_finished or fit_selection.from_kits or fit_selection.stock_parts:
+            try:
+                taken = await stock_offers.take(
+                    db,
+                    project,
+                    {line_id: (fit_selection.from_finished, fit_selection.from_kits, fit_selection.stock_parts)},
+                    actor=current_user,
+                )
+                if len(taken) != 1 or (taken[0].got_finished, taken[0].got_kits, taken[0].got_parts) != (
+                    fit_selection.from_finished,
+                    fit_selection.from_kits,
+                    fit_selection.stock_parts,
+                ):
+                    raise plate_fit.FitError("stale")
+            except (stock_offers.StockOfferError, finished_stock.FinishedStockError, part_stock.PartStockError) as e:
+                raise _fit_error(plate_fit.FitError("stale")) from e
+            except plate_fit.FitError as e:
+                raise _fit_error(e) from e
+        await db.flush()
+        try:
+            after_fit = await plate_fit.load(db, project_id, line_id, data.plate_fit.plate_ids)
+            runs = {r.plate_id: r.count for r in data.plate_fit.runs}
+            if plate_fit.option(after_fit, line.quantity, [runs.get(p.id, 0) for p in after_fit.plates]) is None:
+                raise plate_fit.FitError("stale")
+        except plate_fit.FitError as e:
+            raise _fit_error(e) from e
     changes = {name: [before[name], getattr(line, name)] for name in tracked if getattr(line, name) != before[name]}
     stock_after = await part_stock.reserved_units_for_line(db, line)
     if stock_after != stock_before:
@@ -2087,6 +2216,19 @@ async def update_line(
             project_id,
             "line_changed",
             {"line_id": line.id, "product": product.name if product else None, "changes": changes},
+            actor=current_user,
+        )
+    if fit_snapshot is not None and fit_snapshot.removable:
+        product = await db.get(Product, line.product_id)
+        await order_journal.record(
+            db,
+            project_id,
+            "line_rebalanced",
+            {
+                "line_id": line.id,
+                "product": product.name if product else None,
+                "removed_auto_ids": [item.id for item in fit_snapshot.removable],
+            },
             actor=current_user,
         )
     return await _response(db, project_id)

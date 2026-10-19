@@ -108,8 +108,8 @@ export function OrdersPage() {
   // workspace pane all run through it; its dialogs outlive the rows they were opened
   // from, and focus with nowhere to return lands on the page's heading.
   const heading = useRef<HTMLHeadingElement>(null);
-  const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: heading });
-  const actions = { run, create };
+  const actions = useOrderActions({ fallbackFocusRef: heading });
+  const { create, dialogs } = actions;
 
   const viewFilters: OrderViewFilters = {
     ...(customerId != null ? { customer_id: customerId } : {}),

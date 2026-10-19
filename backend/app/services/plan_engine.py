@@ -10,7 +10,8 @@ and nothing else — keep the names ``attribute`` and ``cover`` apart in code,
 tests and the vault, or a change to one reads as a change to both.
 
 The engine proper (:func:`plan_lines` and everything above it) is pure: no
-session, no printer state, no clock. Only :func:`plan_for_orders` (and its
+session or printer state. An optional monotonic deadline bounds calculator work;
+ordinary planning does not read the clock. Only :func:`plan_for_orders` (and its
 one-order wrapper :func:`plan_for_order`) and :func:`queued_yield_by_line` touch
 the database. Routing is not dispatching — nothing here asks whether a printer
 is ready, and nothing here may start to.
@@ -27,9 +28,11 @@ was free. No new setting is added by this pass.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +64,7 @@ MAX_ITERATIONS = 10_000
 Candidate = tuple[ProductPlate, LibraryFile, PlateRecipe]
 
 
+@lru_cache(maxsize=256)
 def _model_key(model: str | None) -> str | None:
     """The same normalized model key the auto queue and forecast route on."""
     normalised = normalize_model_name(model) if model else None
@@ -448,12 +452,15 @@ def cover(
     counted: set[int],
     price_per_gram: float | None,
     capacity: FleetCapacity | None = None,
+    *,
+    compact_equivalent: bool = True,
+    deadline: float | None = None,
 ) -> tuple[list[PlanRow], dict[int, int], bool]:
     """Greedy covering (spec decision 4): plates for one line, until nothing helps.
 
     Returns the rows in pick order — one row per distinct plate, its ``count``
     and its ``useful`` aggregated over the prints — the surplus each counted
-    part ends the plan with, and whether the ``MAX_ITERATIONS`` guard stopped
+    part ends the plan with, and whether the iteration guard or optional deadline stopped
     it. ``outstanding`` may carry zeros (a part already covered): they never
     attract a pick but they do bound the surplus, because a plate that yields
     them still over-produces.
@@ -465,7 +472,13 @@ def cover(
     LAST iteration happened to finish the job; telling those two apart costs a
     scan that buys nothing, and at ten thousand prints "this is more than one
     plan shows" is not a lie.
+
+    A deadline is cooperative, including scoring and reservation replay. Its
+    incomplete result must not be accepted as an exact cover. Calculator callers
+    own a capacity copy; an interrupted pass may have reserved partial work there.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        return [], {}, True
     remaining = {pid: n for pid, n in outstanding.items() if n > 0}
     yields = {plate.id: line_yield(recipe, counted) for plate, _file, recipe in candidates}
     # Beside ``yields`` and for the same reason: the tie-break reads it on every
@@ -493,9 +506,13 @@ def cover(
         """Pick prints until nothing helps; True when the budget ran out first."""
         nonlocal budget
         while budget > 0:
+            if deadline is not None and time.monotonic() >= deadline:
+                return True
             budget -= 1
             best: tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]] | None = None
             for plate, file, recipe in candidates:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return True
                 gain = {pid: min(n, remaining.get(pid, 0)) for pid, n in yields[plate.id].items()}
                 useful = sum(gain.values())
                 if useful <= 0:
@@ -515,6 +532,8 @@ def cover(
                 )
                 if best is None or key < best[0]:
                     best = (key, plate, file, recipe, gain)
+            if deadline is not None and time.monotonic() >= deadline:
+                return True
             if best is None:
                 return False  # nothing left that covers anything
             _key, plate, file, recipe, gain = best
@@ -545,6 +564,8 @@ def cover(
         # rows planned here are what the forecast counts as unroutable / unknown.
         truncated = greedy(False)
     planned = [rows[plate_id] for plate_id in order]
+    if deadline is not None and time.monotonic() >= deadline:
+        return [], {}, True
     if not truncated and not any(remaining.values()):
         # Keep the existing greedy choice; a solver dependency would change the
         # planning objective. Only remove whole runs proven redundant for EVERY
@@ -552,6 +573,8 @@ def cover(
         made = {pid: sum(row.count * yields[row.plate_id].get(pid, 0) for row in planned) for pid in outstanding}
         removed: dict[int, int] = {}
         for row in sorted(planned, key=lambda r: (-(seconds[r.plate_id] or 0), r.plate_id)):
+            if deadline is not None and time.monotonic() >= deadline:
+                return [], {}, True
             output = yields[row.plate_id]
             removable = min(
                 ((made.get(pid, 0) - outstanding.get(pid, 0)) // n for pid, n in output.items() if n > 0),
@@ -580,14 +603,18 @@ def cover(
                 capacity.machines = initial_capacity.copy().machines
                 retained = []
                 for plate_id in reversed(reservations):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return [], {}, True
                     if removed.get(plate_id, 0):
                         removed[plate_id] -= 1
                     else:
                         retained.append(plate_id)
                 recipes = {plate.id: recipe for plate, _file, recipe in candidates}
                 for plate_id in reversed(retained):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return [], {}, True
                     capacity.reserve(recipes[plate_id])
-    if fleet_can_choose:
+    if fleet_can_choose and compact_equivalent:
         # Scheduling can deliberately reserve equal-yield variants on different
         # model lanes.  The plan surface already represents that as one row
         # plus alternatives, and the forecast carries the proposed split.  Do
@@ -596,6 +623,8 @@ def cover(
         merged: dict[frozenset[tuple[int, int]], PlanRow] = {}
         compact: list[PlanRow] = []
         for row in planned:
+            if deadline is not None and time.monotonic() >= deadline:
+                return [], {}, True
             key = frozenset(yields[row.plate_id].items())
             first = merged.get(key)
             if first is None:
@@ -608,6 +637,8 @@ def cover(
         planned = compact
     surplus = {}
     for pid, want in outstanding.items():
+        if deadline is not None and time.monotonic() >= deadline:
+            return [], {}, True
         made = sum(row.count * yields[row.plate_id].get(pid, 0) for row in planned)
         if made > want:
             surplus[pid] = made - want
@@ -676,6 +707,8 @@ def plan_lines(
     queued: dict[int, dict[int, int]],
     price_per_gram: float | None,
     capacity: FleetCapacity | None = None,
+    *,
+    deadline: float | None = None,
 ) -> OrderPlan:
     """The plan for every line of the order. Pure — see the module docstring.
 
@@ -702,6 +735,9 @@ def plan_lines(
     plans: list[LinePlan] = []
     truncated = False
     for line in ctx.lines:
+        if deadline is not None and time.monotonic() >= deadline:
+            truncated = True
+            break
         figs = figures.get(line.id)
         # A `per == 0` row is surplus of a part the configuration dropped — never planned.
         parts = [pf for pf in figs.parts if pf.per > 0] if figs is not None else []
@@ -713,7 +749,12 @@ def plan_lines(
         # is listed whole — the operator slices it and it becomes a candidate.
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
         candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
-        rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram, capacity)
+        rows, surplus, line_truncated = cover(
+            outstanding, candidates, counted, price_per_gram, capacity, deadline=deadline
+        )
+        if deadline is not None and time.monotonic() >= deadline:
+            truncated = True
+            break
         _attach_alternatives(rows, candidates, counted, price_per_gram)
         truncated = truncated or line_truncated
         yielded: set[int] = set()
@@ -918,7 +959,7 @@ async def queued_yield_by_line(
     return out
 
 
-async def _current_fleet_capacity(db: AsyncSession) -> FleetCapacity:
+async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = ()) -> FleetCapacity:
     """Read the forecast-owned farm snapshot through its narrow planning adapter.
 
     The pure covering functions above accept only :class:`FleetCapacity`; they
@@ -933,7 +974,7 @@ async def _current_fleet_capacity(db: AsyncSession) -> FleetCapacity:
     # asks its snapshot loader for a capacity-only view.
     from backend.app.services.farm_forecast import capacity_from_snapshot, load_snapshot
 
-    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow()))
+    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow(), exclude_auto_ids=exclude_auto_ids))
 
 
 async def plan_for_orders(

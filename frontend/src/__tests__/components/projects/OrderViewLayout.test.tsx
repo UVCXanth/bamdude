@@ -33,6 +33,25 @@ describe('OrderView composition', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('connects the single quantity-calculator action through the REAL page host without writing or enqueueing', async () => {
+    const order = makeOrder();
+    const line = order.lines[0];
+    const mocks = mockOrderDetailApi(order);
+    mocks.getOrderPlan.mockResolvedValue({ lines: [{ line_id: line.id, product_id: line.product_id,
+      product_name: line.product_name, material: null, outstanding_before: [{ part_id: 1, name: 'Part A', count: 1 }], rows: [], surplus_after: [],
+      unsatisfiable: [], candidates: [], not_sliced: [] }],
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null }, truncated: false });
+    const write = vi.spyOn(api, 'updateOrderLine');
+    const send = vi.spyOn(api, 'enqueueOrderPlan');
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus' }));
+    expect(await screen.findByRole('dialog', { name: 'Adjust without surplus' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getAllByRole('button', { name: 'Adjust without surplus' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Plate quantities' })).not.toBeInTheDocument();
+    expect(write).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+  });
+
   it('lays the zones out as head → banners → grid, and the grid as main before side', async () => {
     mockOrderDetailApi(makeOrder());
     renderPage();
