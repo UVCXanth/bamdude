@@ -18,6 +18,8 @@ export default {
     apply: 'Set quantity to {{quantity}}', retryPlan: 'Load the saved plan again', retry: 'Retry',
     draft: 'Applying saves this line’s quantity, reserves the shown free stock and fills this browser’s plan draft. Only explicitly reviewed Auto Queue removals change existing jobs. Nothing new is queued or printed. Draft run counts are not saved across page reloads; recalculate before sending after a reload.',
     saved: 'The quantity is saved. If loading the plan failed, retry only that read.',
+    closeToRecalculate: 'Close to recalculate',
+    savedDemandChanged: 'The changes are saved, but demand has changed. Close this dialog and reopen the calculator for a fresh proposal. The previous run counts have not been applied to the plan.',
     batchLimit: 'A plate exceeds the existing 999-run enqueue limit. Send the work in smaller batches.',
     files: 'Files and whole runs', hidden: 'Restricted file', failed: 'Could not load or calculate this proposal.',
     coverageHint: 'All columns count individual parts. Other coverage includes ready products, assembly and write-off adjustments.',

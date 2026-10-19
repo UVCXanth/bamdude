@@ -369,8 +369,12 @@ def option(
     )
 
 
-def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | None, bool]:
+def greedy_option(
+    snapshot: Snapshot, quantity: int, *, deadline: float | None = None
+) -> tuple[PlateFitOption | None, bool]:
     """Accept only the existing greedy cover after the existing greedy shelf offer."""
+    if deadline is not None and time.monotonic() >= deadline:
+        return None, True
     offer = stock_offers.Offer(snapshot.line_id, "", 0, 0)
     # cover mutates capacity. Each what-if starts from the same snapshot; neither
     # browsing direction nor earlier candidates may consume the next one's lanes.
@@ -385,6 +389,8 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
         next(line for line in lines if line.id == snapshot.line_id).quantity = quantity
         ctx = replace(snapshot.context, lines=lines)
         figures, _ = order_metrics.attribute(ctx)
+        if deadline is not None and time.monotonic() >= deadline:
+            return None, True
         if capacity is not None:
             # Reuse the normal order pass to reserve earlier lines, with their
             # existing stock/output/queues. Only THIS line's free-stock offer is
@@ -397,6 +403,7 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
                 snapshot.queued,
                 None,
                 capacity,
+                deadline=deadline,
             )
             if preceding.truncated:
                 return None, True
@@ -408,6 +415,8 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
             ),
             offer,
         )
+    if deadline is not None and time.monotonic() >= deadline:
+        return None, True
     need = {
         p.id: p.required(quantity) - p.fixed - p.per * (offer.from_finished + offer.kits) - offer.parts.get(p.id, 0)
         for p in snapshot.parts
@@ -421,6 +430,7 @@ def greedy_option(snapshot: Snapshot, quantity: int) -> tuple[PlateFitOption | N
         None,
         capacity,
         compact_equivalent=False,
+        deadline=deadline,
     )
     if truncated:
         return None, True
@@ -448,7 +458,7 @@ def solve(
         return None, "none"
     if deadline <= time.monotonic():
         return None, "limited"
-    edge, truncated = greedy_option(snapshot, lower if direction == 1 else upper)
+    edge, truncated = greedy_option(snapshot, lower if direction == 1 else upper, deadline=deadline)
     if truncated:
         return None, "limited"
     if edge is not None:
@@ -573,7 +583,7 @@ def solve(
             )
             if option(snapshot, q, values[1 : 1 + m], relaxed_offer) is None:
                 return None, "limited"
-            found, truncated = greedy_option(snapshot, q)
+            found, truncated = greedy_option(snapshot, q, deadline=deadline)
             if truncated:
                 return None, "limited"
             if found is not None:
@@ -593,7 +603,7 @@ def solve(
                 if time.monotonic() >= deadline:
                     return None, "limited"
                 q = lower if direction == 1 else upper
-                found, truncated = greedy_option(snapshot, q)
+                found, truncated = greedy_option(snapshot, q, deadline=deadline)
                 if truncated:
                     return None, "limited"
                 if found is not None:
@@ -654,8 +664,10 @@ def confirm(snapshot: Snapshot, quantity: int, confirmation) -> PlateFitOption:
     runs = {row.plate_id: row.count for row in confirmation.runs}
     if len(runs) != len(confirmation.runs) or not set(runs) <= {p.id for p in snapshot.plates}:
         raise FitError("invalid_plan")
-    result, truncated = greedy_option(snapshot, quantity)
-    if truncated or result is None or runs != {r.plate_id: r.count for r in result.runs}:
+    result, truncated = greedy_option(snapshot, quantity, deadline=time.monotonic() + MAX_SECONDS)
+    if truncated:
+        raise FitError("busy", 429)
+    if result is None or runs != {r.plate_id: r.count for r in result.runs}:
         raise FitError("invalid_plan")
     return result
 

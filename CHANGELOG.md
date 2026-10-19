@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Whole-plate adjustment stays bounded and recoverable.** Calculator deadlines also interrupt the canonical greedy cover, including earlier order lines and apply-time revalidation. Reviewed queue removals refresh queue lists and forecasts immediately after saving. A failed saved-plan read retries only that read; changed demand offers a fresh calculation without attaching old run counts.
+
 - **Whole-plate search gives both directions time before expanding the range.** A difficult lower search no longer consumes the upper search's budget. Dense candidate ranges reuse the canonical cover between integer-solver jumps, and repeated operator-hour calculations share a bounded cache without changing fleet choices or stock accounting. Incomplete expanded searches remain explicitly marked as limited.
 
 - **Whole-plate quantity adjustment keeps fleet planning in both directions.** Nearest and expanded choices use the existing capacity snapshot, prior order-line load and greedy scheduling; each what-if starts from a fresh copy. Reviewed pending replacements stop consuming virtual capacity, while protected work stays. Equal-yield model variants retain their actual runs through the existing split editor instead of collapsing onto the first file. Applying rechecks current fleet policy and occupancy before any write.

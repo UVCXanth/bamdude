@@ -89,6 +89,13 @@ draft counts: recalculate before enqueueing. New work is sent separately through
 the existing **Whole plan to queue** action, with its usual profiles, order
 options, source capture, permissions and per-batch limits. If the quantity save
 succeeds but the following plan read fails, retry only the read, never the PATCH.
+This includes HTTP conflicts on that read. If fresh outstanding parts differ,
+the dialog offers **Close to recalculate** rather than attaching the old runs or
+repeating the saved mutation. Queue lists, summaries and forecasts are invalidated
+immediately after a successful reviewed replacement, before that plan read.
+The projects route retains its dependency-owned transaction: no pre-commit
+WebSocket deletion notice is sent. Existing queue notifications elsewhere follow
+an explicit root commit; this change does not introduce a transaction callback layer.
 
 Late defect entry invalidates an old proposal. A new read accounts for the good
 output and prepares replacement runs or a different product quantity through
@@ -101,6 +108,14 @@ Incomplete extra neighbours are also reported as limited. In dense ranges,
 eight consecutive quantities are checked by the canonical greedy cover after
 a rejected integer candidate, before another solver jump. Every intervening
 quantity is checked in order, preserving nearestness.
+
+The monotonic deadline is passed into the actual canonical cover loops, including
+the earlier-line pass, candidate scoring and retained-reservation replay. An
+interrupted pass is explicitly incomplete. Apply-time revalidation has the same
+six-second bound and returns the existing busy response before any quantity,
+stock or queue write. Ordinary planner calls omit the optional deadline and keep
+their existing choices. Cancellation continues to own the worker and admission
+slot until that work exits; a timeout around a detached thread is not used.
 
 Options reconsidered for this fix: the existing [SciPy milp interface](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html)
 remains the sparse-range filter. Rebuilding it for every adjacent quantity was

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../../utils';
 import { api, ApiError, type OrderPlan, type PlateFitResponse } from '../../../api/client';
@@ -23,14 +24,23 @@ beforeEach(() => {
   vi.spyOn(api, 'updateOrderLine').mockResolvedValue(makeOrder({ ...order, lines: [makeLine({ id: 17, quantity: 3000 })] }));
   vi.spyOn(api, 'getOrderPlan').mockResolvedValue(readyPlan());
 });
+// Testing Library normalizes NBSP in text; preserve locale grouping while matching it.
+function numberText(text: string) {
+  return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s/g, '\\s'));
+}
 async function calculate(d = door) {
   render(<PlateFitDialog door={d} onClose={vi.fn()} />);
   await screen.findByText(/Product A · Currently ordered/);
   fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
-  await screen.findByText(/1,000 → 3,000/);
+  await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
 }
 
-describe('whole-plate quantity review', () => {
+describe.each(['en-US', 'uk-UA'])('whole-plate quantity review (%s)', locale => {
+  beforeEach(() => {
+    vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (this: number) {
+      return new Intl.NumberFormat(locale).format(Number(this));
+    });
+  });
   it('shows the greedy free-stock reservation before applying and rechecks the resulting plan', async () => {
     const reply = result([900, 3000]);
     reply.options[1] = { ...reply.options[1], from_finished: 2, from_kits: 3, stock_parts: { '1': 4 },
@@ -42,7 +52,7 @@ describe('whole-plate quantity review', () => {
     expect(screen.getByText('Applying will reserve free stock: 2 finished products, 3 kits and 4 individual parts.')).toBeInTheDocument();
     expect(api.updateOrderLine).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Set quantity to 3,000' }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
     await waitFor(() => expect(door.onApplied).toHaveBeenCalled());
   });
   it('requires separate consent to remove only the reviewed pending auto jobs', async () => {
@@ -51,10 +61,10 @@ describe('whole-plate quantity review', () => {
     await screen.findByRole('spinbutton');
     fireEvent.click(screen.getByRole('checkbox', { name: /Recalculate unassigned Auto Queue/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
-    await screen.findByText(/1,000 → 3,000/);
+    await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
     expect(api.getPlateFit).toHaveBeenCalledWith(41, 17, expect.objectContaining({ replace_pending: true }));
     fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
-    const apply = screen.getByRole('button', { name: 'Set 3,000 and remove 2 pending jobs' });
+    const apply = screen.getByRole('button', { name: numberText(`Set ${(3000).toLocaleString()} and remove 2 pending jobs`) });
     expect(apply).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: /I confirm removing these 2 jobs/ }));
     expect(apply).toBeEnabled();
@@ -64,7 +74,7 @@ describe('whole-plate quantity review', () => {
   it('sends only selected recipes and requires a blank acknowledgement above 10%', async () => {
     await calculate();
     expect(api.getPlateFit).toHaveBeenCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 1 });
-    const apply = screen.getByRole('button', { name: 'Set quantity to 3,000' });
+    const apply = screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) });
     expect(apply).toBeDisabled();
     const ack = screen.getByRole('checkbox', { name: /I understand that the quantity/ });
     expect(ack).not.toBeChecked();
@@ -80,9 +90,9 @@ describe('whole-plate quantity review', () => {
     fireEvent.click(screen.getByRole('button', { name: /900 · -100/ }));
     expect(screen.queryByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Set quantity to 900' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: /3,000 · \+2,000/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`${(3000).toLocaleString()} · +${(2000).toLocaleString()}`) }));
     expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'Set quantity to 3,000' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) })).toBeDisabled();
   });
   it('browses discrete quantities near 20,000 without a global production slider', async () => {
     vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([19992, 20004, 20016]), around: 20000 });
@@ -97,7 +107,7 @@ describe('whole-plate quantity review', () => {
     expect(api.getPlateFit).toHaveBeenCalledWith(41, 17, { around: 20000, plate_ids: [7], steps: 3 });
     expect(screen.getByRole('slider')).toHaveAttribute('max', '2');
     fireEvent.change(screen.getByRole('slider'), { target: { value: '2' } });
-    expect(screen.getByRole('button', { name: 'Set quantity to 20,016' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: numberText(`Set quantity to ${(20016).toLocaleString()}`) })).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
   });
   it('loads the wider range on demand and resets consent without writing or enqueueing', async () => {
@@ -109,7 +119,7 @@ describe('whole-plate quantity review', () => {
     expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 3 });
     expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
     fireEvent.change(screen.getByRole('slider'), { target: { value: '2' } });
-    expect(screen.getByRole('button', { name: 'Set quantity to 6,000' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: numberText(`Set quantity to ${(6000).toLocaleString()}`) })).toBeDisabled();
     expect(api.updateOrderLine).not.toHaveBeenCalled();
   });
   it('can retry a failed expansion and keeps subsequent calculations in the wider range', async () => {
@@ -138,7 +148,7 @@ describe('whole-plate quantity review', () => {
     vi.mocked(api.updateOrderLine).mockRejectedValue(new ApiError('changed', 409, 'plate_fit_stale'));
     await calculate();
     fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Set quantity to 3,000' }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
     await screen.findByText(/print results, queue or plate yields changed/);
     expect(door.onApplied).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
@@ -147,12 +157,86 @@ describe('whole-plate quantity review', () => {
     vi.mocked(api.getOrderPlan).mockRejectedValueOnce(new Error('read failed')).mockResolvedValue(readyPlan());
     await calculate();
     fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Set quantity to 3,000' }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
     await screen.findByText('read failed');
     fireEvent.click(screen.getByRole('button', { name: 'Load the saved plan again' }));
     await waitFor(() => expect(door.onApplied).toHaveBeenCalled());
     expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
     expect(api.getOrderPlan).toHaveBeenCalledTimes(2);
+  });
+  it.each([false, true])('R2 refreshes cached queue views after committed removal even when plan read fails=%s', async (readFails) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    const keys = [['auto-queue', { page: 1 }], ['auto-queue', 'summary'], ['queue', 'summary'], ['queues'], ['queue-forecast']];
+    for (const key of keys) qc.setQueryData(key, { ids: [91], total: 1 });
+    vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([900, 3000]), removable_auto_ids: [91] });
+    if (readFails) vi.mocked(api.getOrderPlan).mockRejectedValueOnce(new Error('saved plan unavailable'));
+    render(<QueryClientProvider client={qc}><PlateFitDialog door={door} onClose={vi.fn()} /></QueryClientProvider>);
+    await screen.findByRole('spinbutton');
+    fireEvent.click(screen.getByRole('checkbox', { name: /Recalculate unassigned Auto Queue/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I confirm removing these 1 jobs/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set ${(3000).toLocaleString()} and remove 1 pending jobs`) }));
+    if (readFails) await screen.findByText('saved plan unavailable');
+    else await waitFor(() => expect(door.onApplied).toHaveBeenCalled());
+    for (const key of keys) expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
+    qc.clear();
+  });
+  it('R2 does not invalidate queues for a failed replacement PATCH', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    qc.setQueryData(['auto-queue', { page: 1 }], { ids: [91] });
+    qc.setQueryData(['queue-forecast'], { count: 1 });
+    vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([900, 3000]), removable_auto_ids: [91] });
+    vi.mocked(api.updateOrderLine).mockRejectedValueOnce(new Error('not committed'));
+    render(<QueryClientProvider client={qc}><PlateFitDialog door={door} onClose={vi.fn()} /></QueryClientProvider>);
+    await screen.findByRole('spinbutton');
+    fireEvent.click(screen.getByRole('checkbox', { name: /Recalculate unassigned Auto Queue/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I confirm removing these 1 jobs/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set ${(3000).toLocaleString()} and remove 1 pending jobs`) }));
+    await screen.findByText('not committed');
+    expect(qc.getQueryState(['auto-queue', { page: 1 }])?.isInvalidated).toBe(false);
+    expect(qc.getQueryState(['queue-forecast'])?.isInvalidated).toBe(false);
+    expect(api.getOrderPlan).not.toHaveBeenCalled();
+    qc.clear();
+  });
+  it('R3 retries a post-save HTTP 409 read without replaying the successful PATCH', async () => {
+    vi.mocked(api.getOrderPlan).mockRejectedValueOnce(new ApiError('saved read conflict', 409)).mockResolvedValue(readyPlan());
+    await calculate();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
+    await screen.findByText('saved read conflict');
+    expect(door.onApplied).not.toHaveBeenCalled();
+    const retry = screen.getByRole('button', { name: 'Load the saved plan again' });
+    expect(retry).toBeEnabled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(door.onApplied).toHaveBeenCalled());
+    expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
+    expect(api.getOrderPlan).toHaveBeenCalledTimes(2);
+  });
+  it('R3 offers actionable recovery after changed demand without attaching stale runs or replaying PATCH', async () => {
+    const changed = readyPlan(); changed.lines[0].outstanding_before[0].count = 2929;
+    vi.mocked(api.getOrderPlan).mockResolvedValueOnce(changed);
+    const onClose = vi.fn();
+    render(<PlateFitDialog door={door} onClose={onClose} />);
+    await screen.findByRole('spinbutton');
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
+    await screen.findByText(/print results, queue or plate yields changed/);
+    expect(door.onApplied).not.toHaveBeenCalled();
+    expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
+    const recovery = screen.getByRole('button', { name: /Load the saved plan again|Close to recalculate/ });
+    expect(recovery).toBeEnabled();
+    fireEvent.click(recovery);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(door.onApplied).not.toHaveBeenCalled();
+    expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
   });
   it('shows a bounded search as unfinished instead of claiming infeasibility', async () => {
     vi.mocked(api.getPlateFit).mockResolvedValue({ ...result([]), lower: 'limited', upper: 'limited', current: 'limited' });

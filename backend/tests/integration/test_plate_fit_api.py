@@ -352,6 +352,64 @@ async def test_auto_assignment_during_review_refuses_removal_and_quantity_edit(c
     assert (await db_session.get(AutoQueueItem, auto.id)).status == "assigned"
 
 
+async def test_R1_apply_timeout_keeps_quantity_stock_queue_and_journal(
+    committing_client, db_session, shop, monkeypatch
+):
+    from backend.app.models.finished_stock import StockItemMovement
+    from backend.app.models.part_stock import ProductPartStockMovement
+    from backend.app.models.project import ProjectEvent
+    from backend.app.services import plate_fit, stock_offers
+
+    for part, count in ((shop["a"], 3), (shop["b"], 1)):
+        await part_stock.move(db_session, part_id=part.id, delta=count, reason="manual", note="Synthetic review")
+    auto = AutoQueueItem(
+        library_file_id=shop["file"].id,
+        plate_id=1,
+        project_id=shop["order"],
+        project_line_id=shop["line"],
+        status="pending",
+    )
+    db_session.add(auto)
+    await db_session.commit()
+    auto_id = auto.id
+    response = await preview(committing_client, shop, around=11, replace_pending=True)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    target = next(o for o in data["options"] if o["quantity"] == 11)
+    assert target["from_kits"] == 1 and data["removable_auto_ids"] == [auto_id]
+    models = (StockItemMovement, ProductPartStockMovement, ProjectEvent)
+    before = [await db_session.scalar(select(func.count()).select_from(model)) for model in models]
+
+    async def unexpected_write(*args, **kwargs):
+        pytest.fail("timed-out validation must not reach a stock or queue writer")
+
+    monkeypatch.setattr(stock_offers, "take", unexpected_write)
+    monkeypatch.setattr(plate_fit, "remove_reviewed_pending", unexpected_write)
+    monkeypatch.setattr(plate_fit, "MAX_SECONDS", 0)
+    result = await committing_client.patch(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}",
+        json={
+            "quantity": 11,
+            "plate_fit": {
+                "basis": data["basis"],
+                "plate_ids": data["plate_ids"],
+                "runs": target["runs"],
+                "replace_pending": True,
+                "acknowledge_queue_change": True,
+            },
+        },
+    )
+    assert result.status_code == 429 and result.json()["detail"]["error"] == "plate_fit_busy"
+    order = await committing_client.get(f"/api/v1/projects/{shop['order']}")
+    assert order.json()["lines"][0]["quantity"] == 10
+    assert (await db_session.get(AutoQueueItem, auto_id)).status == "pending"
+    assert [await db_session.scalar(select(func.count()).select_from(model)) for model in models] == before
+    assert await part_stock.balances(db_session, shop["a"].product_id) == {
+        shop["a"].id: 3,
+        shop["b"].id: 1,
+    }
+
+
 async def separate_plates(db, shop):
     plates = []
     for name, count in (("Part A", 3), ("Part B", 1)):

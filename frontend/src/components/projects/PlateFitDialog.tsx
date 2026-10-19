@@ -6,7 +6,7 @@ import { api, ApiError, type Order, type PlanRow, type PlateFitResponse } from '
 import { Modal } from '../Modal';
 import { Button } from '../Button';
 import { formatDuration } from '../../utils/date';
-import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { useAuth } from '../../contexts/AuthContext';
 
 export interface PlateFitDraft { orderId: number; lineId: number; quantity: number; rows: PlanRow[]; revision: number; planSignature: string }
@@ -36,6 +36,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Order | null>(null);
+  const [needsRecalculation, setNeedsRecalculation] = useState(false);
   const sequence = useRef(0);
   const lines = order.data?.lines.filter(l => l.mode !== 'parts') ?? [];
   const line = lines.find(l => l.id === lineId) ?? (lineId == null ? lines[0] : undefined);
@@ -70,15 +71,21 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   const apply = async () => {
     if (!line || !data || !current || (large && !ack) || (removedCount > 0 && !queueAck)) return;
     setBusy(true); setError(null);
+    let persisted = saved;
     try {
-      if (!saved) {
+      if (!persisted) {
         const updated = await api.updateOrderLine(door.orderId, line.id, { quantity: current.quantity, plate_fit: {
           basis: data.basis, plate_ids: data.plate_ids, runs: current.runs, acknowledge_large_change: ack,
           ...(replacePending ? { replace_pending: true, acknowledge_queue_change: queueAck } : {}),
         } });
         setSaved(updated);
+        persisted = updated;
         qc.setQueryData(['project', door.orderId], updated);
         invalidateOrderViews(qc);
+        if (removedCount > 0) {
+          invalidateQueueViews(qc);
+          qc.invalidateQueries({ queryKey: ['auto-queue'] });
+        }
       }
       // A failed plan read retries only this read, never a saved quantity PATCH.
       await qc.cancelQueries({ queryKey: ['project-plan', door.orderId], exact: true });
@@ -87,6 +94,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
       const baseline = plan.lines.find(l => l.line_id === line.id);
       if (!baseline || current.parts.some(p => (baseline.outstanding_before.find(v => v.part_id === p.part_id)?.count ?? 0) !== p.new_printed)
         || baseline.outstanding_before.some(p => !current.parts.some(v => v.part_id === p.part_id))) {
+        setNeedsRecalculation(true);
         throw new ApiError(t('plateFit.errors.stale'), 409, 'plate_fit_stale');
       }
       const rows: PlanRow[] = current.runs.map(run => {
@@ -97,7 +105,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
       onClose();
     } catch (e) {
       showError(e);
-      if (e instanceof ApiError && e.status === 409) { setSelected(null); setAck(false); }
+      if (!persisted && e instanceof ApiError && e.status === 409) { setSelected(null); setAck(false); }
     } finally { setBusy(false); }
   };
   const index = data?.options.findIndex(o => o.quantity === selected) ?? -1;
@@ -107,9 +115,10 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   return <Modal title={t('plateFit.nearest')} icon={<Calculator className="w-5 h-5" />} size="3xl"
     onClose={() => { sequence.current++; onClose(); }} closeDisabled={busy}
     footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
+      {needsRecalculation ? <Button onClick={onClose} disabled={busy}>{t('plateFit.closeToRecalculate')}</Button> :
       <Button onClick={() => void apply()} disabled={busy || !current || (large && !ack) || (removedCount > 0 && !queueAck) || cannotTakeStock}>
         {saved ? t('plateFit.retryPlan') : t(removedCount > 0 ? 'plateFit.applyQueue' : 'plateFit.apply', { quantity: selected?.toLocaleString() ?? '—', count: removedCount })}
-      </Button></div>}>
+      </Button>}</div>}>
     <div className="p-4 space-y-4">
       <p className="text-sm text-bambu-gray">{t('plateFit.explanation')}</p>
       {order.isError && <p role="alert">{t('plateFit.failed')} <Button variant="secondary" onClick={() => void order.refetch()}>{t('plateFit.retry')}</Button></p>}
@@ -190,6 +199,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
         {cannotTakeStock && <p role="alert" className="text-amber-700 dark:text-amber-300">{t('plateFit.stockPermission')}</p>}
       </>}
       {saved && <p role="status">{t('plateFit.saved')}</p>}
+      {needsRecalculation && <p role="status">{t('plateFit.savedDemandChanged')}</p>}
       {error && <p role="alert" className="text-red-600 dark:text-red-400">{error}</p>}
     </div>
   </Modal>;
