@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Loader2, Send } from 'lucide-react';
+import { AlertTriangle, Calculator, Loader2, Send } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import type { Order, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -21,6 +21,7 @@ import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInv
 import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import type { PlateFitDraft } from './PlateFitDialog';
 
 /**
  * What to print next for this order, per line.
@@ -57,6 +58,9 @@ export function PlanBlock({
   onQueueRequestClose,
   queueOrderReady = true,
   onQueueRequestRetry,
+  fitDraft,
+  onPlateSelection,
+  onPlateFit,
 }: {
   order: Order;
   canEdit: boolean;
@@ -73,6 +77,9 @@ export function PlanBlock({
   /** The view owns order captions and must finish its fresh detail read too. */
   queueOrderReady?: boolean;
   onQueueRequestRetry?: () => void;
+  fitDraft?: PlateFitDraft | null;
+  onPlateSelection?: (selected: Record<number, number[]>) => void;
+  onPlateFit?: () => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -343,6 +350,62 @@ export function PlanBlock({
 
   const items = useMemo(() => lines.flatMap((line) => itemsFor(line)), [lines, itemsFor]);
 
+  useEffect(() => {
+    const selected: Record<number, number[]> = {};
+    for (const line of lines) {
+      const ids = new Set<number>();
+      for (const row of line.rows) {
+        const count = Math.max(0, Math.trunc(counts[line.line_id]?.[row.plate_id] ?? row.count));
+        if (!count) continue;
+        const picked = chosen[line.line_id]?.[row.plate_id];
+        const distribution = split[line.line_id]?.[row.plate_id];
+        // An untouched grouped row offers ALL equivalent files to the fleet.
+        // Explicit file/split choices still narrow that set; zero rows stay out.
+        if (picked == null && distribution == null) {
+          [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)].forEach(id => ids.add(id));
+        } else {
+          rowDistribution(row, count, picked, distribution).forEach(item => ids.add(item.plate_id));
+        }
+      }
+      if (ids.size) selected[line.line_id] = [...ids];
+    }
+    onPlateSelection?.(selected);
+  }, [lines, counts, chosen, split, onPlateSelection]);
+
+  const appliedFit = useRef<PlateFitDraft | null>(null);
+  useEffect(() => {
+    if (!fitDraft || fitDraft === appliedFit.current || fitDraft.orderId !== order.id || !plan) return;
+    if (order.lines.find(l => l.id === fitDraft.lineId)?.quantity !== fitDraft.quantity) return;
+    const baseline = plan.lines.find(l => l.line_id === fitDraft.lineId);
+    if (!baseline) return;
+    appliedFit.current = fitDraft;
+    if (JSON.stringify(baseline) !== fitDraft.planSignature) {
+      showToast(t('plateFit.errors.stale'), 'warning');
+      return;
+    }
+    const byPlate = new Map(fitDraft.rows.map(row => [row.plate_id, row.count]));
+    const represented = new Set<number>();
+    const nextCounts: Record<number, number> = {};
+    const nextSplit: SplitByRow = {};
+    for (const row of baseline.rows) {
+      const ids = [row.plate_id, ...row.alternatives.map(alt => alt.plate_id)];
+      ids.forEach(id => represented.add(id));
+      nextCounts[row.plate_id] = ids.reduce((sum, id) => sum + (byPlate.get(id) ?? 0), 0);
+      // The fleet may use equal-yield files on several models. Preserve those
+      // exact runs in the existing split editor, rather than merging everything
+      // onto the first file or adding a duplicate row for an alternative.
+      if (ids.slice(1).some(id => (byPlate.get(id) ?? 0) > 0)) {
+        nextSplit[row.plate_id] = Object.fromEntries(ids.map(id => [id, byPlate.get(id) ?? 0]));
+      }
+    }
+    const extraRows = fitDraft.rows.filter(row => !represented.has(row.plate_id));
+    for (const row of extraRows) nextCounts[row.plate_id] = row.count;
+    setCounts(prev => ({ ...prev, [fitDraft.lineId]: nextCounts }));
+    setAdded(prev => ({ ...prev, [fitDraft.lineId]: extraRows }));
+    setChosen(prev => ({ ...prev, [fitDraft.lineId]: {} }));
+    setSplit(prev => ({ ...prev, [fitDraft.lineId]: nextSplit }));
+  }, [fitDraft, order.id, order.lines, plan, showToast, t]);
+
   // A forecast belongs to the exact server plan. Compare effective enqueue
   // items rather than the editor's state maps: setting a count back to its
   // planned value is fresh again, and an added row is naturally included.
@@ -539,6 +602,13 @@ export function PlanBlock({
     );
   }
 
+  const fitAction = onPlateFit && order.lines.some(l => l.mode !== 'parts') ? (
+    <Button variant="secondary" className="ring-1 ring-bambu-green/60" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
+      <Calculator className="w-5 h-5 shrink-0 text-bambu-green" aria-hidden="true" />
+      {t('plateFit.nearest')}
+    </Button>
+  ) : null;
+
   return (
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {queueConfirmation}
@@ -566,14 +636,15 @@ export function PlanBlock({
         </div>
       )}
 
-      {lines.length === 0 ? (
+      {lines.length === 0 ? (<>
         <p
           className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm text-white"
           data-testid="plan-empty"
         >
           {t('orders.plan.nothingOutstanding')}
         </p>
-      ) : (
+        {fitAction && <div className="flex justify-end">{fitAction}</div>}
+      </>) : (
         <>
           <div className="space-y-3">
             {lines.map((line) => (
@@ -632,6 +703,7 @@ export function PlanBlock({
               )}
             </p>
 
+            {fitAction}
             {canQueue && (
               <Button
                 data-testid="plan-enqueue-all"

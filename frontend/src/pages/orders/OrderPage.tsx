@@ -12,7 +12,7 @@ export function OrderPage() {
   // The order's action host lives on the PAGE, above the view keyed by id (WS-13 E6
   // B01): its dialogs outlive the view. Focus with nowhere to return lands on the page.
   const page = useRef<HTMLDivElement>(null);
-  const { run, create, dialogs } = useOrderActions({ fallbackFocusRef: page });
+  const actions = useOrderActions({ fallbackFocusRef: page });
   // `workshop` — the section's 14/21 text scope (WS-13 E2 B02); keyed by id, so
   // another order starts from nothing: its tabs, drafts and dialogs (E3 F03).
   return (
@@ -20,7 +20,7 @@ export function OrderPage() {
       <OrderView
         key={idParam}
         id={Number(idParam)}
-        actions={{ run, create }}
+        actions={actions}
         onDeleted={() => navigate('/projects')}
         // The open section (F02): an unknown value reads as the plan and is not
         // rewritten by reading; a change replaces the entry, so Back leaves the
@@ -38,7 +38,7 @@ export function OrderPage() {
           )
         }
       />
-      {dialogs}
+      {actions.dialogs}
     </div>
   );
 }
