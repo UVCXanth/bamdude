@@ -406,15 +406,33 @@ def _get_release(repo: str, tag: str, token: str | None) -> dict | None:
         raise
 
 
-def _list_releases(repo: str, token: str | None) -> list[dict]:
-    request = urllib.request.Request(
-        f"{API}/repos/{repo}/releases?per_page=100",
-        headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
-    )
-    if token:
-        request.add_unredirected_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.load(response)
+_RELEASES_PER_PAGE = 100
+_RELEASE_PAGES = 100  # 10 000 releases: a list that never ends is an answer to refuse, not to follow
+
+
+def _list_releases(repo: str, token: str | None):
+    """Every release of the repository, newest first, page by page to the last (Codex F1-R2: the one surviving copy
+    of an old closure's sources may sit past the newest hundred). Each page is asked of GitHub's own API by its
+    number — never a URL an answer supplied, so the token goes nowhere else. A page that cannot be read is an error,
+    never «no more releases»."""
+    for page in range(1, _RELEASE_PAGES + 1):
+        request = urllib.request.Request(
+            f"{API}/repos/{repo}/releases?per_page={_RELEASES_PER_PAGE}&page={page}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+        )
+        if token:
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                items = json.load(response)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise SourceError(f"the releases of {repo} could not be read (page {page}: {type(exc).__name__})") from None
+        if not isinstance(items, list):
+            raise SourceError(f"the releases of {repo} could not be read (page {page}: not a list)")
+        yield from items
+        if len(items) < _RELEASES_PER_PAGE:
+            return
+    raise SourceError(f"the releases of {repo} did not end within {_RELEASE_PAGES} pages")
 
 
 # What waiting can change: GitHub busy, a rate limit, a dropped connection. Any other answer is a verdict.

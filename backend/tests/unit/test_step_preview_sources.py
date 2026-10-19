@@ -482,6 +482,63 @@ def test_the_workflow_reuses_a_published_copy_before_it_asks_upstream():
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
 
 
+class _Page(io.BytesIO):
+    def __init__(self, items):
+        super().__init__(json.dumps(items).encode())
+        self.headers = {}
+
+
+def _paged(monkeypatch, pages, fail_on=None):
+    """GitHub's release list, page by page (100 a page); every request recorded with its URL and its token."""
+    import urllib.error
+    import urllib.parse
+
+    seen = []
+
+    def urlopen(request, **kwargs):
+        seen.append(
+            (request.full_url, request.get_header("Authorization") or request.unredirected_hdrs.get("Authorization"))
+        )
+        page = int(urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query).get("page", ["1"])[0])
+        if page == fail_on:
+            raise urllib.error.HTTPError(request.full_url, 502, "bad gateway", {}, None)
+        return _Page(pages[page - 1] if page <= len(pages) else [])
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", urlopen)
+    return seen
+
+
+def test_the_release_list_is_read_to_its_last_page(monkeypatch):
+    """The only surviving copy of an old closure's sources may sit past the newest hundred releases (Codex F1-R2):
+    every page is read, each from GitHub's own API with the token, none from a URL the answer supplied."""
+    newer = [{"tag_name": f"v9.{i}", "draft": False, "assets": []} for i in range(100)]
+    seen = _paged(monkeypatch, [newer, [{"tag_name": "v0.8.0", "draft": False, "assets": []}]])
+    tags = [r["tag_name"] for r in sources._list_releases("kainpl/bamdude", "tok")]
+    assert "v0.8.0" in tags and len(tags) == 101
+    assert all(url.startswith(f"{sources.API}/repos/kainpl/bamdude/releases?") for url, _ in seen)
+    assert all(auth == "Bearer tok" for _, auth in seen)
+
+
+def test_a_page_of_releases_that_cannot_be_read_is_no_answer(monkeypatch, published, tmp_path):
+    """A failed read of a later page is not «no copy»: it fails, and nothing is fetched from upstream instead."""
+    notices, _bundle, _digest = published
+    newer = [{"tag_name": f"v9.{i}", "draft": False, "assets": []} for i in range(100)]
+    _paged(monkeypatch, [newer], fail_on=2)
+    with pytest.raises(sources.SourceError, match="page 2"):
+        list(sources._list_releases("kainpl/bamdude", None))
+    asked = []
+
+    def upstream(*args, **kwargs):
+        asked.append(args)
+        raise AssertionError("upstream asked")
+
+    with pytest.raises(sources.SourceError, match="page 2"):
+        sources.collect_or_reuse(
+            notices, tmp_path / "o", repo="kainpl/bamdude", fetch=upstream, archive_git=upstream, read_recipe=upstream
+        )
+    assert asked == []
+
+
 def _waits_for_sources(workflow: Path, publisher: str) -> dict:
     jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
     needs = jobs[publisher]["needs"]
