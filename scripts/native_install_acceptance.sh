@@ -151,7 +151,9 @@ fixture() {
     git update-ref refs/acceptance/main "$candidate"
     git update-ref refs/acceptance/baseline "$baseline"
     git init -q --bare "$out/bamdude.git"
-    git -C "$out/bamdude.git" fetch -q --no-tags "$PWD" \
+    # No automatic maintenance after the fetch: a current git detaches it, and tar would read the remote while it
+    # writes there ("file changed as we read it"). gc.auto is the same switch for a git older than maintenance.
+    git -C "$out/bamdude.git" -c maintenance.auto=false -c gc.auto=0 fetch -q --no-tags "$PWD" \
         refs/acceptance/main:refs/heads/main refs/acceptance/baseline:refs/heads/baseline
     git update-ref -d refs/acceptance/main
     git update-ref -d refs/acceptance/baseline

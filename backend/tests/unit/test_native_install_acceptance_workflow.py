@@ -241,6 +241,38 @@ def test_the_fixture_serves_the_candidate_and_the_previous_release(tmp_path):
     ]
 
 
+def test_the_fixture_starts_no_maintenance_beside_its_tar(tmp_path):
+    """A fetch starts `git maintenance run --auto`, which detaches on a current git: tar then read the bare remote
+    while it took `objects/maintenance.lock` and failed with "file changed as we read it" (run 39300867991)."""
+    bash = _bash()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    for n, tag in ((1, "v0.7.0"), (2, None)):
+        (repo / "f.txt").write_text(str(n), encoding="utf-8")
+        _git(repo, "add", "f.txt")
+        _git(repo, "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "-m", f"c{n}")
+        if tag:
+            _git(repo, "tag", tag)
+    trace = tmp_path / "trace2.json"
+    result = subprocess.run(
+        [bash, SCRIPT.as_posix(), "fixture", (tmp_path / "fixture").as_posix(), _git(repo, "rev-parse", "HEAD")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "GIT_TRACE2_EVENT": trace.as_posix()},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    children = [
+        event["argv"]
+        for event in map(json.loads, trace.read_text(encoding="utf-8").splitlines())
+        if event.get("event") == "child_start" and event.get("argv")
+    ]
+    assert children, "the trace saw no child process at all"
+    assert not [argv for argv in children if {"maintenance", "gc"} & set(argv[1:2])], children
+
+
 def test_the_fixture_lets_an_install_of_the_baseline_update_to_the_candidate(tmp_path):
     """N3's path with the real fixture and plain git, as install.sh and update.sh use it (Codex C-I-R3): clone main
     while it is the baseline, move main to the candidate, an ordinary fetch, a reset. Shallow roots made that fetch
