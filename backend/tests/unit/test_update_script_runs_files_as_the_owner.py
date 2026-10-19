@@ -135,6 +135,82 @@ def test_a_file_operation_runs_as_the_owner(tmp_path, owner, expected):
     assert calls.read_text(encoding="utf-8").splitlines() == [expected]
 
 
+def test_a_symlinked_install_is_read_and_scanned_through_the_link(tmp_path):
+    """`stat` of a link names whoever made the link and `find` does not descend it: the owner check and the scan
+    must read the tree behind it (shell review S3)."""
+    calls = tmp_path / "calls.txt"
+    body = "\n".join(
+        [
+            f"CALLS='{calls.as_posix()}'",
+            'stat() { echo "STAT $*" >> "$CALLS"; echo bamdude; }',
+            "systemctl() { echo bamdude; }",
+            'find() { echo "FIND $*" >> "$CALLS"; return 0; }',
+            "sudo() { :; }",
+            'INSTALL_DIR=/opt/bamdude SERVICE_NAME=bamdude BACKUP_DIR=/opt/bamdude/backups INSTALL_OWNER=""',
+            _lifted("resolve_install_owner"),
+            _lifted("check_owner_can_write"),
+            "resolve_install_owner; check_owner_can_write",
+        ]
+    )
+    result = _run(tmp_path, body)
+    assert "RC=0" in result.stdout, result.stderr
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    assert any(c.startswith("STAT -L -c %U /opt/bamdude") for c in lines), lines
+    assert any(c.startswith("FIND -H /opt/bamdude") for c in lines), lines
+
+
+@pytest.mark.parametrize(
+    ("owner_npm", "root_npm", "outcome"),
+    [(0, True, "BUILD=1"), (1, True, "refused"), (1, False, "BUILD=0")],
+)
+def test_the_owners_npm_is_asked_before_anything_changes(tmp_path, owner_npm, root_npm, outcome):
+    """The build runs as the owner, through sudo's PATH and the owner's HOME: an npm only root finds (nvm, asdf) or an
+    owner without a home failed the build after the stop and rolled the update back every time (S6)."""
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    body = "\n".join(
+        [
+            f'sudo() {{ shift 3; [[ "$1" == npm ]] && return {owner_npm}; "$@"; }}',
+            "npm() { return 0; }" if root_npm else "unset -f npm 2>/dev/null; PATH=/nonexistent",
+            f"FRONTEND_DIR='{frontend.as_posix()}' INSTALL_OWNER=bamdude FRONTEND_BUILD=0",
+            _lifted("as_owner"),
+            _lifted("check_owner_can_build"),
+            'check_owner_can_build; echo "BUILD=$FRONTEND_BUILD"',
+        ]
+    )
+    result = _run(tmp_path, body)
+    if outcome == "refused":
+        assert result.returncode == 1 and "Nothing was changed" in result.stderr, result.stderr
+    else:
+        assert outcome in result.stdout, result.stderr
+
+
+def test_a_working_tree_that_cannot_be_read_stops_the_update(tmp_path):
+    """A failed `git status` read is not a clean tree: the overwrite question must not be skipped on it (S7)."""
+    body = "\n".join(
+        [
+            'sudo() { shift 3; "$@"; }',
+            "git() { return 128; }",
+            "INSTALL_OWNER=bamdude INSTALL_DIR=/opt/bamdude",
+            _lifted("as_owner"),
+            _lifted("local_edits"),
+            "if local_edits; then echo EDITS; else echo CLEAN; fi",
+        ]
+    )
+    result = _run(tmp_path, body)
+    assert result.returncode == 1 and "CLEAN" not in result.stdout and "EDITS" not in result.stdout, result.stdout
+    assert "Nothing was changed" in result.stderr, result.stderr
+
+
+def test_the_build_and_the_tree_are_checked_before_the_stop():
+    text = _without_heredocs(_text())
+    stop = text.index('systemctl stop "$SERVICE_NAME"')
+    assert text.index("\ncheck_owner_can_build\n") < text.index("\ncreate_backup\n") < stop
+    assert "if local_edits; then" in text and text.index("if local_edits; then") < stop
+    assert 'if [ "$FRONTEND_BUILD" = 1 ]' in text
+
+
 def _without_heredocs(text: str) -> str:
     return re.sub(r"<<\s*'?EOF'?\n.*?^EOF\n", "<<EOF\n", text, flags=re.S | re.M)
 

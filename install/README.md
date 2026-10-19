@@ -125,7 +125,7 @@ sudo install/step-preview.sh enable    # records the choice, installs the librar
 sudo install/step-preview.sh status    # checks that it really renders, and says what to do if not
 ```
 
-On macOS run both without `sudo`. `--path DIR` points them at another install.
+On macOS run both without `sudo` (the script refuses to run as root there). `--path DIR` points them at another install.
 They exit `0` when done (or when the component works), `1` on a failure, with
 its reason, and `3` when the component is not available for this machine or
 its Python. `enable` waits at most 15 minutes for another install of the
@@ -259,7 +259,9 @@ The updater performs:
 - Runs git, pip and npm as the install's owner, never as root; root keeps systemd. The owner must be the
   service's user, and nothing of the install outside `data/`, `logs/`, `backups/` and `runtime/` may belong to
   anyone else (an update run as root before left such files). Either problem stops the update before anything
-  changes and names the repair, e.g. `sudo chown -R bamdude: /opt/bamdude`
+  changes and names the repair, e.g. `sudo chown -R bamdude: /opt/bamdude`. So does an `npm` that only root can
+  find (one from nvm or asdf, say): the build runs as the owner, so install Node.js system-wide. An install
+  reached through a symlink is checked through the link
 - Optional built-in backup API call (`/api/v1/settings/backup`) before update
 - Keeps only the newest 5 local backup ZIP files
 - Local-change warning + confirmation before `git reset --hard`

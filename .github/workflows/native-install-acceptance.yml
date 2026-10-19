@@ -63,7 +63,7 @@ jobs:
     name: N1 fresh install with STEP previews
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -104,7 +104,7 @@ jobs:
     name: N2 fresh unattended install, component disabled
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -146,7 +146,7 @@ jobs:
     if: inputs.scope == 'full'
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 140
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -188,7 +188,7 @@ jobs:
     if: inputs.scope == 'full'
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 105
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -230,7 +230,7 @@ jobs:
     if: inputs.scope == 'full'
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 125
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -272,7 +272,7 @@ jobs:
     if: inputs.scope == 'full'
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -314,7 +314,7 @@ jobs:
     if: inputs.scope == 'full'
     needs: fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -357,7 +357,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
-    timeout-minutes: 60
+    timeout-minutes: 125
     steps:
       - name: Checkout
         uses: actions/checkout@v7

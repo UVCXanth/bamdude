@@ -87,11 +87,25 @@ step_preview_main() {
         esac
     done
     detect_os
-    INSTALL_PATH="${path:-$(cd "$STEP_PREVIEW_SCRIPT_DIR/.." && pwd)}"
+    # Absolute: the helper runs after a `cd` into the install, where a relative --path names nothing.
+    if [[ -n "$path" ]]; then
+        if ! INSTALL_PATH="$(cd "$path" 2>/dev/null && pwd)"; then
+            log_error "No install at $path"
+            exit 2
+        fi
+    else
+        INSTALL_PATH="$(cd "$STEP_PREVIEW_SCRIPT_DIR/.." && pwd)"
+    fi
     if [[ "$OS_TYPE" == "macos" ]]; then
+        # The helper runs as whoever runs this script: under sudo it would leave root's files in the user's install.
+        if [[ "$(id -u)" == 0 ]]; then
+            log_error "On macOS run install/step-preview.sh without sudo, as the user BamDude runs as"
+            exit 1
+        fi
         SERVICE_USER="$(id -un)"
     else
-        SERVICE_USER="$(stat -c %U "$INSTALL_PATH")"
+        # -L: a symlinked install belongs to whoever owns the tree, not to whoever made the link.
+        SERVICE_USER="$(stat -L -c %U "$INSTALL_PATH")"
     fi
     case "$command" in
         enable)

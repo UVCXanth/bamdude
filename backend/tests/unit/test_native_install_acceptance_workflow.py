@@ -74,7 +74,8 @@ def test_every_scenario_is_its_own_job():
     for name, job in jobs.items():
         needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
         assert "fixture" in needs, name
-        assert 0 < job["timeout-minutes"] <= 120, name
+        # Bounded, and above the sum of the scenario's own deadlines (test below); GitHub's own cap is 360.
+        assert 0 < job["timeout-minutes"] <= 150, name
         always = [s for s in job["steps"] if s.get("if") == "always()"]
         assert any(f"native_install_acceptance.sh cleanup {name}" in s.get("run", "") for s in always), name
         assert any(
@@ -85,6 +86,37 @@ def test_every_scenario_is_its_own_job():
     assert all(jobs[n]["runs-on"] == "ubuntu-latest" for n in LINUX)
     assert jobs["F1"]["container"]["image"] == "fedora:latest"
     assert jobs["M1"]["runs-on"] == "macos-latest"
+
+
+_NOT_STEPS = {"log", "fail", "note", "logged", "bounded", "on_error", "json_string", "write_report", "main", "usage"}
+
+
+def _deadline_seconds(name: str, seen: tuple[str, ...] = ()) -> int:
+    """The longest a harness function can run by its own bounds: its `logged`/`bounded` deadlines and its wait loops,
+    plus those of every harness function it calls, as many times as it calls them."""
+    text = _script()
+    consts = {k: int(v) for k, v in re.findall(r"^([A-Z_]+_SECONDS)=(\d+)$", text, re.M)}
+
+    def seconds(token: str) -> int:
+        return int(token) if token.isdigit() else consts.get(token, 0)
+
+    body = _function(name)
+    total = sum(seconds(t) for t in re.findall(r"\blogged\s+\S+\s+\"?\$?(\w+)\"?", body))
+    total += sum(seconds(t) for t in re.findall(r"SECONDS \+ (\w+)\)", body))
+    names = set(re.findall(r"^([a-z_][a-zA-Z0-9_]*)\(\) \{", text, re.M)) - _NOT_STEPS - {name, *seen}
+    for callee in names:
+        calls = len(re.findall(rf"(?<![\w/.-]){re.escape(callee)}(?=\s|$|\))", body))
+        if calls:
+            total += calls * _deadline_seconds(callee, (*seen, name))
+    return total
+
+
+def test_a_job_outlasts_the_deadlines_of_its_own_scenario():
+    """A slow but bounded step must end by the harness's own `fail`, with its report line — never be cut by the
+    runner, which loses it (shell review S9). Ten minutes on top cover the job's own setup steps."""
+    for scenario, job in _scenario_jobs().items():
+        need = _deadline_seconds(f"scenario_{scenario}") + 600
+        assert job["timeout-minutes"] * 60 >= need, f"{scenario}: {job['timeout-minutes']} min < {need // 60} min"
 
 
 def test_the_diagnostic_scope_runs_a_named_subset():

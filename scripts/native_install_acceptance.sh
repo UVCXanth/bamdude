@@ -488,7 +488,8 @@ scenario_N5() {  # a removed system library is named by its soname and package, 
     [[ "$(checked_bundle)" == "works" ]] || fail "status --check does not say works"
     service_is_ours
     logged remove-libgl 900 sudo apt-get remove -y libgl1 || fail "libgl1 could not be removed"
-    if ldconfig -p | grep -q 'libGL\.so\.1 '; then fail "libGL.so.1 is still there without libgl1"; fi
+    # grep reads it all (no -q): an early exit would end ldconfig by SIGPIPE, and pipefail would read "absent".
+    if ldconfig -p | grep 'libGL\.so\.1 ' >/dev/null; then fail "libGL.so.1 is still there without libgl1"; fi
     local rc=0
     logged status 300 sudo bash "$INSTALL_PATH/install/step-preview.sh" status || rc=$?
     [[ $rc -eq 1 ]] || fail "step-preview.sh status exited $rc without libGL, expected 1"

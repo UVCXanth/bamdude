@@ -59,16 +59,36 @@ systemctl() {
 """
 
 
-def _run(tmp_path: Path, *, choice="enabled", events="populated 0", group_exists=True, env=None, steps=None):
+# As update.sh runs it: the stop proven once right after `systemctl stop`, the component refreshed with the
+# other runtimes, and the old bundle pruned last, just before the start — after the frontend build, so a failed
+# build that rolls the code back finds the old code's bundle still there (shell review S2).
+UPDATE_STEPS = (
+    'record_service_cgroup; rm -f "$COUNTER"; STEP_STOP_PROVEN=0; '
+    "if service_proven_stopped; then STEP_STOP_PROVEN=1; fi; "
+    "refresh_enabled_step_preview; prune_old_step_preview"
+)
+
+
+def _run(
+    tmp_path: Path, *, choice="enabled", events="populated 0", group_exists=True, env=None, steps=None, old_bundle=True
+):
     install_path = tmp_path / "bam dude"
     calls, counter = tmp_path / "calls.txt", tmp_path / "counter"
     calls.write_text("", encoding="utf-8")
     python = install_path / "venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text(
-        FAKE_PYTHON.replace("  status)", "  prune) echo '{\"ok\": true}' ;;\n  status)"), encoding="utf-8", newline="\n"
+    # The current pin is installed unless its install failed (then status names it missing, as the real helper does).
+    fake = FAKE_PYTHON.replace("  status)", "  prune) echo '{\"ok\": true}' ;;\n  status)").replace(
+        '\\"bundle\\": \\"missing\\"',
+        '\\"bundle\\": \\"$( [[ ${FAKE_INSTALL:-0} == 0 ]] && echo installed || echo missing )\\"',
     )
+    assert "installed" in fake
+    python.write_text(fake, encoding="utf-8", newline="\n")
     python.chmod(0o755)
+    key = install_path / "runtime" / "step-preview" / "linux-x64-cp312"
+    (key / ("a" * 32)).mkdir(parents=True)  # the current pin's bundle
+    if old_bundle:
+        (key / ("b" * 32)).mkdir()  # an earlier pin's, which only a proven stop lets go
     root = tmp_path / "cgroup"
     root.mkdir()
     (root / "cgroup.controllers").write_text("cpu memory\n", encoding="utf-8")
@@ -98,8 +118,8 @@ def _run(tmp_path: Path, *, choice="enabled", events="populated 0", group_exists
             f"INSTALL_PATH='{install_path.as_posix()}'",
             _lifted("record_service_cgroup"),
             _lifted("service_proven_stopped"),
-            "step_preview_may_prune() { service_proven_stopped; }",
-            steps or 'record_service_cgroup; rm -f "$COUNTER"; refresh_enabled_step_preview',
+            'step_preview_may_prune() { [[ "$STEP_STOP_PROVEN" == 1 ]] && service_proven_stopped; }',
+            steps or UPDATE_STEPS,
             'echo "AFTER the step: the update goes on"',
         ]
     )
@@ -126,12 +146,12 @@ def _verbs(calls) -> list[str]:
 
 def test_an_install_without_a_choice_gets_nothing(tmp_path):
     _, calls = _run(tmp_path, choice="none")
-    assert _verbs(calls) == ["status"]
+    assert _verbs(calls) == ["status", "status"]
 
 
 def test_an_enabled_install_is_refreshed_and_pruned_after_a_proven_stop(tmp_path):
     _, calls = _run(tmp_path)
-    assert _verbs(calls) == ["status", "index", "apt", "install", "prune"]
+    assert _verbs(calls) == ["status", "index", "apt", "install", "status", "prune"]
     install = next(c for c in calls if "[install]" in c and c.startswith("python"))
     assert "[--if-enabled]" in install
     prune = next(c for c in calls if "[prune]" in c)
@@ -195,11 +215,34 @@ def test_an_interpreter_the_catalog_lacks_leaves_the_component_alone(tmp_path):
 
 
 def test_a_root_owned_install_is_left_alone(tmp_path):
-    result, calls = _run(
-        tmp_path, steps='SERVICE_USER=root; record_service_cgroup; rm -f "$COUNTER"; refresh_enabled_step_preview'
-    )
-    assert _verbs(calls) == ["status"]
-    assert "belongs to root" in result.stdout + result.stderr
+    result, calls = _run(tmp_path, steps="SERVICE_USER=root; " + UPDATE_STEPS)
+    assert "install" not in _verbs(calls) and "prune" not in _verbs(calls)
+    out = result.stdout + result.stderr
+    assert out.count("belongs to root") == 1  # said once, by the refresh; the prune is silent about it
+
+
+def test_nothing_old_to_prune_needs_no_proof_and_says_nothing(tmp_path):
+    """Without an earlier bundle there is nothing to keep: no proof is asked and no «kept» warning is printed —
+    on cgroup v1 it otherwise appeared on every update (shell review S8)."""
+    result, calls = _run(tmp_path, old_bundle=False, env={"FAKE_FS": "tmpfs"})
+    assert "install" in _verbs(calls) and "prune" not in _verbs(calls)
+    assert "kept" not in (result.stdout + result.stderr).lower()
+
+
+def test_a_state_that_cannot_be_read_is_said_not_swallowed(tmp_path):
+    result, calls = _run(tmp_path, env={"FAKE_STATUS_RC": "1"})
+    assert "install" not in _verbs(calls) and "prune" not in _verbs(calls)
+    assert "could not be read" in result.stdout + result.stderr
+
+
+def test_update_sh_prunes_last_just_before_the_start():
+    text = UPDATE_SH.read_text(encoding="utf-8")
+    start = text.index('log "Starting service: $SERVICE_NAME"')
+    assert text.index("(refresh_step_preview)") < text.index("Building frontend") < text.index("(prune_step_preview)")
+    assert text.index("repair_loop_flag\n") < text.index("(prune_step_preview)") < start
+    stop = text.index('systemctl stop "$SERVICE_NAME"')
+    proven = text.index("STEP_STOP_PROVEN=1")
+    assert stop < proven < text.index("(refresh_step_preview)")
 
 
 def test_the_group_is_recorded_whatever_the_state(tmp_path):

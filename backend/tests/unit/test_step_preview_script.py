@@ -140,11 +140,43 @@ def test_enable_refuses_an_install_root_owns(tmp_path):
     """The helper runs as the tree's owner: on a root-owned tree it would leave root-owned files the service later
     meets as `permission`, so enable says what to do instead."""
     stubs = (
-        'detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; stat() { if [[ "$1" == "-c" ]]; then echo root; '
+        'detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; stat() { if [[ "$*" == *"-c %U"* ]]; then echo root; '
         'else command stat "$@"; fi; }; '
     )
     rc, out, calls = _run(tmp_path, stubs + '(step_preview_main enable --path "$INSTALL_PATH")')
     assert rc == 1 and "belongs to root" in out, out
+    assert _verbs(calls) == []
+
+
+def test_the_owner_of_a_symlinked_install_is_read_through_the_link(tmp_path):
+    """`stat` of a link names the link's owner (root, who made it), not the tree's (shell review S3)."""
+    stubs = 'detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; stat() { echo "STAT $*" >> "$CALLS"; echo bamdude; }; '
+    _, _, calls = _run(tmp_path, stubs + '(step_preview_main status --path "$INSTALL_PATH")')
+    assert any(c.startswith("STAT -L -c %U") for c in calls), calls
+
+
+def test_a_relative_path_names_the_same_install(tmp_path):
+    """The helper runs after a `cd` into the install: a relative --path must not be read from there (S4)."""
+    stubs = "detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; stat() { echo bamdude; }; "
+    rc, out, calls = _run(
+        tmp_path, stubs + 'cd "$(dirname "$INSTALL_PATH")"; (step_preview_main status --path "bam dude")'
+    )
+    assert rc != 127 and "status" in _verbs(calls), (rc, out)
+
+
+def test_a_path_that_is_no_directory_is_a_usage_error(tmp_path):
+    stubs = "detect_os() { OS_TYPE=debian; PKG_MANAGER=apt; }; "
+    rc, out, calls = _run(tmp_path, stubs + '(step_preview_main status --path "$INSTALL_PATH/nowhere")')
+    assert rc == 2 and "nowhere" in out, out
+    assert _verbs(calls) == []
+
+
+def test_macos_refuses_to_run_as_root(tmp_path):
+    """On macOS the helper runs as whoever runs the script: under sudo it would leave root's files in the user's
+    install, which its own updates then meet as `permission` (S5)."""
+    stubs = 'detect_os() { OS_TYPE=macos; }; id() { if [[ "$1" == "-u" ]]; then echo 0; else echo root; fi; }; '
+    rc, out, calls = _run(tmp_path, stubs + '(step_preview_main enable --path "$INSTALL_PATH")', os_type="macos")
+    assert rc == 1 and "without sudo" in out, out
     assert _verbs(calls) == []
 
 

@@ -91,12 +91,36 @@ def test_yes_alone_on_a_fresh_install_chooses_disabled_and_runs_no_package_manag
     result, calls, _ = _run(
         tmp_path,
         'NON_INTERACTIVE=true; ask_step_preview; echo "CHOICE=$STEP_PREVIEW"; provision_step_preview',
-        venv=True,
-        env={"FAKE_STATUS_RC": "1"},  # what the not-yet-installed tree's helper answers: nothing usable
+        venv=True,  # a fresh tree's helper reads no choice: {"choice": "none"}
     )
     assert "CHOICE=no" in result.stdout and "AFTER the step" in result.stdout, result.stderr
     assert len(_helper(calls, "choose")) == 1 and "[disabled]" in _helper(calls, "choose")[0]
     assert _helper(calls, "install") == [] and not any(c.startswith(("apt-get", "dnf")) for c in calls)
+
+
+def test_yes_on_a_rerun_whose_helper_could_not_be_read_yet_keeps_enabled(tmp_path):
+    """`--yes` is no disable command (consilium Q-C1): a re-run whose venv was removed reads no choice when it
+    asks, and must look again once the venv is rebuilt before it writes anything."""
+    result, calls, _ = _run(
+        tmp_path,
+        'mv "$INSTALL_PATH/venv/bin/python" "$INSTALL_PATH/python.away"; NON_INTERACTIVE=true; ask_step_preview; '
+        'mv "$INSTALL_PATH/python.away" "$INSTALL_PATH/venv/bin/python"; provision_step_preview',
+        env={"FAKE_CHOICE": "enabled"},
+    )
+    assert "AFTER the step" in result.stdout, result.stderr
+    assert not any("[disabled]" in c for c in _helper(calls, "choose"))
+    assert "[enabled]" in _helper(calls, "choose")[0] and _helper(calls, "install")
+
+
+def test_yes_writes_nothing_over_a_choice_it_cannot_read(tmp_path):
+    result, calls, _ = _run(
+        tmp_path,
+        "NON_INTERACTIVE=true; ask_step_preview; provision_step_preview",
+        env={"FAKE_STATUS_RC": "1"},  # the helper ran and could not answer (a sudo read refused, a crash)
+    )
+    assert "AFTER the step" in result.stdout, result.stderr
+    assert _helper(calls, "choose") == [] and _helper(calls, "install") == []
+    assert "could not be read" in result.stdout + result.stderr
 
 
 def test_the_flag_runs_select_choose_libraries_install_in_that_order(tmp_path):

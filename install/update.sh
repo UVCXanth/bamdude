@@ -52,7 +52,8 @@ require_cmd() {
 INSTALL_OWNER=""
 resolve_install_owner() {
   local owner service_user
-  if ! owner="$(stat -c %U "$INSTALL_DIR" 2>/dev/null)" || [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
+  # -L: a symlinked install belongs to whoever owns the tree, not to whoever made the link.
+  if ! owner="$(stat -L -c %U "$INSTALL_DIR" 2>/dev/null)" || [ -z "$owner" ] || [ "$owner" = "UNKNOWN" ]; then
     die "Cannot tell which user owns $INSTALL_DIR. Nothing was changed."
   fi
   if ! service_user="$(systemctl show "$SERVICE_NAME" -p User --value 2>/dev/null)"; then
@@ -70,6 +71,30 @@ as_owner() {
   if [ "$INSTALL_OWNER" = root ]; then "$@"; else sudo -H -u "$INSTALL_OWNER" "$@"; fi
 }
 
+# Whether the working tree has edits the reset would overwrite. A read that
+# failed is no clean tree: the question must not be skipped on it.
+local_edits() {
+  local out
+  out="$(as_owner git status --porcelain)" || die "Could not read the state of $INSTALL_DIR (git status failed as $INSTALL_OWNER). Nothing was changed."
+  [ -n "$out" ]
+}
+
+# The frontend is built as the owner, through sudo's PATH and the owner's HOME:
+# asked before the stop, so an npm only root can find (nvm, asdf) or an owner
+# without a usable home stops the update before anything changes, instead of
+# failing the build after the stop and rolling back on every update.
+FRONTEND_BUILD=0
+check_owner_can_build() {
+  [ -f "$FRONTEND_DIR/package.json" ] || return 0
+  if as_owner npm --version >/dev/null 2>&1; then
+    FRONTEND_BUILD=1
+    return 0
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    die "npm runs here, but not as $INSTALL_OWNER (sudo resets PATH to its secure_path, and the build needs a writable HOME), so the frontend could not be built. Nothing was changed. Install Node.js system-wide (from the distribution or NodeSource), then run the update again."
+  fi
+}
+
 # What the owner's git, pip and npm write must already be the owner's: an
 # earlier update run as root left root-owned files they cannot replace, which
 # would break the update half way, with the service stopped. Data, logs,
@@ -78,7 +103,7 @@ as_owner() {
 # hidden chown. A scan that did not finish proves nothing, whatever it printed.
 check_owner_can_write() {
   local stray scanned=0
-  stray="$(find "$INSTALL_DIR" -xdev \( -path "$INSTALL_DIR/data" -o -path "$INSTALL_DIR/logs" \
+  stray="$(find -H "$INSTALL_DIR" -xdev \( -path "$INSTALL_DIR/data" -o -path "$INSTALL_DIR/logs" \
     -o -path "$BACKUP_DIR" -o -path "$INSTALL_DIR/runtime" \) -prune -o ! -user "$INSTALL_OWNER" -print -quit \
     2>/dev/null)" || scanned=$?
   if [ -n "$stray" ]; then
@@ -303,16 +328,28 @@ service_proven_stopped() {
 }
 
 # The STEP preview component (spec stage C R4): only an install whose
-# administrator enabled it, and an old bundle pruned only on a proven stop.
-# A subshell, like the render runtime: install.sh's globals stay out of here.
+# administrator enabled it gets the new pin. A subshell, like the render
+# runtime: install.sh's globals stay out of here.
 refresh_step_preview() {
   # shellcheck source=install.sh
   source "$INSTALL_DIR/install/install.sh"
   detect_os
   INSTALL_PATH="$INSTALL_DIR"
-  SERVICE_USER="$(stat -c %U "$INSTALL_DIR")"
-  step_preview_may_prune() { service_proven_stopped; }
+  SERVICE_USER="$(stat -L -c %U "$INSTALL_DIR")"
   refresh_enabled_step_preview
+}
+
+# The earlier pin's bundle, last before the start (R4a, shell review S2): only
+# on the stop proven right after `systemctl stop` AND again now.
+STEP_STOP_PROVEN=0
+prune_step_preview() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -L -c %U "$INSTALL_DIR")"
+  step_preview_may_prune() { [ "$STEP_STOP_PROVEN" = 1 ] && service_proven_stopped; }
+  prune_old_step_preview
 }
 
 create_backup() {
@@ -409,6 +446,7 @@ fi
 # Before any git: who changes the files, and whether they can.
 resolve_install_owner
 check_owner_can_write
+check_owner_can_build
 
 if [ -z "$BRANCH" ]; then
   BRANCH="$(as_owner git rev-parse --abbrev-ref HEAD)"
@@ -441,7 +479,7 @@ else
   esac
 fi
 
-if [ -n "$(as_owner git status --porcelain)" ]; then
+if local_edits; then
   if [ "$FORCE" != "1" ]; then
     read -r -p "Local edits were detected in your installation. Updating now will overwrite those edits. Continue? [y/N]: " answer
     case "${answer:-}" in
@@ -459,6 +497,9 @@ record_service_cgroup  # before the stop: what the prune of an old STEP componen
 log "Stopping service: $SERVICE_NAME"
 systemctl stop "$SERVICE_NAME"
 SERVICE_STOPPED=1
+if service_proven_stopped; then
+  STEP_STOP_PROVEN=1  # the first of the two proofs an old STEP bundle needs before it goes
+fi
 
 log "Updating code to origin/$BRANCH"
 as_owner git reset --hard "origin/$BRANCH"
@@ -492,7 +533,7 @@ if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
 fi
 
 if [ -f "$FRONTEND_DIR/package.json" ]; then
-  if command -v npm >/dev/null 2>&1; then
+  if [ "$FRONTEND_BUILD" = 1 ]; then
     log "Building frontend"
     (
       cd "$FRONTEND_DIR"
@@ -508,6 +549,13 @@ fi
 
 # While the service is stopped, so the flag takes effect on this restart.
 repair_loop_flag
+
+# Last before the start: nothing that can still roll the code back comes after it.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  if ! (prune_step_preview); then
+    warn "Old STEP preview components could not be checked; run install/step-preview.sh status to see why."
+  fi
+fi
 
 log "Starting service: $SERVICE_NAME"
 systemctl start "$SERVICE_NAME"

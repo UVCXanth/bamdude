@@ -482,6 +482,7 @@ provision_render_runtime() {
 
 # yes / no from the question or --with-step-preview; empty = not offered here.
 STEP_PREVIEW="${STEP_PREVIEW:-}"
+STEP_PREVIEW_UNASKED=""  # set only by ask_step_preview: --yes let the default say no
 
 # The system libraries the Linux wheels leave to the machine (what Docker
 # installs on Debian; Fedora's names are confirmed by the native acceptance).
@@ -536,16 +537,34 @@ step_preview_reason() {
     sed -n 's/.*"reason": "\([^"]*\)".*/\1/p' <<<"$1" | head -n 1
 }
 
-# "yes" when an installed tree's own helper says its administrator enabled the
-# component; anything else — no venv yet, an old helper without `status` — "no".
-step_preview_default() {
+# What the installed tree's own helper says its administrator chose: enabled,
+# disabled or none — or "unknown" when there is no helper to ask yet, or it
+# could not answer (a refused sudo read, an old helper without `status`).
+step_preview_existing_choice() {
     local answer
-    if [[ -x "$INSTALL_PATH/venv/bin/python" && "$OS_TYPE" != "macos" ]]; then
+    if [[ ! -x "$INSTALL_PATH/venv/bin/python" ]]; then
+        echo unknown
+        return 0
+    fi
+    if [[ "$OS_TYPE" != "macos" ]]; then
         # Through sudo: say so before a password prompt appears among the questions. Stderr: stdout is the answer.
         log_info "Reading the STEP preview choice of the existing install (as $SERVICE_USER)..." >&2
     fi
-    if [[ -x "$INSTALL_PATH/venv/bin/python" ]] && answer=$(step_preview_helper status 2>/dev/null) \
-        && [[ "$answer" == *'"choice": "enabled"'* ]]; then
+    if ! answer=$(step_preview_helper status 2>/dev/null); then
+        echo unknown
+        return 0
+    fi
+    case "$answer" in
+        *'"choice": "enabled"'*) echo enabled ;;
+        *'"choice": "disabled"'*) echo disabled ;;
+        *'"choice": '*) echo none ;;
+        *) echo unknown ;;
+    esac
+}
+
+# "yes" only when the installed tree's helper says its administrator enabled the component.
+step_preview_default() {
+    if [[ "$(step_preview_existing_choice)" == "enabled" ]]; then
         echo yes
     else
         echo no
@@ -575,6 +594,8 @@ ask_step_preview() {
         STEP_PREVIEW="yes"
     else
         STEP_PREVIEW="no"
+        # Nobody answered: the default spoke, and it may have been read before the venv could answer.
+        [[ "$NON_INTERACTIVE" == "true" ]] && STEP_PREVIEW_UNASKED="yes"
     fi
 }
 
@@ -646,6 +667,19 @@ step_preview_hint() {
 provision_step_preview() {
     [[ -n "$STEP_PREVIEW" ]] || return 0  # not offered here: no choice is recorded
     local answer rc=0
+    if [[ "$STEP_PREVIEW" == "no" && "${STEP_PREVIEW_UNASKED:-}" == "yes" ]]; then
+        # `--yes` is no disable command: with the venv rebuilt, ask the tree again before writing anything.
+        case "$(step_preview_existing_choice)" in
+            enabled)
+                log_info "This install has the STEP preview component enabled; --yes keeps it"
+                STEP_PREVIEW="yes"
+                ;;
+            unknown)
+                log_warn "The STEP preview choice of this install could not be read; it was left as it is"
+                return 0
+                ;;
+        esac
+    fi
     if [[ "$STEP_PREVIEW" == "no" ]]; then
         if ! answer=$(step_preview_helper choose disabled --by install); then
             log_warn "The STEP preview choice could not be recorded ($(step_preview_reason "$answer"))"
@@ -668,19 +702,18 @@ step_preview_may_prune() {
     return 1
 }
 
-# For update.sh, with the service stopped (spec stage C R4, R4a): an ENABLED
-# component gets its libraries and the new pin; an old bundle goes only when
-# the stop is proven both before the install and again just before the prune.
-# Anything else is left as it is. Always 0.
+# For update.sh, with the service stopped (spec stage C R4): an ENABLED
+# component gets its libraries and the new pin. The old bundle is left for
+# prune_old_step_preview, which update.sh runs last. Always 0.
 refresh_enabled_step_preview() {
-    local answer rc=0 stopped=no
-    answer=$(step_preview_helper status 2>/dev/null) || true
+    local answer rc=0
+    if ! answer=$(step_preview_helper status 2>/dev/null); then
+        log_warn "The STEP preview component's state could not be read; it was left as it is (install/step-preview.sh status says why)"
+        return 0
+    fi
     [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
     if step_preview_owner_refused; then
         return 0
-    fi
-    if step_preview_may_prune; then
-        stopped=yes
     fi
     if ! install_step_preview_libraries; then
         log_warn "The system libraries for STEP previews could not be installed; trying the component anyway"
@@ -692,9 +725,43 @@ refresh_enabled_step_preview() {
     fi
     if [[ $rc -ne 0 ]]; then
         log_warn "The STEP preview component was not updated: $(step_preview_hint "$STEP_PREVIEW_ANSWER")"
-        return 0
     fi
-    if [[ "$stopped" == "yes" ]] && step_preview_may_prune; then
+    return 0
+}
+
+# How many bundles of earlier pins sit beside the current one: a digest
+# directory per pin under each key. Staging and trash are the helper's own.
+step_preview_old_bundles() {
+    local root="$INSTALL_PATH/runtime/step-preview" key dir count=0 n
+    for key in "$root"/*/; do
+        [[ -d "$key" ]] || continue
+        n=0
+        for dir in "$key"*/; do
+            [[ -d "$dir" && "$(basename "$dir")" =~ ^[0-9a-f]{32}$ ]] && n=$((n + 1))
+        done
+        if (( n > 1 )); then
+            count=$((count + n - 1))
+        fi
+    done
+    echo "$count"
+}
+
+# Last, just before update.sh starts the service (spec stage C R4a; shell
+# review S2): an earlier pin's bundle goes only when the stop is proven both
+# right after the stop and again now — and only after the frontend build, so a
+# failed build that rolls the code back still finds the old code's bundle. The
+# helper itself prunes nothing while the current pin is not installed. With
+# nothing old there, no proof is needed and nothing is said. Always 0.
+prune_old_step_preview() {
+    local answer
+    answer=$(step_preview_helper status 2>/dev/null) || return 0  # the refresh already said so
+    [[ "$answer" == *'"choice": "enabled"'* ]] || return 0
+    [[ "$answer" == *'"bundle": "installed"'* ]] || return 0  # the new pin did not install: keep what renders
+    if [[ "$OS_TYPE" != "macos" && "$SERVICE_USER" == "root" ]]; then
+        return 0  # the refresh already said why it left the component alone
+    fi
+    [[ "$(step_preview_old_bundles)" -gt 0 ]] || return 0
+    if step_preview_may_prune; then
         step_preview_helper prune >/dev/null || log_warn "Old STEP preview components could not be removed"
     else
         log_warn "The old STEP preview component was kept: the service's stop could not be proven"
