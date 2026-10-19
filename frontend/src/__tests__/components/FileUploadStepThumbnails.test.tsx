@@ -95,6 +95,30 @@ describe('FileUploadModal — STEP thumbnails', () => {
     );
   });
 
+  it('says why per reason when members of a ZIP were turned away for different ones', async () => {
+    const refused = (name: string, id: number, code: string) => ({
+      filename: name,
+      file_id: id,
+      folder_id: null,
+      thumbnail_job: { jobs_epoch: EPOCH, receipt_id: null, state: null, error_code: code },
+    });
+    server.use(
+      http.post('/api/v1/library/files/extract-zip', () =>
+        HttpResponse.json({
+          extracted: 3,
+          skipped_duplicates: 0,
+          folders_created: 0,
+          errors: [],
+          files: [refused('a.step', 11, 'queue_full'), refused('b.stp', 12, 'queue_full'), refused('c.step', 13, 'cad_unavailable')],
+        }),
+      ),
+    );
+    render(<FileUploadModal {...props()} initialFiles={[new File(['PK'], 'kit.zip')]} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Upload \(1\)/ }));
+    expect(await screen.findByText('2 STEP thumbnails could not be queued: the background queue is full — try again later')).toBeInTheDocument();
+    expect(await screen.findByText('STEP thumbnail not queued: the STEP component is not available on this server')).toBeInTheDocument();
+  });
+
   it('an older server’s answer without the field changes nothing', async () => {
     server.use(http.post('/api/v1/library/files', () => HttpResponse.json(uploaded())));
     const p = props();

@@ -303,6 +303,113 @@ describe('File Manager — STEP thumbnails', () => {
     await waitFor(() => expect(stepBodies[1]).toEqual({ all_missing: true, after_id: 5 })); // the explicit next page
   });
 
+  it('a page the queue turned away is pressed again from its first refused file, and refusals are told per reason', async () => {
+    const stepBodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+      http.post(JOBS, async ({ request }) => {
+        stepBodies.push((await request.json()) as Record<string, unknown>);
+        const results =
+          stepBodies.length === 1
+            ? [
+                { file_id: 5, receipt_id: 'r5', state: 'queued', error_code: null },
+                { file_id: 7, receipt_id: null, state: null, error_code: 'queue_full' },
+                { file_id: 8, receipt_id: null, state: null, error_code: 'queue_full' },
+                { file_id: 9, receipt_id: null, state: null, error_code: 'authority_missing' },
+              ]
+            : [];
+        return HttpResponse.json({ jobs_epoch: EPOCH, results, next_after_id: stepBodies.length === 1 ? 9 : null }, { status: 202 });
+      }),
+    );
+    jobsAnswer([{ file_id: 5, receipt_id: 'r5', state: 'queued', error_code: null }]);
+    render(<FileManagerPage />);
+    const button = await screen.findByRole('button', { name: /Generate Thumbnails/i });
+    await userEvent.click(button);
+    expect(await screen.findByText('1 STEP thumbnail queued in the background')).toBeInTheDocument();
+    expect(await screen.findByText('2 STEP thumbnails could not be queued: the background queue is full — try again later')).toBeInTheDocument();
+    expect(await screen.findByText('STEP thumbnail not queued: the permission needed is gone')).toBeInTheDocument();
+    expect(await screen.findByText(/press again to queue the next batch/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No STL, OBJ or STEP files missing thumbnails/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(button).toBeEnabled());
+    await userEvent.click(button);
+    await waitFor(() => expect(stepBodies[1]).toEqual({ all_missing: true, after_id: 6 })); // file 7 is asked again
+  });
+
+  it('a refused STEP half never sits beside «nothing missing»', async () => {
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+      http.post(JOBS, () => HttpResponse.json({ detail: { error: 'unavailable', message: 'x' } }, { status: 503 })),
+    );
+    render(<FileManagerPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
+    expect(await screen.findByText(/STEP thumbnail not queued/i)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText(/files missing thumbnails/i)).not.toBeInTheDocument();
+  });
+
+  it('a STEP half refused for lack of the right says so, not that the service is down', async () => {
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+      http.post(JOBS, () => HttpResponse.json({ detail: 'Permission denied' }, { status: 403 })),
+    );
+    render(<FileManagerPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
+    expect(await screen.findByText('STEP thumbnail not queued: the permission needed is gone')).toBeInTheDocument();
+  });
+
+  it('someone who may not make STEP pictures is told about the STL and OBJ files only', async () => {
+    me(['library:read_own', 'library:read_all', 'library:update_own', 'library:read']);
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+    );
+    render(<FileManagerPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
+    expect(await screen.findByText('No STL or OBJ files missing thumbnails')).toBeInTheDocument();
+  });
+
+  it('a cancel after a restart says once that the job is gone', async () => {
+    server.use(
+      http.post(JOBS, () => HttpResponse.json({ jobs_epoch: EPOCH, results: [{ file_id: 5, receipt_id: 'r5', state: 'queued', error_code: null }], next_after_id: null }, { status: 202 })),
+      http.delete(`${JOBS}/r5`, () => HttpResponse.json({ detail: { error: 'preview_job_expired', message: 'old' } }, { status: 410 })),
+    );
+    jobsAnswer([{ file_id: 5, receipt_id: 'r5', state: 'running', error_code: null }]);
+    render(<FileManagerPage />);
+    await openMenuOf('Bracket');
+    await userEvent.click(await screen.findByRole('button', { name: /^Generate Thumbnail$/i }));
+    await screen.findByText(/STEP thumbnail queued/i);
+    await openMenuOf('Bracket');
+    await userEvent.click(await screen.findByRole('button', { name: /^Cancel thumbnail$/i }));
+    expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText(/Could not cancel/i)).not.toBeInTheDocument();
+  });
+
+  it('jobs that end in one poll refresh the file list once', async () => {
+    const queued = [5, 7, 8].map((id) => ({ file_id: id, receipt_id: `r${id}`, state: 'queued', error_code: null }));
+    let polled = false;
+    server.use(
+      http.post('/api/v1/library/generate-stl-thumbnails', () => HttpResponse.json({ processed: 0, succeeded: 0, failed: 0, results: [] })),
+      http.post(JOBS, () => HttpResponse.json({ jobs_epoch: EPOCH, results: queued, next_after_id: null }, { status: 202 })),
+      http.get(JOBS, async () => {
+        if (!polled) await new Promise((r) => setTimeout(r, 300)); // the batch's own refresh settles first
+        polled = true;
+        return HttpResponse.json({
+          jobs_epoch: EPOCH,
+          receipts: queued.map((q) => ({ ...q, state: 'succeeded' })),
+          missing: [],
+        });
+      }),
+    );
+    render(<FileManagerPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate Thumbnails/i }));
+    await screen.findByText('3 STEP thumbnails queued in the background');
+    await new Promise((r) => setTimeout(r, 150));
+    const before = filesRequests;
+    expect(await screen.findByText('3 STEP thumbnails ready')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(filesRequests - before).toBe(1);
+  });
+
   it('an older server’s batch answer without error_code still reads', async () => {
     server.use(
       http.post('/api/v1/library/generate-stl-thumbnails', () =>

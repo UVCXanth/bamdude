@@ -179,6 +179,39 @@ describe('useStepThumbnailJobs', () => {
     expect(result.current.activeFileIds.has(7)).toBe(true);
   });
 
+  it('a cancel that finds the job already finished reports its result, never a cancel', async () => {
+    server.use(
+      http.get(JOBS, () => answer([{ receipt_id: 'r1', file_id: 7, state: 'running', error_code: null }])),
+      http.delete(`${JOBS}/r1`, () => HttpResponse.json({ receipt_id: 'r1', file_id: 7, state: 'succeeded', error_code: null })),
+    );
+    const onSettled = vi.fn();
+    const cb = { ...callbacks(), onSettled };
+    const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 1000 }));
+    act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }]));
+    let code: string | null = null;
+    await act(async () => { code = await result.current.cancel(7); });
+    expect(code).toBe('finished');
+    expect(cb.onSucceeded).toHaveBeenCalledWith(7);
+    expect(onSettled).toHaveBeenCalledWith({ succeeded: [7], failed: [], expired: [] });
+    expect(result.current.activeFileIds.has(7)).toBe(false);
+  });
+
+  it('a cancel the server knows nothing about (404) is the job gone, not the service down', async () => {
+    server.use(
+      http.get(JOBS, () => answer([{ receipt_id: 'r1', file_id: 7, state: 'queued', error_code: null }])),
+      http.delete(`${JOBS}/r1`, () => HttpResponse.json({ detail: 'Not found' }, { status: 404 })),
+    );
+    const onSettled = vi.fn();
+    const cb = { ...callbacks(), onSettled };
+    const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 1000 }));
+    act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }]));
+    let code: string | null = null;
+    await act(async () => { code = await result.current.cancel(7); });
+    expect(code).toBe('job_expired');
+    expect(cb.onExpired).toHaveBeenCalledWith(7);
+    expect(onSettled).toHaveBeenCalledWith({ succeeded: [], failed: [], expired: [7] });
+  });
+
   it('a cancel that lands detaches the receipt', async () => {
     server.use(
       http.get(JOBS, () => answer([{ receipt_id: 'r1', file_id: 7, state: 'queued', error_code: null }])),

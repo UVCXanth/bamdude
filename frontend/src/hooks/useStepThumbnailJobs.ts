@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, ApiError, type ThumbnailJobItem } from '../api/client';
+import { stepRefusalCode } from '../utils/stepThumbnailReasons';
 
 /**
  * The one polling owner of STEP thumbnail jobs on a page (spec §5, plan A6).
@@ -185,26 +186,42 @@ export function useStepThumbnailJobs(
     };
   }, [hasActive, pollMs, maxMs, sync]);
 
-  /** Detach this caller's receipt for a file. Null when it landed, else the closed reason (cancel_too_late…). */
+  /**
+   * Detach this caller's receipt for a file. Null when it landed; `finished` when the job had already ended — its
+   * result goes out as a poll's would; `job_expired` when the server no longer has it (an earlier session's, 410,
+   * or an unknown receipt, 404); else the closed reason (cancel_too_late…), and the job stays tracked.
+   */
   const cancel = useCallback(
     async (fileId: number): Promise<string | null> => {
       const item = [...tracked.current.values()].find((entry) => entry.fileId === fileId);
       if (!item) return null;
+      let answer;
       try {
-        await api.cancelThumbnailJob(item.receiptId, item.epoch);
+        answer = await api.cancelThumbnailJob(item.receiptId, item.epoch);
       } catch (error) {
-        if (error instanceof ApiError && error.status === 410) {
+        if (error instanceof ApiError && (error.status === 410 || error.status === 404)) {
           tracked.current.delete(item.receiptId);
           sync();
           callbacksRef.current.onExpired(fileId);
           callbacksRef.current.onSettled?.({ succeeded: [], failed: [], expired: [fileId] });
           return 'job_expired';
         }
-        if (error instanceof ApiError && error.code) return error.code;
-        return 'unavailable';
+        return stepRefusalCode(error);
       }
       tracked.current.delete(item.receiptId);
       sync();
+      if (answer?.state === 'succeeded' || answer?.state === 'failed') {
+        const summary: StepJobSummary = { succeeded: [], failed: [], expired: [] };
+        if (answer.state === 'succeeded') {
+          summary.succeeded.push(fileId);
+          callbacksRef.current.onSucceeded(fileId);
+        } else {
+          summary.failed.push({ fileId, code: answer.error_code });
+          callbacksRef.current.onFailed(fileId, answer.error_code);
+        }
+        callbacksRef.current.onSettled?.(summary);
+        return 'finished';
+      }
       return null;
     },
     [sync],

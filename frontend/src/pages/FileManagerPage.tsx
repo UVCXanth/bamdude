@@ -79,7 +79,7 @@ import type {
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumbnailJobs';
 import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
-import { thumbnailReasonKey } from '../utils/stepThumbnailReasons';
+import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
 import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { ListViewToggle } from '../components/ListViewToggle';
@@ -2357,20 +2357,16 @@ export function FileManagerPage() {
   // kind (a batch, a restart that drops every job), never one identical toast per file.
   const stepJobCallbacks = useMemo(
     () => ({
-      onSucceeded: (fileId: number) => {
-        queryClient.invalidateQueries({ queryKey: ['library-files'] });
-        setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() }));
-      },
+      // A file whose job ended — or whose job the server no longer has, which may have finished meanwhile — shows
+      // its picture afresh; the list itself is read once per poll, in onSettled.
+      onSucceeded: (fileId: number) => setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() })),
       onFailed: () => {},
-      onExpired: () => {
-        queryClient.invalidateQueries({ queryKey: ['library-files'] });
-      },
+      onExpired: (fileId: number) => setThumbnailVersions((prev) => ({ ...prev, [fileId]: Date.now() })),
       onSettled: ({ succeeded, failed, expired }: StepJobSummary) => {
+        if (succeeded.length + expired.length > 0) queryClient.invalidateQueries({ queryKey: ['library-files'] });
         if (succeeded.length === 1) showToast(t('fileManager.stepThumbnail.ready'), 'success');
         else if (succeeded.length > 1) showToast(t('fileManager.stepThumbnail.readyMany', { count: succeeded.length }), 'success');
-        const byReason = new Map<string | null, number>();
-        for (const { code } of failed) byReason.set(code, (byReason.get(code) ?? 0) + 1);
-        for (const [code, count] of byReason) {
+        for (const [code, count] of countByReason(failed.map((item) => item.code))) {
           const reason = t(thumbnailReasonKey(code));
           showToast(
             count === 1
@@ -2396,12 +2392,12 @@ export function FileManagerPage() {
         ? await api.createThumbnailJobs({ all_missing: true, after_id: stepCursor }).then(
             (answer) => ({ answer, refusal: null as string | null }),
             // the STEP half refused (jobs not running, a rights change): said, never swallowed
-            (error: unknown) => ({ answer: null, refusal: error instanceof ApiError && error.code ? error.code : 'unavailable' }),
+            (error: unknown) => ({ answer: null, refusal: stepRefusalCode(error) }),
           )
         : null;
-      return { legacy, step: step?.answer ?? null, stepRefusal: step?.refusal ?? null };
+      return { legacy, step: step?.answer ?? null, stepRefusal: step?.refusal ?? null, stepAsked: step !== null };
     },
-    onSuccess: ({ legacy: result, step, stepRefusal }) => {
+    onSuccess: ({ legacy: result, step, stepRefusal, stepAsked }) => {
       if (stepRefusal) {
         showToast(t('fileManager.stepThumbnail.notQueued', { reason: t(thumbnailReasonKey(stepRefusal)) }), 'error');
       }
@@ -2412,16 +2408,22 @@ export function FileManagerPage() {
           stepJobs.track(step.jobs_epoch, queued);
           showToast(t('fileManager.stepThumbnail.queuedMany', { count: queued.length }), 'info');
         }
-        if (refused.length > 0) {
+        for (const [code, count] of countByReason(refused.map((item) => item.error_code))) {
+          const reason = t(thumbnailReasonKey(code));
           showToast(
-            t('fileManager.stepThumbnail.notQueuedMany', { count: refused.length, reason: t(thumbnailReasonKey(refused[0].error_code)) }),
+            count === 1
+              ? t('fileManager.stepThumbnail.notQueued', { reason })
+              : t('fileManager.stepThumbnail.notQueuedMany', { count, reason }),
             'error',
           );
         }
-        setStepCursor(step.next_after_id ?? 0);
-        if (step.next_after_id) showToast(t('fileManager.stepThumbnail.moreRemain'), 'info');
+        // A file the full queue turned away is asked again by the next press, not skipped by the cursor.
+        const turnedAway = refused.filter((item) => item.error_code === 'queue_full').map((item) => item.file_id);
+        const cursor = turnedAway.length > 0 ? Math.min(...turnedAway) - 1 : (step.next_after_id ?? 0);
+        setStepCursor(cursor);
+        if (cursor) showToast(t('fileManager.stepThumbnail.moreRemain'), 'info');
       }
-      const stepAnswered = queued.length + refused.length > 0;
+      const stepAnswered = stepRefusal !== null || queued.length + refused.length > 0;
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       // Update thumbnail versions for cache busting
       if (result.succeeded > 0) {
@@ -2439,7 +2441,9 @@ export function FileManagerPage() {
       } else if (result.succeeded > 0 && result.failed > 0) {
         showToast(t('fileManager.toast.thumbnailsGeneratedPartial', { succeeded: result.succeeded, failed: result.failed }), 'success');
       } else if (result.processed === 0) {
-        if (!stepAnswered) showToast(t('fileManager.toast.noStlMissingThumbnails'), 'info');
+        // STEP files were not asked about for someone who may not make their pictures: say so only of STL and OBJ.
+        if (!stepAsked) showToast(t('fileManager.toast.noStlObjMissingThumbnails'), 'info');
+        else if (!stepAnswered) showToast(t('fileManager.toast.noStlMissingThumbnails'), 'info');
       } else {
         const first = result.results[0];
         const error = first?.error_code ? t(thumbnailReasonKey(first.error_code)) : first?.error || 'Unknown error';
@@ -2489,6 +2493,8 @@ export function FileManagerPage() {
     isCadThumbnailType(file.file_type) ? stepThumbnailMutation.mutate(file.id) : singleThumbnailMutation.mutate(file.id);
   const handleCancelThumbnail = async (file: LibraryFileListItem) => {
     const code = await stepJobs.cancel(file.id);
+    // The job had ended, or the server no longer has it: the hook already told which, as a poll would.
+    if (code === 'finished' || code === 'job_expired') return;
     if (code) showToast(t('fileManager.stepThumbnail.cancelFailed', { reason: t(thumbnailReasonKey(code)) }), 'error');
     else showToast(t('fileManager.stepThumbnail.canceled'), 'info');
   };

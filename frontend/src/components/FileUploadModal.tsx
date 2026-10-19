@@ -15,7 +15,7 @@ import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import type { LibraryFileUploadResponse, ThumbnailJobTicket } from '../api/client';
 import { isMeshUploadName } from '../utils/meshPreviewTypes';
-import { thumbnailReasonKey } from '../utils/stepThumbnailReasons';
+import { countByReason, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from './Button';
 import { Modal } from './Modal';
 
@@ -172,11 +172,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
     if (restoredCount > 0) {
       showToast(t('fileManager.dedupRestoredToast', { count: restoredCount }), 'info');
     }
-    if (refusedThumbnails.length === 1) {
-      showToast(t('fileManager.stepThumbnail.notQueued', { reason: t(thumbnailReasonKey(refusedThumbnails[0])) }), 'info');
-    } else if (refusedThumbnails.length > 1) {
+    for (const [code, count] of countByReason(refusedThumbnails)) {
+      const reason = t(thumbnailReasonKey(code));
       showToast(
-        t('fileManager.stepThumbnail.notQueuedMany', { count: refusedThumbnails.length, reason: t(thumbnailReasonKey(refusedThumbnails[0])) }),
+        count === 1
+          ? t('fileManager.stepThumbnail.notQueued', { reason })
+          : t('fileManager.stepThumbnail.notQueuedMany', { count, reason }),
         'info',
       );
     }
