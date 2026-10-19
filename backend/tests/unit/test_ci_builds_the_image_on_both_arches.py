@@ -6,6 +6,7 @@ job runs every check the x64 job runs on the image itself, on a native runner, a
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -52,7 +53,8 @@ def test_an_image_built_to_be_checked_carries_the_candidate_pin_and_a_published_
             env = {**(workflow.get("env") or {}), **(job.get("env") or {})}
             for step in job.get("steps", []):
                 run = step.get("run", "")
-                if "docker build" in run:
+                # a build, not `docker buildx imagetools` (which composes pushed digests and builds nothing)
+                if re.search(r"docker (?:buildx )?build(?:\s|$)", run):
                     explicit = "--build-arg STEP_PREVIEW_CANDIDATE=1" in run
                     from_env = (
                         "--build-arg STEP_PREVIEW_CANDIDATE " in run + " " and env.get("STEP_PREVIEW_CANDIDATE") == "1"

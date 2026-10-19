@@ -500,15 +500,23 @@ CAD_PUBLISHERS = [(DOCKER, "publish"), (INSTALLER, "release"), (DEV, "publish")]
 
 
 def _image_pushers():
+    """Every job that puts a TAG on the image: a build that pushes other than by digest, or a manifest list made
+    with `imagetools create`. A push by digest alone names no tag (the native tag build, owner 2026-10-19)."""
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         for name, job in (yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs") or {}).items():
             for step in job.get("steps") or []:
-                if "build-push-action" in str(step.get("uses", "")) and str(step["with"].get("push")).lower() == "true":
+                given = step.get("with") or {}
+                if "build-push-action" in str(step.get("uses", "")):
+                    outputs = str(given.get("outputs", ""))
+                    pushes = str(given.get("push")).lower() == "true" or "push=true" in outputs
+                    if pushes and ("push-by-digest=true" not in outputs or given.get("tags")):
+                        yield workflow.name, name
+                if "imagetools create" in step.get("run", ""):
                     yield workflow.name, name
 
 
 def test_every_job_that_pushes_the_image_is_a_known_publisher():
-    """The image carries the CAD component: a job that pushes it without being listed here would ship it with no
+    """The image carries the CAD component: a job that tags it without being listed here would ship it with no
     look at its sources."""
     assert set(_image_pushers()) <= {(w.name, job) for w, job in CAD_PUBLISHERS}
 
