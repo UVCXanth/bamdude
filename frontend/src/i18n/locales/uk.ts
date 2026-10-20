@@ -9609,6 +9609,7 @@ export default {
 
   // Print modal
   printModal: {
+    plateNumber: 'Плита {{number}}',
     eventMacros: 'Макроси',
     eventMacrosCount: '{{selected}} з {{total}}',
     selectPrinter: 'Виберіть принтер',

@@ -9436,6 +9436,7 @@ export default {
 
   // Print modal
   printModal: {
+    plateNumber: 'Plate {{number}}',
     eventMacros: 'Macros',
     eventMacrosCount: '{{selected}} of {{total}}',
     selectPrinter: 'Select Printer',
