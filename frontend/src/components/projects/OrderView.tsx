@@ -135,6 +135,7 @@ export function OrderView({
 
   useEffect(() => {
     setPlanDraftChanged(false);
+    setDraftForecast(undefined);
     setQueueRequest(null);
   }, [id]);
 
@@ -265,7 +266,7 @@ export function OrderView({
       case 'plan':
         return (
           <div className="space-y-4">
-          {order.status === 'active' && (
+          {order.status === 'active' && draftForecast && (
             <OrderForecastPanel
               view={forecastNow}
               draft={draftForecast}

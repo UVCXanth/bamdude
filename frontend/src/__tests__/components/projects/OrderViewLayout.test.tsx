@@ -42,6 +42,27 @@ describe('OrderView composition', () => {
     expect(screen.queryByRole('button', { name: 'Adjust without surplus' })).not.toBeInTheDocument();
   });
 
+  it.each(['plan', 'draft'] as const)('does not flash planning UI before the initial %s read finishes', async (pendingRead) => {
+    const mocks = mockOrderDetailApi(makeOrder());
+    const stored = await api.getWorkingPlan(1);
+    let finish = () => {};
+    if (pendingRead === 'draft') {
+      vi.mocked(api.getWorkingPlan).mockReturnValue(new Promise(resolve => { finish = () => resolve(stored); }));
+    } else {
+      const empty = await api.getOrderPlan(1);
+      mocks.getOrderPlan.mockReturnValue(new Promise(resolve => { finish = () => resolve(empty); }));
+    }
+    renderPage();
+    await screen.findByTestId('plan-block');
+    await waitFor(() => expect(api.getWorkingPlan).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-intro')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('order-forecast-panel')).not.toBeInTheDocument();
+    finish();
+    await screen.findByTestId('plan-empty');
+    expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument();
+  });
+
   it('connects the single quantity-calculator action through the REAL page host without writing or enqueueing', async () => {
     const order = makeOrder();
     const line = order.lines[0];

@@ -4,6 +4,8 @@ import { api, ApiError, type DraftEntry, type DraftPreview, type DraftPreviewReq
 
 export const DRAFT_DEBOUNCE_MS = 500;
 export interface DraftForecastState {
+  /** No editor/forecast presentation before the first plan and draft reads. */
+  planLoading?: boolean;
   /** The editor has confirmed no remaining work or unresolved plan action. */
   nothingToPlan?: boolean;
   result?: DraftPreview;

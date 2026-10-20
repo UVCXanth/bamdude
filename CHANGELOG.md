@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Completed print plans stay compact.** When all work is queued or printed, the plan tab shows one status instead of zero machine-hours, stale-baseline prompts and controls for new prints. Uncovered demand, unresolved sources and pending submissions retain their review tools; saved plans are unchanged.
+- **Completed print plans stay compact.** When all work is queued or printed, the plan tab shows one status instead of zero machine-hours, stale-baseline prompts and controls for new prints. Initial reads wait for data, and background refresh keeps the confirmed view without flashing the editor. Uncovered demand, unresolved sources and pending submissions retain their review tools; saved plans are unchanged.
 
 - **Plate labels render in the auto-queue and print dialog.** Plate numbers now have English and Ukrainian translations instead of displaying the internal translation key.
 

@@ -452,6 +452,29 @@ describe('PlanBlock', () => {
     expect(screen.queryByTestId('plan-empty')).not.toBeInTheDocument();
   });
 
+  it('keeps the covered view during a background refetch, then shows newly needed work', async () => {
+    const empty = { ...plan, lines: [] };
+    vi.mocked(api.getOrderPlan).mockResolvedValue(empty);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    function Refresh() {
+      const cache = useQueryClient();
+      return <button onClick={() => void cache.invalidateQueries({ queryKey: ['project-plan', order.id] })}>refresh plan</button>;
+    }
+    render(<QueryClientProvider client={client}><Refresh /><PlanBlock order={order} canEdit /></QueryClientProvider>);
+    await screen.findByTestId('plan-empty');
+    await waitFor(() => expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument());
+    let finish = (_value: typeof plan) => {};
+    vi.mocked(api.getOrderPlan).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'refresh plan' }));
+    await waitFor(() => expect(client.isFetching({ queryKey: ['project-plan', order.id] })).toBe(1));
+    expect(screen.getByTestId('plan-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-intro')).not.toBeInTheDocument();
+    finish(plan);
+    expect(await screen.findByTestId('plan-row-10-100')).toBeInTheDocument();
+    expect(screen.getByTestId('working-plan-controls')).toBeInTheDocument();
+  });
+
   it('keeps receipt recovery visible even when the submitted draft has no rows', async () => {
     vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, lines: [] });
     const state = await api.getWorkingPlan(order.id);

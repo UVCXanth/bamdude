@@ -36,7 +36,7 @@ export function OrderForecastPanel({
   const { t } = useTranslation();
   const { data: settings } = useUiPreferences();
 
-  if (draft?.nothingToPlan) return null;
+  if (draft?.planLoading || draft?.nothingToPlan) return null;
 
   const body = () => {
     if (draft) return <DraftForecastBody draft={draft} />;

@@ -497,9 +497,10 @@ export function PlanBlock({
   canonicalRef.current = canonicalEntries;
   const canonicalSignature = workingSignature(canonicalEntries);
   const workingLoaded = !!working.state;
+  const planLoading = active && !isError && !working.error && (!plan || !workingLoaded);
   // An empty draft alone is not completion: missing demand, failed reads and
   // unfinished submissions must retain their review/recovery controls.
-  const nothingToPlan = active && !!plan && !isFetching && !isError && !plan.truncated &&
+  const nothingToPlan = active && !!plan && !isError && !plan.truncated &&
     workingLoaded && !working.error && !working.saving && !working.dirty &&
     working.state!.entries.length === 0 && working.state!.issues.length === 0 &&
     !frozen && !proposal && !queueRequest && lines.length === 0;
@@ -566,7 +567,7 @@ export function PlanBlock({
   const exact = useDraftForecast(order.id, items, working.state?.inputs_token ?? plan?.inputs_token,
     active && !!plan && visible, overCap || splitOff, previewRevision,
     working.state ? { entries: canonicalEntries, saved_revision: working.state.saved_revision, epoch: working.state.epoch } : undefined);
-  const presentedForecast = useMemo(() => ({ ...exact, nothingToPlan }), [exact, nothingToPlan]);
+  const presentedForecast = useMemo(() => ({ ...exact, nothingToPlan, planLoading }), [exact, nothingToPlan, planLoading]);
   useEffect(() => { onForecast?.(presentedForecast); }, [presentedForecast, onForecast]);
   const lineForecast = (lineId: number) => {
     const previous = forecast.data?.lines.find(line => line.line_id === lineId);
@@ -692,7 +693,7 @@ export function PlanBlock({
     );
   }
 
-  if (isLoading) {
+  if (isLoading || (plan && planLoading)) {
     return (
       <section id="order-plan" className="space-y-3" data-testid="plan-block">
         {queueConfirmation}
