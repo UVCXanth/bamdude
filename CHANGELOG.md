@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Restore ownership of an active queue or direct print after a backend restart, so its later successful completion executes its pending table-swap macro even when the printer supplies no unique job ID. The saved execution claim is checked again at completion; duplicate finishes and previously attempted swaps cannot send the macro twice.
+
 - **Retry all failed jobs from a printer's queue card.** The Issues section can return all confirmed failed rows to the end of the queue, with progress and a partial-result summary. Cancelled and skipped work stays unchanged; ordinary Retry checks, queue pauses and print gates still apply.
 
 - **Completed print plans stay compact.** When all work is queued or printed, the plan tab shows one status instead of zero machine-hours, stale-baseline prompts and controls for new prints. Initial reads wait for data, and background refresh keeps the confirmed view without flashing the editor. Uncovered demand, unresolved sources and pending submissions retain their review tools; saved plans are unchanged.

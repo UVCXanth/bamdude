@@ -3716,7 +3716,14 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
 
 
 def _bind_print_file_analysis_context(
-    printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed"
+    printer_id: int,
+    archive,
+    *,
+    expected_generation: int | None = None,
+    origin: str = "observed",
+    queue_item_id: int | None = None,
+    claim_started_at: datetime | None = None,
+    observed_subtask_id: str | None = None,
 ) -> None:
     """Bind one manager-owned analysis context to the print archive.
 
@@ -3726,7 +3733,8 @@ def _bind_print_file_analysis_context(
 
     ``origin`` is what the CALLER proved about the run: ``dispatch`` (our own
     expected print), ``external`` (a new start observed live) or
-    ``exact_subtask`` (the device's unique id); everything found by a name, an
+    ``exact_subtask`` (the device's unique id) or ``recovered_dispatch`` (the
+    surviving active execution claim); everything found only by a name, an
     alias or a hash stays ``observed`` (``print_run_binding.PROVEN_ORIGINS``).
     """
     from backend.app.services.print_file_analysis import bind_print_file_analysis
@@ -3750,7 +3758,9 @@ def _bind_print_file_analysis_context(
         printer_manager,
         printer_id=printer_id,
         archive_id=archive.id,
-        observed_subtask_id=getattr(archive, "subtask_id", None),
+        queue_item_id=queue_item_id,
+        claim_started_at=claim_started_at,
+        observed_subtask_id=observed_subtask_id or getattr(archive, "subtask_id", None),
         # Lightweight manager doubles used by integrations before client setup
         # do not have a generation registry.  ``None`` is the same unknown
         # evidence a real not-yet-connected printer supplies.
@@ -5988,6 +5998,33 @@ class _LiveArchiveResolution:
     reason: str
 
 
+async def _running_dispatch_claim(db, printer_id: int, archive_id: int):
+    """The surviving dispatch, not a claim fabricated after observing a filename.
+
+    Both halves of the lane must still address its only started execution; an
+    external/adopted row or another active archive cannot establish dispatch.
+    The terminal acceptance checks this same evidence again before any effects.
+    """
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.printer_queue import PrinterQueue
+
+    rows = await _printing_rows_for_printer(db, printer_id)
+    if len(rows) != 1:
+        return None
+    item = rows[0]
+    if item.archive_id != archive_id or item.origin not in {"queue", "direct"} or item.started_at is None:
+        return None
+    queue = await db.get(PrinterQueue, item.queue_id, populate_existing=True)
+    if queue is None or queue.status != "printing" or queue.current_item_id != item.id:
+        return None
+    archives = list(
+        await db.scalars(
+            select(PrintArchive.id).where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+        )
+    )
+    return item if archives == [archive_id] else None
+
+
 async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveArchiveResolution:
     """Resolve a previously running archive without treating a name as identity.
 
@@ -6467,6 +6504,12 @@ async def on_print_running_observed(printer_id: int, data: dict):
     pre-upload.
     """
     logger = logging.getLogger(__name__)
+    from backend.app.services.print_run_binding import current_print_run, snapshot_completion_token
+
+    if not printer_manager.accepts_client_callback_generation(printer_id, data.get("_bamdude_client_generation")):
+        logger.warning("Ignoring running observation from stale MQTT client on printer %s", printer_id)
+        return
+    recovery_token = snapshot_completion_token(printer_manager, printer_id)
 
     # Attribution recovery first, and deliberately BEFORE the baseline
     # early-return below: the two are independent, and a printer that already
@@ -6511,7 +6554,32 @@ async def on_print_running_observed(printer_id: int, data: dict):
 
                 archive = await db.get(PrintArchive, live.archive_id)
                 if archive is not None and archive.status == "printing":
-                    _bind_print_file_analysis_context(printer_id, archive)
+                    claim = await _running_dispatch_claim(db, printer_id, archive.id)
+                    actual_id = str(data.get("subtask_id") or "").strip()
+                    stored_id = str(archive.subtask_id or "").strip()
+                    contradictory_id = actual_id not in ("", "0") and stored_id not in ("", "0", actual_id)
+                    origin = "exact_subtask" if live.reason == "subtask_id" else "observed"
+                    if claim is not None and not contradictory_id:
+                        origin = "recovered_dispatch"
+                    _bind_print_file_analysis_context(
+                        printer_id,
+                        archive,
+                        expected_generation=recovery_token.generation,
+                        origin=origin,
+                        queue_item_id=claim.id if origin == "recovered_dispatch" else None,
+                        claim_started_at=claim.started_at if origin == "recovered_dispatch" else None,
+                        observed_subtask_id=actual_id if actual_id not in ("", "0") and not contradictory_id else None,
+                    )
+                    recovered = current_print_run(printer_manager, printer_id)
+                    if recovered is None or recovered.archive_id != archive.id:
+                        return  # A newer start won while the recovery was reading.
+                    logger.info(
+                        "[RECOVERY] Bound running archive %s on printer %s: origin=%s queue_item=%s",
+                        archive.id,
+                        printer_id,
+                        recovered.origin,
+                        recovered.queue_item_id,
+                    )
             await mark_queue_printing_for_printer(
                 printer_id,
                 archive_id=live.archive_id,
@@ -6972,6 +7040,19 @@ async def _accept_bound_terminal_run(printer_id: int, binding, data: dict | None
                 printer_id,
             )
             return None
+        if binding.origin == "recovered_dispatch":
+            from backend.app.services.printer_occupancy import claim_token_matches
+
+            claim = await _running_dispatch_claim(db, printer_id, binding.archive_id)
+            if (
+                claim is None
+                or claim.id != queue_item.id
+                or not claim_token_matches(claim.started_at, binding.claim_started_at)
+            ):
+                logging.getLogger(__name__).warning(
+                    "Recovered terminal archive %s lost its dispatch claim; preserving current run", binding.archive_id
+                )
+                return None
         if _terminal_acceptance_matches(queue_item, archive):
             logging.getLogger(__name__).info(
                 "Ignoring already accepted terminal for archive %s queue item %s",

@@ -22,10 +22,11 @@ if TYPE_CHECKING:
 
 
 #: The origins that PROVE which run a binding addresses (swap-source-lifecycle spec r4 §7, §10): our own dispatch,
-#: a new external start observed live, and a recovery by the device's unique subtask id. A run found by a name, an
+#: a new external start observed live, a recovery by the device's unique subtask id, or the surviving started
+#: dispatch claim on its execution archive. A run found ONLY by a name, an
 #: alias or a hash twin, and an adopted one, is bound as ``observed`` -- enough to archive it, never enough for a
 #: physical effect that depends on its source's declaration.
-PROVEN_ORIGINS = frozenset({"dispatch", "external", "exact_subtask"})
+PROVEN_ORIGINS = frozenset({"dispatch", "external", "exact_subtask", "recovered_dispatch"})
 
 
 @dataclass(frozen=True, slots=True)
