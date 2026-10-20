@@ -5,13 +5,13 @@
  * to one bulk-delete call.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { delay, http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { QueueCard } from '../../components/QueueCard';
 import { useAuth } from '../../contexts/AuthContext';
-import type { PrinterQueue } from '../../api/client';
+import { api, type PrinterQueue } from '../../api/client';
 
 const queue: PrinterQueue = {
   id: 7,
@@ -301,5 +301,139 @@ describe('QueueCard Issues — Delete all', () => {
     await screen.findByText('user:viewer');
     await screen.findByText('Issues (4)');
     expect(screen.queryByRole('button', { name: /Delete all/ })).toBeNull();
+  });
+});
+
+describe('QueueCard Issues — Retry all failed', () => {
+  let attempts: number[];
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    attempts = [];
+    mockQueue({ failed: [row(1, 'failed'), row(2, 'failed')], cancelled: [row(3, 'cancelled')], skipped: [row(4, 'skipped')] });
+    server.use(http.post('/api/v1/queue/:id/retry', ({ params }) => {
+      attempts.push(Number(params.id));
+      return HttpResponse.json(row(Number(params.id), 'pending'));
+    }));
+  });
+
+  it('loads all pages, confirms one printer and retries only the frozen failed IDs', async () => {
+    mockQueue({ failed: Array.from({ length: 101 }, (_, index) => row(index + 1, 'failed')),
+      cancelled: [row(102, 'cancelled')], skipped: [row(103, 'skipped')] });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('101');
+    expect(dialog).toHaveTextContent('A1-07');
+    expect(attempts).toEqual([]);
+    mockQueue({ failed: [row(999, 'failed')] });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(attempts).toHaveLength(101), { timeout: 5000 });
+    expect(attempts).toEqual(Array.from({ length: 101 }, (_, index) => index + 1));
+    expect(await screen.findByText('101 returned to the queue')).toBeInTheDocument();
+  });
+
+  it('continues past a source refusal and reports confirmed results without retrying cancellations', async () => {
+    mockQueue({ failed: [row(1, 'failed'), row(2, 'failed'), row(5, 'failed')], cancelled: [row(3, 'cancelled')] });
+    server.use(http.post('/api/v1/queue/:id/retry', ({ params }) => {
+      const id = Number(params.id); attempts.push(id);
+      return id === 2 ? HttpResponse.json({ detail: 'Saved source unavailable' }, { status: 409 }) : HttpResponse.json(row(id, 'pending'));
+    }));
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/Confirmed for 2 of 3 jobs/)).toHaveTextContent('Saved source unavailable');
+    expect(attempts).toEqual([1, 2, 5]);
+  });
+
+  it.each([403, 503])('stops after an authority or unknown-outcome response (%s), without replaying it', async (status) => {
+    mockQueue({ failed: [row(1, 'failed'), row(2, 'failed'), row(5, 'failed')] });
+    server.use(http.post('/api/v1/queue/:id/retry', ({ params }) => {
+      const id = Number(params.id); attempts.push(id);
+      return id === 2 ? HttpResponse.json({ detail: 'Retry unavailable' }, { status }) : HttpResponse.json(row(id, 'pending'));
+    }));
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/Confirmed for 1 of 3 jobs/)).toBeInTheDocument();
+    expect(attempts).toEqual([1, 2]);
+  });
+
+  it('does not expose bulk retry without update_all or when there are no failures', async () => {
+    signInAs('viewer', 2, ['queue:read']);
+    const first = renderCard();
+    await screen.findByText('user:viewer');
+    expect(screen.queryByRole('button', { name: 'Retry all…' })).not.toBeInTheDocument();
+    first.unmount();
+    signInAs('operator', 3, ['queue:read', 'queue:update_all']);
+    mockQueue({ cancelled: [row(3, 'cancelled')], skipped: [row(4, 'skipped')] });
+    renderCard();
+    await screen.findByText('user:operator');
+    await screen.findByText('Issues (2)');
+    expect(screen.queryByRole('button', { name: 'Retry all…' })).not.toBeInTheDocument();
+  });
+
+  it('can cancel the page load without sending a retry', async () => {
+    server.use(http.get('/api/v1/queue/issues', async () => {
+      await delay(150); return HttpResponse.json({ items: [row(1, 'failed')], next_cursor: null });
+    }));
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel loading' }));
+    await screen.findByRole('button', { name: 'Retry all…' });
+    await delay(200);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(attempts).toEqual([]);
+  });
+
+  it('serializes retries and disables overlapping bulk and row actions', async () => {
+    let release = () => {};
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    server.use(http.post('/api/v1/queue/:id/retry', async ({ params }) => {
+      const id = Number(params.id); attempts.push(id);
+      if (id === 1) await barrier;
+      return HttpResponse.json(row(id, 'pending'));
+    }));
+    renderCard();
+    fireEvent.click(await screen.findByText('Issues (4)'));
+    await screen.findAllByTitle('Retry');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry all…' }));
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'Retry' });
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    await waitFor(() => expect(attempts).toEqual([1]));
+    expect(screen.getByRole('button', { name: 'Delete all…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    for (const button of screen.getAllByTitle('Retry')) expect(button).toBeDisabled();
+    release();
+    expect(await screen.findByText('2 returned to the queue')).toBeInTheDocument();
+    expect(attempts).toEqual([1, 2]);
+  });
+
+  it('does not start the next retry after the card unmounts', async () => {
+    let release = () => {};
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    server.use(http.post('/api/v1/queue/:id/retry', async ({ params }) => {
+      const id = Number(params.id); attempts.push(id);
+      if (id === 1) await barrier;
+      return HttpResponse.json(row(id, 'pending'));
+    }));
+    const retry = vi.spyOn(api, 'retryQueueItem');
+    const view = renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(attempts).toEqual([1]));
+    view.unmount();
+    release();
+    await retry.mock.results[0].value;
+    expect(attempts).toEqual([1]);
+  });
+
+  it('does not offer confirmation when the fresh pages contain no failed jobs', async () => {
+    server.use(http.get('/api/v1/queue/issues', () => HttpResponse.json({ items: [row(1, 'cancelled')], next_cursor: null })));
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    expect(await screen.findByText('No failed jobs left to retry.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(attempts).toEqual([]);
   });
 });
