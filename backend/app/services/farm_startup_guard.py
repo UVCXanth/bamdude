@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.render_runtime import _try_lock, _unlock
@@ -181,19 +181,37 @@ class FarmStartupGuard:
 
     @staticmethod
     def _valid(value):
-        if not isinstance(value, dict) or value.get("version") != 1:
+        if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1:
             return False
-        if value.get("lifecycle") not in {"running", "clean"} or not isinstance(value.get("boot_id"), str):
+        if value.get("lifecycle") not in ("running", "clean") or not isinstance(value.get("boot_id"), str):
             return False
         if "hold" not in value:
             return False
-        hold = value["hold"]
-        return hold is None or (
-            isinstance(hold, dict)
-            and isinstance(hold.get("id"), str)
-            and hold.get("reason") in {"unclean_shutdown", "previous_run_unknown", "restore"}
-            and isinstance(hold.get("since"), str)
-        )
+        reasons = {"unclean_shutdown", "previous_run_unknown", "restore"}
+        try:
+            UUID(value["boot_id"])
+            hold = value["hold"]
+            if hold is not None:
+                if not isinstance(hold, dict) or hold.get("reason") not in reasons:
+                    return False
+                UUID(hold["id"])
+                if datetime.fromisoformat(hold["since"]).tzinfo is None:
+                    return False
+            ack = value.get("last_ack")
+            if ack is not None:
+                if (
+                    not isinstance(ack, dict)
+                    or ack.get("reason") not in reasons
+                    or not isinstance(ack.get("actor"), str)
+                ):
+                    return False
+                UUID(ack["boot_id"])
+                UUID(ack["hold_id"])
+                if datetime.fromisoformat(ack["at"]).tzinfo is None:
+                    return False
+            return True
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
 
     def start(self, data_dir: Path):
         with self._mutex:
@@ -343,8 +361,9 @@ class FarmStartupGuard:
             if not self.active:
                 return
             state = deepcopy(self.state)
-            if not state.get("hold"):
-                state["hold"] = {"id": str(uuid4()), "since": _now(), "reason": reason}
+            # A new restore is a new review boundary, even when another hold
+            # already exists. A dialog opened before it cannot release it.
+            state["hold"] = {"id": str(uuid4()), "since": _now(), "reason": reason}
             try:
                 self._write(state)
             except OSError as exc:

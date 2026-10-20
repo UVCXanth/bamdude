@@ -73,7 +73,7 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     )
     monkeypatch.setattr("backend.app.services.print_scheduler.scheduler", SimpleNamespace(stop=Mock()))
     monkeypatch.setattr(
-        "backend.app.services.smart_plug_manager.smart_plug_manager", SimpleNamespace(stop_scheduler=Mock())
+        "backend.app.services.smart_plug_manager.smart_plug_manager", SimpleNamespace(stop_scheduler=AsyncMock())
     )
     monkeypatch.setattr(
         "backend.app.services.notification_service.notification_service", SimpleNamespace(stop_digest_scheduler=Mock())

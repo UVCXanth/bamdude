@@ -738,6 +738,8 @@ def test_the_lifespan_starts_it_and_awaits_it_on_shutdown():
     from backend.app import main
 
     source = inspect.getsource(main.lifespan)
+    assert "_application_lifespan(app)" in source
+    source = inspect.getsource(main._application_lifespan)
     assert "start_library_objects_backfill()" in source
     assert "await stop_library_objects_backfill()" in source
 

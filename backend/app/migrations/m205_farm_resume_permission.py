@@ -18,7 +18,7 @@ async def seed(session_factory):
         for row in rows:
             if row.is_system and row.name == "Administrators" and "farm:resume" not in (row.permissions or []):
                 await db.execute(
-                    update(Group)
+                    update(Group.__table__)
                     .where(Group.id == row.id)
                     .values(permissions=[*(row.permissions or []), "farm:resume"])
                 )

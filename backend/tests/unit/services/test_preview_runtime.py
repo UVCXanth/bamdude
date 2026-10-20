@@ -154,9 +154,10 @@ async def test_post_retire_filesystem_failure_is_not_ownership_uncertain(tmp_pat
 
 @pytest.fixture
 async def local_runtime(tmp_path):
+    from backend.tests.preview_support import started
+
     service = PreviewRuntime(tmp_path / "preview")
-    await service.start()
-    assert service.ready
+    await started(service)
     try:
         yield service
     finally:

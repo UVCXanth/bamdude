@@ -78,7 +78,21 @@ def test_interrupted_run_latches_and_stale_receipt_cannot_release(tmp_path):
         second.finish(clean=True)
 
 
-@pytest.mark.parametrize("contents", ["{", '{"version":999}', '{"version":1,"lifecycle":"clean"}'])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{",
+        '{"version":999}',
+        '{"version":1,"lifecycle":"clean"}',
+        '{"version":1,"lifecycle":"clean","boot_id":"broken","hold":null}',
+        '{"version":1,"lifecycle":[],"boot_id":"00000000-0000-0000-0000-000000000001","hold":null}',
+        '{"version":1,"lifecycle":{},"boot_id":"00000000-0000-0000-0000-000000000001","hold":null}',
+        '{"version":true,"lifecycle":"clean","boot_id":"00000000-0000-0000-0000-000000000001","hold":null}',
+        '{"version":1,"lifecycle":"clean","boot_id":"00000000-0000-0000-0000-000000000001","hold":null,"last_ack":"broken"}',
+        '{"version":1,"lifecycle":"clean","boot_id":"00000000-0000-0000-0000-000000000001","hold":{"id":"broken","reason":"restore","since":"2026-10-20T00:00:00+00:00"}}',
+        '{"version":1,"lifecycle":"clean","boot_id":"00000000-0000-0000-0000-000000000001","hold":{"id":"00000000-0000-0000-0000-000000000002","reason":"restore","since":"broken"}}',
+    ],
+)
 def test_unreadable_or_invalid_record_is_held(tmp_path, contents):
     path = tmp_path / "runtime-state" / "farm-startup"
     path.mkdir(parents=True)
@@ -113,6 +127,19 @@ def test_old_session_cannot_make_replacement_ready(tmp_path):
         assert not guard.allowed(1)
         guard.printer_reconciled(1, 2)
         assert guard.allowed(1)
+    finally:
+        guard.finish(clean=True)
+
+
+def test_restore_invalidates_a_confirmation_opened_under_an_existing_hold(tmp_path):
+    guard = boot(tmp_path)
+    before = guard.status()
+    try:
+        guard.hold("restore")
+        assert guard.status()["hold_id"] != before["hold_id"]
+        with pytest.raises(FarmStartupRefused, match="stale"):
+            guard.resume(before["boot_id"], before["hold_id"], actor="operator")
+        assert not guard.allowed()
     finally:
         guard.finish(clean=True)
 
