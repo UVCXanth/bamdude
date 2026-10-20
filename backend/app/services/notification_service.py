@@ -3006,7 +3006,7 @@ class NotificationService:
         waiting_reason: str,
         db: AsyncSession,
     ):
-        """Handle job waiting for filament event."""
+        """Handle a committed digest of actionable AutoQueue obstacles."""
         providers = await self._get_providers_for_event(db, "on_queue_job_waiting", None)
         if not providers:
             return

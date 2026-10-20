@@ -201,9 +201,9 @@ DEFAULT_TEMPLATES = [
     },
     {
         "event_type": "queue_job_waiting",
-        "name": "Queue Job Waiting",
-        "title_template": "Queue Job Waiting",
-        "body_template": "{job_name} waiting for {target_model}\n{waiting_reason}",
+        "name": "AutoQueue needs attention",
+        "title_template": "Some AutoQueue jobs need attention",
+        "body_template": "{job_name} · {target_model}\n{waiting_reason}",
     },
     {
         "event_type": "queue_job_skipped",

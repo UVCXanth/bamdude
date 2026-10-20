@@ -75,5 +75,9 @@
   "swap_hold_macro_error": "The table swap did not finish: BamDude could not run the printer's change-table macro. Inspect the mechanism and plate, then resume the queue.",
   "swap_hold_attempt_unknown": "The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue.",
   "farm_recovery_hold": "New starts are held while the farm recovers. Check the startup banner.",
-  "swap_hold_farm_recovery": "The farm is paused for recovery. The table change has not been attempted and remains owed."
+  "swap_hold_farm_recovery": "The farm is paused for recovery. The table change has not been attempted and remains owed.",
+  "routing_unclassified": "Routing could not determine a supported reason. Review this job in AutoQueue.",
+  "autoqueue_more_issues": "And {count} more issues. Open AutoQueue for the full list.",
+  "autoqueue_multiple_models": "multiple printer models",
+  "autoqueue_no_eligible_printer": "No active {model} printers{location} eligible"
 }

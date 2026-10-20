@@ -309,6 +309,7 @@ class TestTheWakeStepPassesItOver:
         async def _service(plug, db):
             async def turn_on(p):
                 turned_on.append(p.printer_id)
+                return True
 
             return SimpleNamespace(turn_on=turn_on)
 

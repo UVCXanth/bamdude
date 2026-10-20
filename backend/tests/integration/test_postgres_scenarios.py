@@ -95,6 +95,34 @@ def test_dispatch_rollback_runners_and_competing_terminal_writer(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+def test_autoqueue_waiting_projection_and_notification_lifecycle(tmp_path):
+    url = _pg_url()
+    _wipe(url)
+    env = {
+        **os.environ,
+        "DATA_DIR": str(tmp_path),
+        "DISPATCH_TEST_POSTGRES_URL": _async_url(url),
+        "BAMDUDE_LOCK_ORDER_STRICT": "1",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_auto_queue_actionable_notifications.py",
+            "-q",
+            "--timeout=90",
+            "--tb=short",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=360,
+    )
+    assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
+
+
 def _wipe(url: str) -> None:
     psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
     import asyncio
