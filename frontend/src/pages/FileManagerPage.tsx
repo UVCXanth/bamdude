@@ -1290,74 +1290,78 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
             {file.print_name || file.filename}
           </button>
         </h3>
-        <div className="flex items-center gap-3 mt-1 text-xs text-bambu-gray">
-          <span>{formatFileSize(file.file_size)}</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-bambu-gray">
+          <span className="shrink-0 whitespace-nowrap">{formatFileSize(file.file_size)}</span>
+          {file.sliced_for_model && (
+            <span className="flex min-w-0 max-w-full items-center gap-1" title={file.sliced_for_model}>
+              <Printer className="w-3 h-3 shrink-0" />
+              <span className="truncate">{file.sliced_for_model}</span>
+            </span>
+          )}
           {figures.print_time_seconds ? (
-            <span className="flex items-center gap-1">
+            <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
               <Clock className="w-3 h-3" />
               {formatDuration(figures.print_time_seconds)}
             </span>
           ) : null}
-          {figures.filament_used_grams != null && figures.filament_used_grams > 0 && (
-            <span className="flex items-center gap-1">
-              <Package className="w-3 h-3" />
-              {figures.filament_used_grams.toFixed(1)}g
-            </span>
-          )}
-          {/* The plate's filament types, plus-joined (spec 5): shown for a
-              single-plate file too - it never said what it prints with. */}
-          {figures.filament_types.length > 0 && (
-            <span className="truncate" title={t('fileManager.materials')} data-testid="plate-materials">
-              {formatMaterials(figures.filament_types)}
-            </span>
-          )}
-          {figures.object_count != null && figures.object_count > 0 && (
-            <span className="flex items-center gap-1">
-              {/* The count itself opens the preview — no extra icon button to
-                  crowd the card. stopPropagation is load-bearing: the card
-                  itself is a selection target. */}
+        </div>
+        {(figures.filament_types.length > 0 || (figures.filament_used_grams ?? 0) > 0 || (figures.object_count ?? 0) > 0 || file.print_count > 0) && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-bambu-gray">
+            {/* The plate's filament types, plus-joined (spec 5): shown for a
+                single-plate file too - it never said what it prints with. */}
+            {figures.filament_types.length > 0 && (
+              <span className="min-w-0 max-w-full truncate" title={t('fileManager.materials')} data-testid="plate-materials">
+                {formatMaterials(figures.filament_types)}
+              </span>
+            )}
+            {figures.filament_used_grams != null && figures.filament_used_grams > 0 && (
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+                <Package className="w-3 h-3" />
+                {figures.filament_used_grams.toFixed(1)}g
+              </span>
+            )}
+            {figures.object_count != null && figures.object_count > 0 && (
+              <span className="flex shrink-0 items-center gap-1">
+                {/* The count itself opens the preview — no extra icon button to
+                    crowd the card. stopPropagation is load-bearing: the card
+                    itself is a selection target. */}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                  className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                  title={t('library.plateObjects.open')}
+                >
+                  <Box className="w-3 h-3" />
+                  {figures.object_count}
+                </button>
+                {/* Icon-only: most sliced files support skipping, so a text badge
+                    on every card would be noise. Absence is the signal. */}
+                {file.skip_objects_supported && (
+                  <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                )}
+              </span>
+            )}
+            {/* How many times this file actually finished a print. The count
+                itself is the button, exactly like the object count beside it,
+                and it opens the same archive view the filename above already
+                opens — this is the label that affordance never had. Nothing is
+                drawn at zero: most of a library is unprinted, and a badge on
+                nearly every card would be noise. */}
+            {file.print_count > 0 && (
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
-                className="flex items-center gap-1 hover:text-bambu-green transition-colors"
-                title={t('library.plateObjects.open')}
+                onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
+                aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+                title={t('fileManager.printedTimes', { count: file.print_count })}
+                className="flex shrink-0 items-center gap-1 hover:text-bambu-green transition-colors"
               >
-                <Box className="w-3 h-3" />
-                {figures.object_count}
+                <History className="w-3 h-3" />
+                {file.print_count}
               </button>
-              {/* Icon-only: most sliced files support skipping, so a text badge
-                  on every card would be noise. Absence is the signal. */}
-              {file.skip_objects_supported && (
-                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
-              )}
-            </span>
-          )}
-          {/* How many times this file actually finished a print. The count
-              itself is the button, exactly like the object count beside it,
-              and it opens the same archive view the filename above already
-              opens — this is the label that affordance never had. Nothing is
-              drawn at zero: most of a library is unprinted, and a badge on
-              nearly every card would be noise. */}
-          {file.print_count > 0 && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
-              aria-label={t('fileManager.printedTimes', { count: file.print_count })}
-              title={t('fileManager.printedTimes', { count: file.print_count })}
-              className="flex items-center gap-1 hover:text-bambu-green transition-colors"
-            >
-              <History className="w-3 h-3" />
-              {file.print_count}
-            </button>
-          )}
-        </div>
-        {file.sliced_for_model && (
-          <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1">
-            <Printer className="w-3 h-3" />
-            {file.sliced_for_model}
+            )}
           </div>
         )}
-        <div className="mt-1 text-xs text-bambu-gray truncate">
+        <div className="mt-2 text-xs text-bambu-gray truncate">
           {formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}
         </div>
         {authEnabled && file.created_by_username && (
@@ -3611,8 +3615,10 @@ export function FileManagerPage() {
               </Button>
             </div>
           ) : viewMode === 'grid' ? (
-            <div className="flex-1 lg:overflow-y-auto">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            <div className="@container flex-1 min-w-0 lg:overflow-y-auto">
+              {/* Size columns by the actual file pane, including the folder tree's footprint.
+                  Each card gets at least 15rem where space permits; wide layouts retain six columns. */}
+              <div className="grid grid-cols-1 @min-[31rem]:grid-cols-2 @min-[47rem]:grid-cols-3 @min-[63rem]:grid-cols-4 @min-[79rem]:grid-cols-5 @min-[95rem]:grid-cols-6 gap-4">
                 {filteredAndSortedFiles.map(renderFileCard)}
               </div>
             </div>

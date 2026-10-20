@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Keep library cards readable on smaller screens: the grid follows the available file-pane width up to six columns, with file size, printer model and time above material, filament weight and counters.
+
 - Restore ownership of an active queue or direct print after a backend restart, so its later successful completion executes its pending table-swap macro even when the printer supplies no unique job ID. The saved execution claim is checked again at completion; duplicate finishes and previously attempted swaps cannot send the macro twice.
 
 - **Retry all failed jobs from a printer's queue card.** The Issues section can return all confirmed failed rows to the end of the queue, with progress and a partial-result summary. Cancelled and skipped work stays unchanged; ordinary Retry checks, queue pauses and print gates still apply.
