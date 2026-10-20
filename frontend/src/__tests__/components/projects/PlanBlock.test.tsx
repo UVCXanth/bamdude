@@ -400,6 +400,9 @@ describe('PlanBlock', () => {
     fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
     await waitFor(() => expect(screen.queryByTestId('plan-row-10-100')).toBeNull());
     expect(screen.getByTestId('plan-row-10-200-count')).toHaveValue(1);
+    expect(screen.getByTestId('plan-row-10-200-count')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-200-inc')).toBeDisabled();
+    expect(screen.getByTestId('plan-row-10-200-dec')).toBeDisabled();
     expect(api.writeWorkingPlan).toHaveBeenCalledTimes(1);
     const operation = vi.mocked(api.registerPlanSubmission).mock.calls[0][1].operation_id;
     fireEvent.click(screen.getByRole('button', { name: 'Continue submission' }));

@@ -742,7 +742,7 @@ export function PlanBlock({
   }
 
   const fitAction = onPlateFit && order.lines.some(l => l.mode !== 'parts') ? (
-    <Button variant="secondary" className="ring-1 ring-bambu-green/60" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending}>
+    <Button variant="secondary" className="ring-1 ring-bambu-green/60" onClick={onPlateFit} disabled={enqueue.isPending || rebalance.isPending || frozen}>
       <Calculator className="w-5 h-5 shrink-0 text-bambu-green" aria-hidden="true" />
       {t('plateFit.nearest')}
     </Button>
@@ -840,7 +840,7 @@ export function PlanBlock({
         {fitAction && <div className="flex justify-end">{fitAction}</div>}
       </>) : (
         <>
-          <div className="space-y-3">
+          <fieldset disabled={frozen} className="min-w-0 space-y-3">
             {lines.map((line) => (
               <PlanLine
                 key={line.line_id}
@@ -868,7 +868,7 @@ export function PlanBlock({
                 variant={variant}
               />
             ))}
-          </div>
+          </fieldset>
 
           {/* E11: one line — prints, time, weight and, when it is known, the filament's
               cost — and the whole-plan button beside it. */}
