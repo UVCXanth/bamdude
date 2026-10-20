@@ -33,6 +33,15 @@ describe('OrderView composition', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('hides the zero-work forecast and editor when the plan is fully queued', async () => {
+    mockOrderDetailApi(makeOrder());
+    renderPage();
+    await screen.findByTestId('plan-empty');
+    await waitFor(() => expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('order-forecast-panel')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Adjust without surplus' })).not.toBeInTheDocument();
+  });
+
   it('connects the single quantity-calculator action through the REAL page host without writing or enqueueing', async () => {
     const order = makeOrder();
     const line = order.lines[0];
@@ -103,7 +112,11 @@ describe('OrderView composition', () => {
   });
 
   it('puts the forecast above the plan and supporting panels in the side column', async () => {
-    mockOrderDetailApi(makeOrder());
+    const mocks = mockOrderDetailApi(makeOrder());
+    mocks.getOrderPlan.mockResolvedValue({ lines: [{ line_id: 10, product_id: 1,
+      product_name: 'Flask', material: null, outstanding_before: [{ part_id: 1, name: 'Part A', count: 1 }],
+      rows: [], surplus_after: [], unsatisfiable: [], candidates: [], not_sliced: [] }],
+      totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null } });
     renderPage();
 
     const side = await screen.findByTestId('order-side');

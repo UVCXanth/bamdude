@@ -425,15 +425,40 @@ describe('PlanBlock', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('keeps the single calculator available when the current plan is already covered', async () => {
+  it.each(['page', 'dialog'] as const)('shows only the covered status without stale-baseline prompts in %s', async (variant) => {
     vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, lines: [] });
+    const state = await api.getWorkingPlan(order.id);
+    vi.mocked(api.getWorkingPlan).mockResolvedValue({ ...state, revision: 4, epoch: 1,
+      saved_epoch: 0, saved_revision: 2, saved_at: '2026-10-20T16:00:00Z', saved_by: 'operator',
+      inputs_changed: true, changed: true, saved_machine_seconds: 64800 });
+    const save = vi.spyOn(api, 'actWorkingPlan');
     const open = vi.fn();
-    render(<PlanBlock order={order} canEdit onPlateFit={open} />);
+    render(<PlanBlock order={order} canEdit variant={variant} onPlateFit={open} />);
     await screen.findByTestId('plan-empty');
-    const buttons = screen.getAllByRole('button', { name: 'Adjust without surplus' });
-    expect(buttons).toHaveLength(1);
-    fireEvent.click(buttons[0]);
-    expect(open).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByTestId('working-plan-controls')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('plan-intro')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Adjust without surplus' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Print parameters for this order' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('order-forecast-panel')).not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    expect(api.writeWorkingPlan).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('keeps planning available for an empty draft with uncovered demand', async () => {
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, lines: [{ ...plan.lines[0], rows: [] }] });
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByTestId('working-plan-controls')).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-empty')).not.toBeInTheDocument();
+  });
+
+  it('keeps receipt recovery visible even when the submitted draft has no rows', async () => {
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, lines: [] });
+    const state = await api.getWorkingPlan(order.id);
+    vi.mocked(api.getWorkingPlan).mockResolvedValue({ ...state, revision: 1, active_operation: 'pending-empty' });
+    render(<PlanBlock order={order} canEdit />);
+    expect(await screen.findByRole('button', { name: 'Continue submission' })).toBeInTheDocument();
+    expect(screen.getByTestId('working-plan-controls')).toBeInTheDocument();
   });
 
   it('applies exact run counts to the existing editor and keeps them on an identical refresh', async () => {

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Completed print plans stay compact.** When all work is queued or printed, the plan tab shows one status instead of zero machine-hours, stale-baseline prompts and controls for new prints. Uncovered demand, unresolved sources and pending submissions retain their review tools; saved plans are unchanged.
+
 - **Plate labels render in the auto-queue and print dialog.** Plate numbers now have English and Ukrainian translations instead of displaying the internal translation key.
 
 - **Keep a shared working order plan and a stable comparison baseline.** Counts and file splits autosave without losing manual choices when inputs change. Save the plan explicitly to compare nominal machine-hours; remainder planning and full rebuild are separate reviewed actions. Queue publication atomically records receipts and consumes only committed work, so a lost response can be continued without duplicate jobs. Comparisons restart explicitly after submission; full database backups retain both plan states and receipts.

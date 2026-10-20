@@ -497,6 +497,12 @@ export function PlanBlock({
   canonicalRef.current = canonicalEntries;
   const canonicalSignature = workingSignature(canonicalEntries);
   const workingLoaded = !!working.state;
+  // An empty draft alone is not completion: missing demand, failed reads and
+  // unfinished submissions must retain their review/recovery controls.
+  const nothingToPlan = active && !!plan && !isFetching && !isError && !plan.truncated &&
+    workingLoaded && !working.error && !working.saving && !working.dirty &&
+    working.state!.entries.length === 0 && working.state!.issues.length === 0 &&
+    !frozen && !proposal && !queueRequest && lines.length === 0;
   const latestWorking = useRef(working.state);
   latestWorking.current = working.state;
   useEffect(() => {
@@ -560,7 +566,8 @@ export function PlanBlock({
   const exact = useDraftForecast(order.id, items, working.state?.inputs_token ?? plan?.inputs_token,
     active && !!plan && visible, overCap || splitOff, previewRevision,
     working.state ? { entries: canonicalEntries, saved_revision: working.state.saved_revision, epoch: working.state.epoch } : undefined);
-  useEffect(() => { onForecast?.(exact); }, [exact, onForecast]);
+  const presentedForecast = useMemo(() => ({ ...exact, nothingToPlan }), [exact, nothingToPlan]);
+  useEffect(() => { onForecast?.(presentedForecast); }, [presentedForecast, onForecast]);
   const lineForecast = (lineId: number) => {
     const previous = forecast.data?.lines.find(line => line.line_id === lineId);
     const current = exact.result?.forecast?.lines.find(line => line.line_id === lineId);
@@ -739,6 +746,15 @@ export function PlanBlock({
         </div>
       </section>
     );
+  }
+
+  if (nothingToPlan) {
+    return <section id="order-plan" className="space-y-3" data-testid="plan-block">
+      <p className="rounded-xl border border-bambu-green/30 bg-bambu-green/10 px-4 py-3 text-sm text-white"
+        role="status" data-testid="plan-empty">{t('orders.plan.nothingOutstanding')}</p>
+      {variant === 'dialog' && (exact.filament ?? (!draftChanged ? filament.data : undefined)) &&
+        <FilamentNeeds needs={(exact.filament ?? filament.data)!} />}
+    </section>;
   }
 
   const fitAction = onPlateFit && order.lines.some(l => l.mode !== 'parts') ? (

@@ -36,6 +36,8 @@ export function OrderForecastPanel({
   const { t } = useTranslation();
   const { data: settings } = useUiPreferences();
 
+  if (draft?.nothingToPlan) return null;
+
   const body = () => {
     if (draft) return <DraftForecastBody draft={draft} />;
     if (remaining === 0) return <p className="text-sm text-bambu-green">{t('orders.forecast.allCovered')}</p>;
