@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- A refilled AMS slot no longer loses its new spool to a repeated autoswitch status while the print continues from its backup. Positive sensor and journal evidence suppress the false episode in live recording and saved-history accounting, including Spoolman; returning to the refilled slot still permits a real subsequent runout.
+
 - Keep the mobile file library focused on files: search and filters collapse without clearing their values, occasional commands move into More actions, and selection tools appear when files are selected. Desktop controls remain expanded.
 
 - Keep library cards readable on smaller screens: the grid follows the available file-pane width up to six columns, with file size, printer model and time above material, filament weight and counters.

@@ -11221,7 +11221,7 @@ async def _application_lifespan(app: FastAPI):
                 if tray_global is not None:
                     spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
                 if event == "runout":
-                    await record_runout(
+                    accepted = await record_runout(
                         db,
                         printer_id=printer_id,
                         archive_id=archive_id,
@@ -11231,6 +11231,8 @@ async def _application_lifespan(app: FastAPI):
                         spool_id=spool_id,
                         spoolman_spool_id=spoolman_spool_id,
                     )
+                    if accepted is False:
+                        return
                     # Notify — pause/external doubles as the human-in-the-loop
                     # prompt to assign the replacement spool. Ambiguous stays
                     # silent (could equally be a jam).

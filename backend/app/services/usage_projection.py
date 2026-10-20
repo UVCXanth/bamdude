@@ -113,7 +113,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.services.print_file_analysis import get_print_file_analysis
-    from backend.app.services.print_usage_journal import active_archive_id, load_events
+    from backend.app.services.print_usage_journal import active_archive_id, load_events, without_stale_refill_runouts
     from backend.app.services.usage_tracker import _decode_mqtt_mapping, journal_boundaries_for_tray
 
     if printer_manager is None:
@@ -186,7 +186,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         }
     filament_usage = analysis.filament_usage
 
-    events = await load_events(db, printer_id, archive_id)
+    events = without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
 
     # Slot → tray, the completion path's priority without the in-memory copy:
     # the queue item's dispatched mapping (survives restarts), then the live

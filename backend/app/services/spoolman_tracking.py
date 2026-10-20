@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
+from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.services.spoolman import (
     SpoolmanClientError,
     SpoolmanNotFoundError,
@@ -501,7 +502,7 @@ async def _load_journal_events(printer_id: int, archive_id: int) -> list:
     from backend.app.services.print_usage_journal import load_events
 
     async with async_session() as db:
-        return await load_events(db, printer_id, archive_id)
+        return without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
 
 
 def _as_positive_number(value) -> float | None:
@@ -721,6 +722,7 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
         KIND_MANUAL,
     )
 
+    journal_events = without_stale_refill_runouts(journal_events)
     runouts = [
         e
         for e in (journal_events or [])

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.utils.filament_remaining import usable_remain_percent
 
 logger = logging.getLogger(__name__)
@@ -751,7 +752,8 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         KIND_MANUAL,
     )
 
-    runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
+    events = without_stale_refill_runouts(events)
+    runouts = [e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
     if not runouts:
         return []
 
@@ -889,7 +891,9 @@ def _add_autoswitch_purge(
     if purge_grams <= 0 or not events or not segments:
         return segments
     runouts = [
-        e for e in events if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id is not None
+        e
+        for e in without_stale_refill_runouts(events)
+        if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id is not None
     ]
     if not runouts:
         return segments
@@ -910,7 +914,7 @@ def _autoswitch_purge_for_tray(events: list, global_tray_id: int, purge_grams: f
 
     if purge_grams <= 0 or not events:
         return 0.0
-    for e in events:
+    for e in without_stale_refill_runouts(events):
         if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id == global_tray_id:
             return purge_grams
     return 0.0
@@ -973,6 +977,7 @@ async def apply_runout_zero_corrections(
         KIND_MANUAL,
     )
 
+    events = without_stale_refill_runouts(events)
     runouts = [
         e
         for e in (events or [])
@@ -1462,7 +1467,7 @@ async def on_print_complete(
         try:
             from backend.app.services.print_usage_journal import load_events
 
-            journal_events = await load_events(db, printer_id, archive_id)
+            journal_events = without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
         except Exception:
             logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
     # "Live assignment wins" is suspended only when the journal holds

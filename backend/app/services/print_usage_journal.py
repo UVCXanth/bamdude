@@ -142,6 +142,87 @@ async def active_archive_id(db: AsyncSession, printer_id: int) -> int | None:
     return result.scalars().first()
 
 
+def _is_stale_refill_runout(event, earlier: list) -> bool:
+    """A refilled, inactive AMS slot cannot have exhausted its new reel.
+
+    Require positive presence at load AND at the repeated autoswitch, a
+    different reel, and the preceding episode's observed backup within the
+    same four-slot AMS. That unit has one feed path, even on dual-nozzle
+    printers. Never infer this from a different unit, an external holder,
+    missing sensor data, a cooldown or a lack of charged grams.
+    """
+    from backend.app.models.print_usage_event import (
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        EVENT_TRAY_CHANGE,
+        KIND_AUTOSWITCH,
+    )
+
+    tray = event.global_tray_id
+    if (
+        event.event != EVENT_RUNOUT
+        or event.kind != KIND_AUTOSWITCH
+        or tray is None
+        or not 0 <= tray < 128
+        or getattr(event, "slot_occupied", None) is not True
+    ):
+        return False
+    history = [
+        e
+        for e in earlier
+        if getattr(e, "archive_id", None) == getattr(event, "archive_id", None)
+        and getattr(e, "printer_id", None) == getattr(event, "printer_id", None)
+    ]
+    previous = next((e for e in reversed(history) if e.event == EVENT_RUNOUT and e.global_tray_id == tray), None)
+    if previous is None or previous.kind != KIND_AUTOSWITCH:
+        return False
+    loaded = next(
+        (
+            e
+            for e in reversed(history)
+            if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == tray and e.id > previous.id
+        ),
+        None,
+    )
+    if loaded is None or getattr(loaded, "slot_occupied", None) is not True:
+        return False
+    identity = (event.spool_id, event.spoolman_spool_id)
+    if identity == (None, None) or identity != (loaded.spool_id, loaded.spoolman_spool_id):
+        return False
+    old_identity = (previous.spool_id, previous.spoolman_spool_id)
+    if old_identity == (None, None) or old_identity == identity:
+        return False
+    backup = next(
+        (
+            e
+            for e in history
+            if e.event == EVENT_TRAY_CHANGE
+            and previous.id < e.id < loaded.id
+            and e.global_tray_id is not None
+            and e.global_tray_id != tray
+            and e.global_tray_id // 4 == tray // 4
+            and previous.layer_num <= e.layer_num <= previous.layer_num + 1
+        ),
+        None,
+    )
+    if backup is None:
+        return False
+    return not any(e.event == EVENT_TRAY_CHANGE and e.global_tray_id == tray and e.id > backup.id for e in history)
+
+
+def without_stale_refill_runouts(events: list) -> list:
+    """Accounting view; keep the persisted journal intact for forensics.
+
+    Earlier rejected repeats cannot themselves become the ancestry of a later
+    refill. True returns to the source keep subsequent real runouts intact.
+    """
+    accepted = []
+    for event in sorted(events or [], key=lambda e: e.id):
+        if not _is_stale_refill_runout(event, accepted):
+            accepted.append(event)
+    return accepted
+
+
 async def record_runout(
     db: AsyncSession,
     *,
@@ -152,7 +233,7 @@ async def record_runout(
     global_tray_id: int | None,
     spool_id: int | None = None,
     spoolman_spool_id: int | None = None,
-) -> None:
+) -> bool:
     """One runout row per EPISODE of (archive, tray).
 
     A repeat while the episode is open (the detector re-fired on HMS flicker,
@@ -160,6 +241,11 @@ async def record_runout(
     boundary layer and the frozen spool ids of the first sighting stay. But a
     runout whose previous episode is CLOSED (a spool_loaded followed it) is a
     new episode — two short reels in one long print — and gets its own row.
+
+    Except a positively identified inactive-slot refill replay: return False
+    without writing or notifying. True preserves the ordinary append/upsert
+    and duplicate-folding contract. Accounting also filters older saved
+    replays without deleting the original forensic journal.
 
     Two hardenings from the X2D incident (2026-08-23):
 
@@ -178,7 +264,34 @@ async def record_runout(
         EVENT_SPOOL_LOADED,
         EVENT_START,
         EVENT_TRAY_CHANGE,
+        KIND_AUTOSWITCH,
     )
+
+    if kind == KIND_AUTOSWITCH and global_tray_id is not None and 0 <= global_tray_id < 128:
+        candidate = PrintUsageEvent(
+            printer_id=printer_id,
+            archive_id=archive_id,
+            event=EVENT_RUNOUT,
+            kind=kind,
+            global_tray_id=global_tray_id,
+            spool_id=spool_id,
+            spoolman_spool_id=spoolman_spool_id,
+            layer_num=layer_num,
+            slot_occupied=_slot_occupied_now(printer_id, global_tray_id),
+        )
+        if candidate.slot_occupied is True:
+            history = without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
+            if _is_stale_refill_runout(candidate, history):
+                logger.info(
+                    "[UsageJournal] Ignored stale autoswitch after inactive-slot refill: printer=%s archive=%s tray=%s spool=%s/%s layer=%s",
+                    printer_id,
+                    archive_id,
+                    global_tray_id,
+                    spool_id,
+                    spoolman_spool_id,
+                    layer_num,
+                )
+                return False
 
     if global_tray_id is None:
         tray_rows = (
@@ -208,7 +321,7 @@ async def record_runout(
                 sorted(open_trays),
                 archive_id,
             )
-            return
+            return True
 
     rows = (
         (
@@ -232,7 +345,7 @@ async def record_runout(
             if kind and last_runout.kind != kind:
                 last_runout.kind = kind
                 await db.commit()
-            return
+            return True
 
     if spool_id is None and spoolman_spool_id is None and global_tray_id is not None:
         lineage = (
@@ -269,6 +382,7 @@ async def record_runout(
         spool_id=spool_id,
         spoolman_spool_id=spoolman_spool_id,
     )
+    return True
 
 
 async def _slot_holds_a_spool(db: AsyncSession, printer_id: int, ams_id: int, tray_id: int) -> bool:

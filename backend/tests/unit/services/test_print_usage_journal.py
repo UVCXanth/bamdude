@@ -320,6 +320,55 @@ class TestManualReplacementIntent:
 
 class TestRunoutEpisodeRows:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("returned_to_source", [False, True])
+    async def test_refilled_inactive_slot_does_not_start_a_new_runout(
+        self, db_session, printer, monkeypatch, returned_to_source
+    ):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        for event, kind, tray, spool, layer in [
+            ("runout", "autoswitch", 0, 300, 35),
+            ("tray_change", None, 1, 306, 35),
+            ("spool_loaded", None, 0, 309, 37),
+        ]:
+            db_session.add(
+                PrintUsageEvent(
+                    printer_id=printer.id,
+                    archive_id=archive.id,
+                    layer_num=layer,
+                    event=event,
+                    kind=kind,
+                    global_tray_id=tray,
+                    spool_id=spool,
+                    slot_occupied=event != "runout",
+                )
+            )
+        await db_session.commit()
+        if returned_to_source:
+            await record_event(
+                db_session,
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=38,
+                event="tray_change",
+                global_tray_id=0,
+                spool_id=309,
+            )
+        monkeypatch.setattr("backend.app.services.print_usage_journal._slot_occupied_now", lambda *_: True)
+        result = await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=38,
+            kind="autoswitch",
+            global_tray_id=0,
+            spool_id=309,
+        )
+        assert result is returned_to_source
+        assert len(await load_events(db_session, printer.id, archive.id)) == (5 if returned_to_source else 3)
+
+    @pytest.mark.asyncio
     async def test_closed_episode_gets_a_new_row(self, db_session, printer):
         from backend.app.services.print_usage_journal import record_runout
 

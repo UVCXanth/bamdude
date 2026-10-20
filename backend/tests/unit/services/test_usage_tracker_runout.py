@@ -138,6 +138,50 @@ async def _history(db_session):
 
 class TestRunoutZeroPoint:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("new_used", [0, 1100])
+    async def test_refilling_inactive_backup_origin_never_zeroes_the_new_reel(
+        self, db_session, tmp_path, monkeypatch, new_used
+    ):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        old = await _make_spool(db_session, weight_used=950)
+        backup = await _make_spool(db_session, weight_used=0)
+        new = await _make_spool(db_session, weight_used=new_used)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_TRAY_CHANGE, None, 0, 0, old.id),
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 6, old.id),
+                (EVENT_TRAY_CHANGE, None, 1, 6, backup.id),
+                (EVENT_SPOOL_LOADED, None, 0, 18, new.id),
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 18, new.id),
+            ],
+        )
+        events = (await db_session.execute(select(PrintUsageEvent).order_by(PrintUsageEvent.id))).scalars().all()
+        events[-2].slot_occupied = events[-1].slot_occupied = True
+        await db_session.commit()
+        _active_sessions[printer.id] = _session(printer.id)
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+        with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=43), db_session, archive_id=archive.id
+            )
+        await db_session.refresh(new)
+        await db_session.refresh(old)
+        assert new.weight_used == new_used
+        assert new.archived_at is None
+        assert old.archived_at is not None
+        history = await _history(db_session)
+        assert not any(sid == new.id for sid, _, _ in history)
+        ordinary = [(sid, grams) for sid, grams, status in history if status != RUNOUT_STATUS]
+        assert {sid for sid, _ in ordinary} == {old.id, backup.id}
+        assert sum(grams for _, grams in ordinary) == pytest.approx(300, abs=0.15)
+
+    @pytest.mark.asyncio
     async def test_same_slot_refill_splits_at_the_runout_layer(self, db_session, tmp_path, monkeypatch):
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
         printer = await _make_printer(db_session)
