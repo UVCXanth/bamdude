@@ -407,6 +407,21 @@ def _clean_print_lifecycle_registries():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_archive_process_locks():
+    """A contended asyncio lock belongs to the test's function-scoped loop.
+
+    Dispatch/completion races bind these process-global registries to their
+    loop. A later test reusing archive id 1 must get a new lock, rather than
+    fail in an unrelated completion callback. Production has one owning loop;
+    the test task sweep finishes the previous test before this one starts.
+    """
+    from backend.app.services import archive_write_scope
+
+    archive_write_scope._archive_locks.clear()
+    archive_write_scope._archive_file_locks.clear()
+
+
+@pytest.fixture(autouse=True)
 def _lock_order_is_strict():
     """The lock-order monitor raises in tests (WS-13 E1, spec BL2): a door that takes a
     lower lock class after a higher one is a red test, not a log line.

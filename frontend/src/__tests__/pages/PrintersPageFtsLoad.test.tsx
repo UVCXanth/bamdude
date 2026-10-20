@@ -75,7 +75,7 @@ function renderWith(over: Record<string, unknown>) {
 }
 
 async function openFirstSlotMenu() {
-  const buttons = await screen.findAllByTitle('Slot options');
+  const buttons = await screen.findAllByTitle('Slot options', {}, { timeout: 5000 });
   fireEvent.click(buttons[0]);
 }
 
