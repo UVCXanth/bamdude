@@ -2725,6 +2725,7 @@ export interface OrderPrintOptionsResponse {
 }
 
 export interface OrderPlan {
+  inputs_token?: string | null;
   lines: LinePlan[];
   totals: PlanTotals;
   /** The engine's iteration guard stopped the covering, so these rows are a
@@ -6528,6 +6529,39 @@ export interface ModelHours {
 export interface OrderForecastDetail extends OrderForecast {
   lines: LineForecast[];
   by_model: ModelHours[];
+}
+
+export interface DraftEntry extends PlanEnqueueItem {
+  entry_id: string;
+  target?: PlanEnqueueTarget;
+  source_token?: string | null;
+}
+export interface DraftPreviewRequest {
+  schema_version?: 1;
+  client_revision: string;
+  inputs_token?: string | null;
+  entries: DraftEntry[];
+}
+export interface DraftWorkloadGroup {
+  model?: string | null;
+  line_id?: number | null;
+  known_seconds: number;
+  total_seconds: number | null;
+  unknown_prints: number;
+  prints: number;
+}
+export interface DraftPreview {
+  client_revision: string;
+  inputs_token: string;
+  forecast: OrderForecastDetail | null;
+  forecast_error: string | null;
+  totals: PlanTotals;
+  workload: DraftWorkloadGroup & { by_model: DraftWorkloadGroup[]; by_line: DraftWorkloadGroup[] };
+  coverage: { line_id: number; part_id: number; required: number; planned: number; missing: number; surplus: number }[];
+  coverage_complete: boolean;
+  issues: { entry_id: string; code: string }[];
+  order_ready_at: string | null;
+  comparison: { status: string; machine_seconds_delta?: number | null; now_seconds_delta?: number | null; after_seconds_delta?: number | null; coverage_changed?: boolean };
 }
 /** Why an estimate is not whole (WS-13 E1 OR5a / ES3): a code of the server's closed
  *  lists (`utils/estimateReasons.ts`) and its count — null where a count means nothing. */
@@ -13089,6 +13123,10 @@ export const api = {
   setOrderPrintOptions: (id: number, overrides: OrderPrintOptionsResponse['overrides']) =>
     request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
+  previewOrderDraft: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>
+    request<DraftPreview>(`/projects/${id}/plan/forecast-preview`, { method: 'POST', body: JSON.stringify(body), signal }),
+  previewDraftFilament: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>
+    request<OrderNeeds>(`/projects/${id}/plan/filament-preview`, { method: 'POST', body: JSON.stringify(body), signal }),
   enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
     request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
       method: 'POST',

@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
-import type { NeedRow } from '../../../api/client';
+import type { NeedRow, DraftPreview } from '../../../api/client';
 import { OrderForecastPanel } from '../../../components/projects/OrderForecastPanel';
 import { OrderFilamentPanel } from '../../../components/projects/OrderFilamentPanel';
 import type { ForecastView } from '../../../components/projects/orderForecastView';
@@ -28,6 +28,22 @@ function forecast(view: ForecastView, { remaining = 3, onRetry = () => {} } = {}
 
 describe('OrderForecastPanel', () => {
   const panel = () => screen.getByTestId('order-forecast-panel');
+
+  it('keeps nominal hours and missing coverage visible when live forecasting fails', () => {
+    const result: DraftPreview = {
+      client_revision: 'r', inputs_token: 'i', forecast: null, forecast_error: 'forecast_unavailable',
+      totals: { prints: 8, rows: 1, print_time_seconds: 57600, filament_used_grams: 80, cost: null },
+      workload: { prints: 8, known_seconds: 57600, total_seconds: 57600, unknown_prints: 0, by_model: [], by_line: [] },
+      coverage: [{ line_id: 1, part_id: 1, required: 10, planned: 8, missing: 2, surplus: 0 }],
+      coverage_complete: false, issues: [], order_ready_at: null, comparison: { status: 'no_baseline' },
+    };
+    render(<OrderForecastPanel view={{ kind: 'error' }} remaining={10} onRetry={() => {}}
+      draft={{ result, pending: false, error: false, invalid: false, retry: () => {} }} />);
+    expect(screen.getByTestId('draft-machine-hours')).toHaveTextContent('16:00');
+    expect(screen.getByTestId('draft-unplanned')).toHaveTextContent('2 printed parts');
+    expect(panel()).toHaveTextContent('Save a plan');
+    expect(panel()).toHaveTextContent('whole order is not covered');
+  });
 
   it('says there is nothing to print when everything is covered', () => {
     forecast(withData(), { remaining: 0 });

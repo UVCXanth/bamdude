@@ -4,6 +4,7 @@ import { Button } from '../Button';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { FilamentNeedsRows } from './FilamentNeeds';
+import type { DraftForecastState } from '../../hooks/useDraftForecast';
 
 /**
  * «Filament» — the order page's side panel (WS-13 E3 G03): the need per
@@ -19,16 +20,21 @@ export function OrderFilamentPanel({
   orderId,
   active,
   headingLevel = 2,
+  draft,
 }: {
   orderId: number;
   active: boolean;
   headingLevel?: 2 | 3;
+  draft?: DraftForecastState;
 }) {
   const { t } = useTranslation();
   const needs = useOrderFilament(orderId, active);
 
   const body = () => {
     if (!active) return <p className="text-sm text-bambu-gray">{t('orders.filament.closed')}</p>;
+    if (draft && !draft.filament) return draft.filamentError
+      ? <Failed text={t('orders.filament.error')} onRetry={draft.retry} />
+      : <p className="text-sm text-bambu-gray">{t('orderDraft.updating')}</p>;
     if (!needs.data) {
       return needs.isError ? (
         <Failed text={t('orders.filament.error')} onRetry={() => needs.refetch()} />
@@ -36,7 +42,7 @@ export function OrderFilamentPanel({
         <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
       );
     }
-    const data = needs.data;
+    const data = draft?.filament ?? needs.data;
     const empty = data.rows.length === 0 && data.unknown_prints === 0 && !data.stock_unavailable;
     return (
       <>

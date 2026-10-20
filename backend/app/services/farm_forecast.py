@@ -152,6 +152,7 @@ class PrintJob:
     row_plate_id: int
     options: list[PlateOption]  # the row's own plate first, then its alternatives
     auto_eject: bool = False
+    printer_id: int | None = None
 
 
 # ---------- outputs ----------
@@ -537,7 +538,12 @@ def _place(state: _State, jobs: list[PrintJob]) -> dict[int, list[_Print]]:
             continue
         best: tuple[float, int, _Machine, PlateOption] | None = None
         for option in timed:
-            machine = _earliest(state.machines, model_key(option.model), allow_compatible=state.allow_compatible)
+            machines = (
+                state.machines
+                if job.printer_id is None
+                else [m for m in state.machines if m.printer_id == job.printer_id]
+            )
+            machine = _earliest(machines, model_key(option.model), allow_compatible=state.allow_compatible)
             if machine is None:
                 continue
             candidate = (machine.free_at + option.seconds, option.seconds, machine, option)
@@ -580,7 +586,8 @@ def jobs_from_plan(order_id: int, plan: OrderPlan | None) -> list[PrintJob]:
                 PlateOption(a.plate_id, a.printer_model, a.print_time_seconds) for a in row.alternatives
             ]
             jobs.extend(
-                PrintJob(order_id, line.line_id, row.plate_id, options, plan.auto_eject) for _ in range(row.count)
+                PrintJob(order_id, line.line_id, row.plate_id, options, plan.auto_eject, row.target_printer_id)
+                for _ in range(row.count)
             )
     return jobs
 

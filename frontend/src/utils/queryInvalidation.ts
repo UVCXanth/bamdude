@@ -59,6 +59,7 @@ export const ORDER_VIEW_KEYS = [
   // line change or a status change moves what the order has waiting.
   'project-queue',
   'order-forecast', 'orders-forecast', // spec 2026-09-06: the ETA moves with the plan
+  'order-draft-forecast', 'order-draft-filament',
   'order-filament', 'orders-filament', // spec 2026-09-07: the need moves with the plan
   'customers', // the customer tiles are computed from these orders
   'customer', // and one customer's page with them — the prefix, see above

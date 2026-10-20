@@ -216,6 +216,8 @@ class PlanRow:
     # one excluded, sorted by ``(printer_model or "", plate_id)``. Empty is the
     # ordinary case; see :class:`PlanAlternative`.
     alternatives: list[PlanAlternative] = field(default_factory=list)
+    # An exact draft may pin this run to a machine; recommendation rows do not.
+    target_printer_id: int | None = None
 
 
 @dataclass

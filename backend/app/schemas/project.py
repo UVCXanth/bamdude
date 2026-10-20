@@ -688,6 +688,7 @@ class PlanTotalsOut(BaseModel):
 
 
 class OrderPlanResponse(BaseModel):
+    inputs_token: str | None = None
     lines: list[LinePlanOut] = []
     totals: PlanTotalsOut
     # The engine's iteration guard stopped the covering of at least one line, so

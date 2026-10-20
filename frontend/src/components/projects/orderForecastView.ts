@@ -5,7 +5,9 @@ import type { OrderForecastDetail } from '../../api/client';
  * One decision for the «Ready ≈» tile and the forecast panel, so the two never
  * tell different stories.
  *
- * ⚠️ **An edited plan outranks every number** (R03): the server forecast
+ * Legacy recommendation fallback (the editor supplies exact results through
+ * useDraftForecast). An edited plan outranks every recommendation number:
+ * the server forecast
  * describes the plan as it is stored, not the counts the operator has typed and
  * not yet sent, so while the plan has a draft nothing numeric is shown. The same
  * holds after a successful send (`sentAt`) until the forecast is read again: the

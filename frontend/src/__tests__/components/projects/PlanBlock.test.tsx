@@ -1809,7 +1809,7 @@ describe('PlanBlock', () => {
     await userEvent.click(screen.getByTestId('plan-row-10-100-apply-farm'));
     expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(0);
     expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(1);
-    expect(screen.getByTestId('plan-forecast-stale')).toHaveTextContent('previous plan');
+    expect(screen.queryByTestId('plan-forecast-stale')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-line-10-ready')).not.toBeInTheDocument();
     expect(screen.queryByTestId('plan-row-10-100-proposal-100')).not.toBeInTheDocument();
 

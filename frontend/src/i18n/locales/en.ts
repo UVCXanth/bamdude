@@ -1,4 +1,17 @@
 export default {
+  orderDraft: {
+    machineHours: 'Plan machine-hours', updating: 'Recalculating the edited plan…', invalid: 'Complete the split and check the run counts to calculate this plan.',
+    knownTime: '{{time}} known; {{count}} runs have no estimate', same: 'Unchanged from the saved plan',
+    less: '{{time}} less machine time than the saved plan', more: '{{time}} more machine time than the saved plan', lessThanMinute: 'less than 1 minute',
+    coverageChanged: 'The planned quantities or order requirements differ. This change alone does not show improved efficiency.',
+    unplanned: 'Still unplanned: {{count}} printed parts', sourceIssues: '{{count}} plan entries need source review.',
+    orderDate: 'Estimated production completion if queued now', selectedDate: 'Estimated completion of the selected work; the whole order is not covered',
+    incompleteDate: 'This date covers only the work with a known route and time.',
+    nominalHint: 'Machine-hours sum the slicer estimates. Queue waits and the number of printers affect the completion date.',
+    comparison: { no_baseline: 'Save a plan to compare changes with it.', unavailable: 'Comparison is unavailable.',
+      comparison_scope_changed: 'Part of this plan was sent to the queue. Save the remainder as a new comparison baseline.',
+      source_changed: 'A saved source changed. Review the source before comparing.', incomplete: 'Both plans need complete time estimates for a comparison.' },
+  },
   plateFit: {
     replacePending: 'Recalculate unassigned Auto Queue work for this line',
     queueWarning: '{{count}} pending Auto Queue jobs will be removed when applying. Assigned, scheduled, staged, pinned and printer-queue jobs remain fixed. The replacement is a draft: send it separately with “Whole plan to queue”, using the current print settings.',

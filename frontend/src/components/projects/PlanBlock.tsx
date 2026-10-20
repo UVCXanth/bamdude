@@ -22,6 +22,8 @@ import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { useOrderFilament } from '../../hooks/useOrderFilament';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
 import type { PlateFitDraft } from './PlateFitDialog';
+import { useDraftForecast, type DraftForecastState } from '../../hooks/useDraftForecast';
+import { OrderForecastPanel } from './OrderForecastPanel';
 
 /**
  * What to print next for this order, per line.
@@ -54,6 +56,8 @@ export function PlanBlock({
   variant = 'page',
   onEnqueued,
   onDraftChanged,
+  onForecast,
+  visible = true,
   queueRequest,
   onQueueRequestClose,
   queueOrderReady = true,
@@ -71,6 +75,8 @@ export function PlanBlock({
   /** The page uses this to keep its order-level ETA from describing an edited
    * draft. The dialog relies on this block's own notice. */
   onDraftChanged?: (changed: boolean) => void;
+  onForecast?: (state: DraftForecastState) => void;
+  visible?: boolean;
   /** A shortcut requests a fresh review of this editor's current plan, optionally one line. */
   queueRequest?: { lineId?: number; requestedAt: number; refreshing?: boolean; refreshFailed?: boolean } | null;
   onQueueRequestClose?: () => void;
@@ -89,6 +95,7 @@ export function PlanBlock({
   const active = order.status === 'active';
   const [optionsBlocked, setOptionsBlocked] = useState(false);
   const [uncertainRequest, setUncertainRequest] = useState<typeof queueRequest>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
 
   const { data: plan, isLoading, isFetching, isError, dataUpdatedAt, refetch } = useOrderPlan(order.id, active);
 
@@ -245,6 +252,7 @@ export function PlanBlock({
     mutationFn: (items: PlanEnqueueItem[]) =>
       api.enqueueOrderPlan(order.id, { items, target: { kind: 'auto' } }),
     onSuccess: (result) => {
+      setPreviewRevision(value => value + 1);
       const created = result.created.reduce((sum, row) => sum + row.queue_item_ids.length, 0);
       showToast(t('orders.plan.toast.enqueued', { count: created }), 'success');
       invalidate();
@@ -439,6 +447,21 @@ export function PlanBlock({
       ),
     ),
   );
+  const exact = useDraftForecast(order.id, items, plan?.inputs_token,
+    active && !!plan && visible, overCap || splitOff, previewRevision);
+  useEffect(() => { onForecast?.(exact); }, [exact, onForecast]);
+  const lineForecast = (lineId: number) => {
+    const previous = forecast.data?.lines.find(line => line.line_id === lineId);
+    const current = exact.result?.forecast?.lines.find(line => line.line_id === lineId);
+    if (!current) return draftChanged ? undefined : previous;
+    return {
+      ...current,
+      eta_complete: current.eta_complete && !exact.result?.coverage.some(p => p.line_id === lineId && p.missing > 0),
+      // A fleet proposal is an explicit editing action, separate from the date
+      // of the selected files. Do not replace exact placement with its advice.
+      rows: draftChanged ? current.rows : previous?.rows ?? current.rows,
+    };
+  };
 
   const setCount = (lineId: number, plateId: number, next: number) =>
     setCounts((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? {}), [plateId]: Math.max(0, next) } }));
@@ -629,12 +652,8 @@ export function PlanBlock({
         </div>
       )}
 
-      {draftChanged && (
-        <div className="flex items-center gap-2 text-sm" data-testid="plan-forecast-stale">
-          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0" />
-          <span className="text-amber-700 dark:text-amber-300">{t('orders.plan.forecastStale')}</span>
-        </div>
-      )}
+      {variant === 'dialog' && <OrderForecastPanel view={{ kind: 'loading' }} draft={exact}
+        remaining={order.figures?.remaining ?? 0} onRetry={exact.retry} headingLevel={3} />}
 
       {lines.length === 0 ? (<>
         <p
@@ -653,7 +672,7 @@ export function PlanBlock({
                 order={order}
                 line={line}
                 addedIds={new Set((added[line.line_id] ?? []).map((row) => row.plate_id))}
-                forecast={draftChanged ? undefined : forecast.data?.lines.find((l) => l.line_id === line.line_id)}
+                forecast={lineForecast(line.line_id)}
                 counts={counts[line.line_id] ?? {}}
                 chosen={chosen[line.line_id] ?? {}}
                 split={split[line.line_id] ?? {}}
@@ -742,7 +761,8 @@ export function PlanBlock({
           the queue — and that was the state the table hid itself in (final
           review I2). The query is already gated on the order being active,
           which is the only gate this has. */}
-      {variant === 'dialog' && filament.data && <FilamentNeeds needs={filament.data} />}
+      {variant === 'dialog' && (exact.filament ?? (!draftChanged ? filament.data : undefined)) &&
+        <FilamentNeeds needs={(exact.filament ?? filament.data)!} />}
     </section>
   );
 }

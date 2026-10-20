@@ -34,6 +34,7 @@ import { useOrderPlan } from '../../hooks/useOrderPlan';
 import { toOrderRef } from './orderActions/orderRef';
 import type { OrderActions, RunExtra } from './orderActions/useOrderActions';
 import type { PlateFitDraft } from './PlateFitDialog';
+import type { DraftForecastState } from '../../hooks/useDraftForecast';
 
 /**
  * One order: who it is for, what it asks for, and how much of it is printed.
@@ -73,6 +74,7 @@ export function OrderView({
   const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  const [draftForecast, setDraftForecast] = useState<DraftForecastState>();
   const [fitDraft, setFitDraft] = useState<PlateFitDraft | null>(null);
   const plateSelection = useRef<Record<number, number[]>>({});
   const rememberPlates = useCallback((selected: Record<number, number[]>) => { plateSelection.current = selected; }, []);
@@ -238,7 +240,7 @@ export function OrderView({
       onDeleted();
     },
   };
-  const forecastNow = forecastView({
+  const legacyForecast = forecastView({
     active: order.status === 'active',
     draft: planDraftChanged,
     sentAt: enqueuedAt,
@@ -247,6 +249,15 @@ export function OrderView({
     data: forecast.data,
     isError: forecast.isError,
   });
+  const exactResult = draftForecast?.result;
+  const forecastNow = draftForecast
+    ? draftForecast.pending || draftForecast.invalid ? { kind: 'loading' as const }
+      : exactResult?.forecast ? { kind: 'data' as const, refreshFailed: draftForecast.error,
+        forecast: { ...exactResult.forecast,
+          now_eta: exactResult.coverage_complete ? exactResult.order_ready_at : null,
+          after_eta: exactResult.coverage_complete ? exactResult.forecast.after_eta : null } }
+        : { kind: 'error' as const }
+    : legacyForecast;
 
   function sectionBody(value: OrderSection) {
     if (!order) return null;
@@ -257,6 +268,7 @@ export function OrderView({
           {order.status === 'active' && (
             <OrderForecastPanel
               view={forecastNow}
+              draft={draftForecast}
               remaining={order.figures.remaining}
               onRetry={() => forecast.refetch()}
               headingLevel={embedded ? 3 : 2}
@@ -270,6 +282,8 @@ export function OrderView({
             // The plan files new work under the order — Fф, not only `orders:update` (WS-13 E13 O21).
             canEdit={canFileFuturePrint(hasPermission)}
             onDraftChanged={setPlanDraftChanged}
+            onForecast={setDraftForecast}
+            visible={section === 'plan'}
             queueRequest={queueRequest?.orderId === id ? queueRequest : null}
             queueOrderReady={!orderFetching && !isError && orderUpdatedAt >= (queueRequest?.requestedAt ?? 0)}
             onQueueRequestRetry={() => reviewQueuePlan(queueRequest?.lineId)}
@@ -376,7 +390,8 @@ export function OrderView({
 
         {/* The forecast stays above the plan, before the table on narrow screens. */}
         <div data-testid="order-side" className="order-view-side">
-          <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2} />
+          <OrderFilamentPanel orderId={order.id} active={order.status === 'active'} headingLevel={embedded ? 3 : 2}
+            draft={planDraftChanged ? draftForecast : undefined} />
           <OrderQueue orderId={order.id} headingLevel={embedded ? 3 : 2} />
           <OrderTimeline orderId={order.id} headingLevel={embedded ? 3 : 2} />
         </div>

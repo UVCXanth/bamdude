@@ -90,6 +90,7 @@ from backend.app.schemas.listing import (
     OrderStageCounts,
     ProjectsNavBadges,
 )
+from backend.app.schemas.order_draft import DraftPreviewRequest, DraftPreviewResponse
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.order_print_options import (
     OrderPrintModel,
@@ -3755,10 +3756,63 @@ async def get_order_plan(
     if plan is None:
         raise HTTPException(status_code=404, detail="Project not found")
     scope = await library_name_scope(request, db, user)
-    return _plan_response(
+    response = _plan_response(
         plan,
         await _pending_auto_prints(db, [line.line_id for line in plan.lines]),
         await _plan_file_names(db, _plan_file_ids(plan), user, scope),
+    )
+    from backend.app.services import order_draft
+
+    response.inputs_token = (await order_draft.inputs(db, project_id)).token
+    return response
+
+
+@router.post("/{project_id}/plan/forecast-preview", response_model=DraftPreviewResponse)
+async def preview_order_draft(
+    project_id: int,
+    data: DraftPreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_draft
+
+    scope = await library_name_scope(request, db, user)
+    result = await order_draft.preview(
+        db,
+        project_id,
+        data.entries,
+        _utc_now(),
+        inputs_token=data.inputs_token,
+        visible=lambda file: file_name_visible(file, user, scope),
+        printer_scope=key_printer_scope(request),
+    )
+    return DraftPreviewResponse(client_revision=data.client_revision, **result)
+
+
+@router.post("/{project_id}/plan/filament-preview", response_model=OrderNeedsOut)
+async def preview_draft_filament(
+    project_id: int,
+    data: DraftPreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_draft
+
+    inputs = await order_draft.inputs(db, project_id)
+    if data.inputs_token and data.inputs_token != inputs.token:
+        raise HTTPException(409, {"code": "inputs_changed"})
+    scope = await library_name_scope(request, db, user)
+    plan, _, issues, _ = order_draft.project(inputs, data.entries, visible=lambda f: file_name_visible(f, user, scope))
+    needs = (await filament_needs.needs_of_orders(db, [project_id], plans_override={project_id: plan}))[project_id]
+    bad = {i["entry_id"] for i in issues}
+    return OrderNeedsOut(
+        project_id=project_id,
+        rows=[NeedRowOut(**_need_row_fields(r)) for r in needs.rows],
+        unknown_prints=needs.unknown_prints + sum(e.count for e in data.entries if e.entry_id in bad),
+        stock_unavailable=needs.stock_unavailable,
+        assumptions=list(filament_needs.ASSUMPTIONS),
     )
 
 

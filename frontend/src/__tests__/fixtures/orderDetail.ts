@@ -7,7 +7,7 @@
 
 import { vi } from 'vitest';
 import { api } from '../../api/client';
-import type { Order, OrderForecastDetail, OrderNeeds, ProjectFigures, ProjectLine } from '../../api/client';
+import type { Order, OrderForecastDetail, OrderNeeds, ProjectFigures, ProjectLine, DraftPreview } from '../../api/client';
 
 export function makeFigures(over: Partial<ProjectFigures> = {}): ProjectFigures {
   return {
@@ -136,6 +136,17 @@ export function makeNeeds(over: Partial<OrderNeeds> = {}): OrderNeeds {
   return { project_id: 1, rows: [], unknown_prints: 0, stock_unavailable: false, assumptions: [], ...over };
 }
 
+export function makeDraftForecast(forecast = makeForecast()): DraftPreview {
+  return {
+    client_revision: 'fixture', inputs_token: 'fixture', forecast, forecast_error: null,
+    totals: { prints: 1, rows: 1, print_time_seconds: forecast.machine_seconds, filament_used_grams: 0, cost: null },
+    workload: { prints: 1, known_seconds: forecast.machine_seconds ?? 0, total_seconds: forecast.machine_seconds,
+      unknown_prints: forecast.machine_seconds == null ? 1 : 0, by_model: [], by_line: [] },
+    coverage: [], coverage_complete: true, issues: [], order_ready_at: forecast.now_eta,
+    comparison: { status: 'no_baseline' },
+  };
+}
+
 /** Spy every read the detail page makes; returns the spies a test may want to inspect. */
 export function mockOrderDetailApi(order: Order, { forecast = makeForecast(), needs = makeNeeds() } = {}) {
   return {
@@ -164,6 +175,8 @@ export function mockOrderDetailApi(order: Order, { forecast = makeForecast(), ne
       meta: { total: 0, current_page: 1, per_page: 20, last_page: 1 },
     } as never),
     getOrderForecast: vi.spyOn(api, 'getOrderForecast').mockResolvedValue(forecast),
+    previewOrderDraft: vi.spyOn(api, 'previewOrderDraft').mockResolvedValue(makeDraftForecast(forecast)),
+    previewDraftFilament: vi.spyOn(api, 'previewDraftFilament').mockResolvedValue(needs),
     getOrderFilament: vi.spyOn(api, 'getOrderFilament').mockResolvedValue(needs),
     getOrderQueue: vi.spyOn(api, 'getOrderQueue').mockResolvedValue({ printing: [], pending: [], awaiting: [] }),
     getProjectTimeline: vi.spyOn(api, 'getProjectTimeline').mockResolvedValue([]),
