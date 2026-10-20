@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Keep the mobile file library focused on files: search and filters collapse without clearing their values, occasional commands move into More actions, and selection tools appear when files are selected. Desktop controls remain expanded.
+
 - Keep library cards readable on smaller screens: the grid follows the available file-pane width up to six columns, with file size, printer model and time above material, filament weight and counters.
 
 - Restore ownership of an active queue or direct print after a backend restart, so its later successful completion executes its pending table-swap macro even when the printer supplies no unique job ID. The saved execution claim is checked again at completion; duplicate finishes and previously attempted swaps cannot send the macro twice.

@@ -5395,6 +5395,10 @@ export default {
   },
 
   fileManager: {
+    mobileActions: 'More library actions',
+    mobileSearch: 'Search',
+    mobileFilters: 'Filters',
+    mobileActiveSearch: 'Search: {{query}}',
     title: 'File Manager',
     subtitle: 'Organize and manage your print files',
     // #1268 — user-authored tags. DISTINCT from library.tags/library.tagFilter

@@ -40,6 +40,7 @@ import {
   LayoutGrid,
   List,
   Search,
+  SlidersHorizontal,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   AlertTriangle,
@@ -81,6 +82,7 @@ import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumb
 import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
 import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
+import { CardActionMenu } from '../components/CardActionMenu';
 import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { usePersistedState, parseLibraryView, type LibraryView } from '../hooks/usePersistedState';
@@ -1688,6 +1690,23 @@ export function FileManagerPage() {
   const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
   const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: TagsPopoverAnchor } | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [mobileMenuEpoch, setMobileMenuEpoch] = useState(0);
+  const mobileSearchId = useId();
+  const mobileFiltersId = useId();
+  const mobileTagsId = useId();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (mobileSearchOpen) searchInputRef.current?.focus();
+  }, [mobileSearchOpen]);
+  useEffect(() => {
+    // Retire a portalled menu when its mobile trigger disappears on rotation.
+    const query = window.matchMedia('(min-width: 640px)');
+    const closeMenu = () => setMobileMenuEpoch((epoch) => epoch + 1);
+    query.addEventListener('change', closeMenu);
+    return () => query.removeEventListener('change', closeMenu);
+  }, []);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isPageDragging, setIsPageDragging] = useState(false);
   const dragCounterRef = useRef(0);
@@ -2005,6 +2024,8 @@ export function FileManagerPage() {
     unprintedOnly ||
     filterUsername.trim() !== '' ||
     selectedTagIds.length > 0;
+  const activeFilterCount = Number(filterType !== 'all') + Number(unprintedOnly)
+    + Number(filterUsername.trim() !== '') + selectedTagIds.length;
 
   /**
    * One definition of what "clear filters" means, because the button used to
@@ -2760,7 +2781,7 @@ export function FileManagerPage() {
         <div className="flex items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-3"><FolderOpen className="w-6 h-6 text-bambu-green" />{t('fileManager.title')}</h1>
-            <p className="text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
+            <p className="hidden sm:block text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
@@ -2769,6 +2790,7 @@ export function FileManagerPage() {
             { value: 'list', icon: List, label: t('list.view.list') },
           ]} />
 
+          <div className="hidden sm:contents">
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 
           <Button
@@ -2820,6 +2842,7 @@ export function FileManagerPage() {
             <TagIcon className="w-4 h-4 mr-2" />
             {t('fileManager.tags.manage')}
           </Button>
+          </div>
           <Button
             variant="primary"
             size="sm"
@@ -2830,6 +2853,35 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
+          <div className="sm:hidden">
+            <CardActionMenu
+              key={mobileMenuEpoch}
+              label={t('fileManager.mobileActions')}
+              width="max-content"
+              estimatedHeight={360}
+              triggerClassName="min-h-11 min-w-11 flex items-center justify-center rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white focus-visible:ring-2 focus-visible:ring-bambu-green"
+            >
+              {(close) => <>
+                {[
+                  { label: t('fileManager.generateThumbnails'), icon: Image, disabled: batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all'), action: () => batchThumbnailMutation.mutate() },
+                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('library:upload'), action: () => setShowExternalFolderModal(true) },
+                  { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !hasPermission('library:upload') || atExternalRoot, action: () => setShowNewFolderModal(true) },
+                  { label: t('fileManager.tags.manage'), icon: TagIcon, action: () => setShowTagsModal(true) },
+                  ...(filteredAndSortedFiles.length > 0 ? [{ label: t('fileManager.selectAll'), icon: CheckSquare, action: handleSelectAll }] : []),
+                  ...(hasAnyPermission('library:delete_own', 'library:delete_all') ? [{ label: t('libraryTrash.headerButton'), icon: Trash2, action: () => navigate('/files/trash') }] : []),
+                  ...(hasPermission('library:purge') ? [{ label: t('libraryPurge.headerButton'), icon: Trash2, action: () => setShowPurgeModal(true) }] : []),
+                ].map((item) => {
+                  const { label, icon: Icon, action } = item;
+                  return <button key={label} role="menuitem" type="button" disabled={'disabled' in item && item.disabled}
+                    className="flex w-full min-h-11 items-center gap-2 px-4 py-2 text-left text-sm text-white hover:bg-bambu-dark-tertiary disabled:opacity-50"
+                    onClick={() => { close(); action(); }}>
+                    <Icon className="h-4 w-4 shrink-0" />{label}
+                  </button>;
+                })}
+              </>}
+            </CardActionMenu>
+          </div>
+          <div className="hidden sm:contents">
           {hasAnyPermission('library:delete_own', 'library:delete_all') && (
             <TrashSplitButton
               trashHref="/files/trash"
@@ -2841,6 +2893,7 @@ export function FileManagerPage() {
               purgeTooltip={t('libraryPurge.headerTooltip')}
             />
           )}
+          </div>
         </div>
       </div>
 
@@ -2859,23 +2912,23 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 px-3 py-2 sm:py-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>
             <span className="text-white font-medium">{stats.total_files}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="hidden sm:flex items-center gap-2 text-sm">
             <FolderOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             <span className="text-bambu-gray">{t('fileManager.folders')}:</span>
             <span className="text-white font-medium">{stats.total_folders}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="hidden sm:flex items-center gap-2 text-sm">
             <HardDrive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             <span className="text-bambu-gray">{t('fileManager.size')}:</span>
             <span className="text-white font-medium">{formatFileSize(stats.total_size_bytes)}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm sm:ml-auto">
+          <div className="flex items-center gap-2 text-sm ml-auto">
             <span className="text-bambu-gray">{t('fileManager.free')}:</span>
             <span className={`font-medium ${isDiskSpaceLow ? 'text-amber-500' : 'text-white'}`}>
               {formatFileSize(stats.disk_free_bytes)}
@@ -3218,12 +3271,33 @@ export function FileManagerPage() {
               otherwise hide this toolbar exactly when it's needed to clear or
               adjust the filter, so `anyFilterActive` keeps it up regardless. */}
           {files && (files.length > 0 || anyFilterActive) && (
-            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-(--app-top) z-10 lg:static">
+            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sm:sticky sm:top-(--app-top) z-10 lg:static">
+            <div className="flex sm:hidden items-center gap-2 flex-wrap">
+              <Button variant="secondary" size="sm" aria-expanded={mobileSearchOpen}
+                aria-controls={mobileSearchId} onClick={() => setMobileSearchOpen((open) => !open)}>
+                <Search className="w-4 h-4" />{t('fileManager.mobileSearch')}
+              </Button>
+              <Button variant="secondary" size="sm" aria-expanded={mobileFiltersOpen}
+                aria-controls={`${mobileFiltersId}${systemTagPills.length > 0 || userTagPills.length > 0 ? ` ${mobileTagsId}` : ''}`} onClick={() => setMobileFiltersOpen((open) => !open)}>
+                <SlidersHorizontal className="w-4 h-4" />{t('fileManager.mobileFilters')}
+                {activeFilterCount > 0 && <span className="rounded-full bg-bambu-green px-1.5 text-white">{activeFilterCount}</span>}
+              </Button>
+              {anyFilterActive && files.length > 0 && <button type="button" className="min-h-11 px-2 text-sm text-bambu-gray hover:text-white"
+                onClick={clearAllFilters}>{t('fileManager.clearFilters')}</button>}
+            </div>
+            {searchQuery.trim() && !mobileSearchOpen && (
+              <button type="button" className="sm:hidden flex min-w-0 min-h-11 items-center gap-2 text-sm text-bambu-green text-left"
+                onClick={() => setMobileSearchOpen(true)} aria-label={t('fileManager.mobileActiveSearch', { query: searchQuery })}>
+                <Search className="w-4 h-4 shrink-0" /><span className="truncate">{searchQuery}</span>
+              </button>
+            )}
             <div className="flex flex-wrap items-stretch gap-2">
+              <div id={mobileSearchId} className={`${mobileSearchOpen ? 'contents' : 'hidden'} sm:contents`}>
               {/* Search */}
               <div className="relative w-full sm:w-[28rem] h-9">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   placeholder={t('fileManager.searchFiles')}
                   value={searchQuery}
@@ -3260,10 +3334,13 @@ export function FileManagerPage() {
                   {t('fileManager.searchCurrentFolder')}
                 </button>
               )}
+              </div>
 
+              <div id={mobileFiltersId} className={`${mobileFiltersOpen ? 'contents' : 'hidden'} sm:contents`}>
               {/* Type filter */}
               <Select
                 value={filterType}
+                aria-label={t('common.type')}
                 onChange={(e) => setFilterType(e.target.value)}
                 className="min-w-[9rem]"
               >
@@ -3350,6 +3427,7 @@ export function FileManagerPage() {
                   )}
                 </button>
               </div>
+              </div>
             </div>
 
             {/* #1268: recursive-search hint — placed below the toolbar row
@@ -3370,7 +3448,7 @@ export function FileManagerPage() {
               // A row OF the filter panel, like the chip row it replaces —
               // same top border as the selection row below it. A tag filter
               // floating under the panel is a filter outside the filters.
-              <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
+              <div id={mobileTagsId} className={`${mobileFiltersOpen ? 'flex' : 'hidden'} sm:flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary max-sm:max-h-48 max-sm:overflow-y-auto`}>
                 <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
                   <TagIcon className="w-3.5 h-3.5" />
                   {t('fileManager.tags.filterLabel')}
@@ -3438,7 +3516,7 @@ export function FileManagerPage() {
 
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary">
+              <div className={`${selectedFiles.length > 0 ? 'flex' : 'hidden'} sm:flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary`}>
               {/* Select all / Deselect all */}
               {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
                 <Button
@@ -3447,7 +3525,7 @@ export function FileManagerPage() {
                   onClick={handleDeselectAll}
                 >
                   <Square className="w-4 h-4 sm:mr-1" />
-                  <span className="hidden sm:inline">{t('fileManager.deselectAll')}</span>
+                  <span className="sr-only sm:not-sr-only">{t('fileManager.deselectAll')}</span>
                 </Button>
               ) : (
                 <Button
@@ -3456,7 +3534,7 @@ export function FileManagerPage() {
                   onClick={handleSelectAll}
                 >
                   <CheckSquare className="w-4 h-4 sm:mr-1" />
-                  <span className="hidden sm:inline">{t('fileManager.selectAll')}</span>
+                  <span className="sr-only sm:not-sr-only">{t('fileManager.selectAll')}</span>
                 </Button>
               )}
 
@@ -3476,7 +3554,7 @@ export function FileManagerPage() {
                         title={!hasPermission('printers:control') ? t('fileManager.noPermissionPrint') : undefined}
                       >
                         <Play className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('common.print')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('common.print')}</span>
                       </Button>
                     )}
                     {/* Gated on > 0, unlike Print above: the Schedule dialog
@@ -3494,7 +3572,7 @@ export function FileManagerPage() {
                         title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                       >
                         <Clock className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
                     {selectedPlannable.length > 0 && hasPermission('orders:create') && (
@@ -3504,7 +3582,7 @@ export function FileManagerPage() {
                         onClick={() => setPlanFiles(selectedPlannable.map((f) => f.id))}
                       >
                         <ClipboardList className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.computeOrder')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('fileManager.computeOrder')}</span>
                       </Button>
                     )}
                     <Button
@@ -3515,7 +3593,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionMoveFiles') : undefined}
                     >
                       <MoveRight className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.move')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.move')}</span>
                     </Button>
                     <Button
                       variant="secondary"
@@ -3525,7 +3603,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
                     >
                       <TagIcon className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('fileManager.tags.tagAction')}</span>
                     </Button>
                     <Button
                       variant="danger"
@@ -3541,7 +3619,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:delete_own', 'library:delete_all') ? t('fileManager.noPermissionDeleteFiles') : undefined}
                     >
                       <Trash2 className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.delete')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.delete')}</span>
                     </Button>
                     <Button
                       variant="secondary"
@@ -3549,7 +3627,7 @@ export function FileManagerPage() {
                       onClick={handleDeselectAll}
                     >
                       <X className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.clear')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.clear')}</span>
                     </Button>
                   </div>
                 </>

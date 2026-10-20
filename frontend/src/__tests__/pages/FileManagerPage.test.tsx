@@ -457,6 +457,49 @@ describe('FileManagerPage', () => {
   });
 
   describe('search and filter', () => {
+    it('keeps the active query and filters when the mobile panels are collapsed', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      const searchToggle = await screen.findByRole('button', { name: 'Search' });
+      await user.click(searchToggle);
+      const search = screen.getByPlaceholderText('Search files...');
+      expect(search).toHaveFocus();
+      await user.type(search, 'benchy');
+      await user.click(searchToggle);
+      expect(searchToggle).toHaveAttribute('aria-expanded', 'false');
+      await user.click(screen.getByRole('button', { name: 'Search: benchy' }));
+      expect(search).toHaveValue('benchy');
+
+      const filtersToggle = screen.getByRole('button', { name: 'Filters' });
+      await user.click(filtersToggle);
+      const typeFilter = screen.getByRole('option', { name: 'STL' }).closest('select')!;
+      await user.selectOptions(typeFilter, 'stl');
+      await user.click(filtersToggle);
+      expect(filtersToggle).toHaveAttribute('aria-expanded', 'false');
+      expect(filtersToggle).toHaveTextContent('1');
+      expect(typeFilter).toHaveValue('stl');
+      await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+      expect(search).toHaveValue('');
+      expect(typeFilter).toHaveValue('all');
+    });
+
+    it('offers selection through the mobile actions menu and returns focus on Escape', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      await screen.findByText('Benchy');
+      const trigger = screen.getByRole('button', { name: 'More library actions' });
+      await user.click(trigger);
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getByRole('menuitem', { name: 'New Folder' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      expect(trigger).toHaveFocus();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      await user.click(trigger);
+      await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Select All' }));
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(screen.getByText(/3 selected/i)).toBeInTheDocument();
+    });
+
     it('has search input', async () => {
       render(<FileManagerPage />);
 

@@ -5413,6 +5413,10 @@ export default {
   },
 
   fileManager: {
+    mobileActions: 'Додаткові дії бібліотеки',
+    mobileSearch: 'Пошук',
+    mobileFilters: 'Фільтри',
+    mobileActiveSearch: 'Пошук: {{query}}',
     title: 'Файловий менеджер',
     subtitle: 'Організуйте та керуйте файлами для друку',
     // #1268 — теги, створені користувачем. ВІДРІЗНЯЄТЬСЯ від
