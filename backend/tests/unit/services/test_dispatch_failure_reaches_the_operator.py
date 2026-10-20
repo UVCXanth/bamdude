@@ -291,4 +291,4 @@ async def test_a_failure_before_the_upload_closes_the_execution_archive(notify, 
 
     await service._run_active_job(job)
 
-    terminal.assert_awaited_once_with(77, "failed", "No SD card in the printer")
+    terminal.assert_awaited_once_with(77, "failed", "No SD card in the printer", dispatch_id=1, queue_item_id=5)

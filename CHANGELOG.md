@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Cancelled or failed transfers keep their real outcome.** Cancelling before a print starts now closes that attempt as cancelled; failed uploads and refused starts report their original reason instead of a database lazy-loading error. Cleanup preserves an archive already completed by another writer and never changes the source of a reprint.
+
 - **Review the farm after an unconfirmed shutdown.** New automatic prints, plug ON, drying and heating wait for an authorized operator to allow new starts. The pause survives restarts and restores; the first upgrade also asks once. Existing firmware-recovered prints are observed without another start command, while manual queue pauses, plate checks and other printer holds remain in place.
 
 ## [0.7.1] - 2026-10-19

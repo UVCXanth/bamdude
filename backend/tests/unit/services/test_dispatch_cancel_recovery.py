@@ -18,7 +18,7 @@ specific helpers that hold the invariants, rather than spinning up a
 full dispatcher loop.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -76,6 +76,22 @@ async def test_mark_dispatch_archive_terminal_idempotent_on_non_printing(db_sess
     # helper should have left it alone.
     assert archive.status == "completed"
     assert archive.error_message is None
+
+
+async def test_terminal_writer_preserves_archive_time_metrics(db_session, archive_factory, printer_factory):
+    printer = await printer_factory()
+    archive = await archive_factory(
+        printer.id,
+        status="printing",
+        started_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+        print_time_seconds=60,
+    )
+    with patch("backend.app.services.background_dispatch.async_session") as factory:
+        factory.return_value.__aenter__.return_value = db_session
+        await BackgroundDispatchService._mark_dispatch_archive_terminal(archive.id, "completed", "")
+    await db_session.refresh(archive)
+    assert archive.actual_time_seconds >= 60
+    assert archive.time_accuracy is not None
 
 
 @pytest.mark.asyncio

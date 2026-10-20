@@ -1224,7 +1224,7 @@ class BackgroundDispatchService:
         except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
             await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
-            pass  # outcome.cancelled already set by the runner
+            await self._close_cancelled_execution(job)
         except Exception as e:
             # ⚠️ "outcome.error already set by the runner" was true only for
             # failures INSIDE the runner's own try. Anything raised before it —
@@ -1694,6 +1694,7 @@ class BackgroundDispatchService:
         except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
             await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
+            await self._close_cancelled_execution(job)
             await self._release_direct_claim(job, status="cancelled")
             await self._mark_job_cancelled(job)
         except asyncio.CancelledError:
@@ -2881,9 +2882,15 @@ class BackgroundDispatchService:
                 # "printing" → "cancelled" in a fresh session so the UI
                 # doesn't keep it spinning forever. Defensive id check in
                 # case future refactors move cancel checkpoints earlier.
-                _archive_id = getattr(archive, "id", None) if archive else None
+                _archive_id = job.execution_archive_id
                 if _archive_id:
-                    await self._mark_dispatch_archive_terminal(_archive_id, "cancelled", "Cancelled before start")
+                    await self._mark_dispatch_archive_terminal(
+                        _archive_id,
+                        "cancelled",
+                        "Cancelled before start",
+                        dispatch_id=job.id,
+                        queue_item_id=job.queue_item_id,
+                    )
                 job.outcome = {
                     "success": False,
                     "archive_id": _archive_id,
@@ -2895,7 +2902,7 @@ class BackgroundDispatchService:
             except Exception as e:
                 job.outcome = {
                     "success": False,
-                    "archive_id": None,
+                    "archive_id": job.execution_archive_id,
                     "error": str(e),
                     "cancelled": False,
                     "deferred": False,
@@ -3716,20 +3723,32 @@ class BackgroundDispatchService:
                 # outer session rollback can't undo it. Flip the zombie from
                 # "printing" → "cancelled" in a fresh session so the UI
                 # doesn't keep it spinning forever.
-                await self._mark_dispatch_archive_terminal(archive.id, "cancelled", "Cancelled before start")
+                await self._mark_dispatch_archive_terminal(
+                    job.execution_archive_id,
+                    "cancelled",
+                    "Cancelled before start",
+                    dispatch_id=job.id,
+                    queue_item_id=job.queue_item_id,
+                )
                 job.outcome = {
                     "success": False,
-                    "archive_id": archive.id,
+                    "archive_id": job.execution_archive_id,
                     "error": "Cancelled",
                     "cancelled": True,
                     "deferred": False,
                 }
                 raise
             except Exception as e:
-                await self._mark_dispatch_archive_terminal(archive.id, "failed", str(e))
+                await self._mark_dispatch_archive_terminal(
+                    job.execution_archive_id,
+                    "failed",
+                    str(e),
+                    dispatch_id=job.id,
+                    queue_item_id=job.queue_item_id,
+                )
                 job.outcome = {
                     "success": False,
-                    "archive_id": archive.id,
+                    "archive_id": job.execution_archive_id,
                     "error": str(e),
                     "cancelled": False,
                     "deferred": False,
@@ -3988,6 +4007,27 @@ class BackgroundDispatchService:
         except Exception:
             pass  # Best-effort - don't fail the error handler
 
+    async def _close_cancelled_execution(self, job: PrintDispatchJob) -> None:
+        # The inner handler already owns its cleanup. A checkpoint before that
+        # try still needs a cancelled outcome and the same scalar execution ID.
+        if job.outcome.get("cancelled"):
+            return
+        job.outcome = {
+            "success": False,
+            "archive_id": job.execution_archive_id,
+            "error": "Cancelled",
+            "cancelled": True,
+            "deferred": False,
+        }
+        if job.execution_archive_id is not None:
+            await self._mark_dispatch_archive_terminal(
+                job.execution_archive_id,
+                "cancelled",
+                "Cancelled before start",
+                dispatch_id=job.id,
+                queue_item_id=job.queue_item_id,
+            )
+
     async def _close_execution_archive(self, job: PrintDispatchJob, exc: BaseException) -> None:
         """Flip the execution archive of a job that failed outside the runner's ``try``.
 
@@ -3997,11 +4037,22 @@ class BackgroundDispatchService:
         """
         if job.execution_archive_id is not None:
             await self._mark_dispatch_archive_terminal(
-                job.execution_archive_id, "failed", str(exc) or exc.__class__.__name__
+                job.execution_archive_id,
+                "failed",
+                str(exc) or exc.__class__.__name__,
+                dispatch_id=job.id,
+                queue_item_id=job.queue_item_id,
             )
 
     @staticmethod
-    async def _mark_dispatch_archive_terminal(archive_id: int, status: str, error_message: str) -> None:
+    async def _mark_dispatch_archive_terminal(
+        archive_id: int,
+        status: str,
+        error_message: str,
+        *,
+        dispatch_id: int | None = None,
+        queue_item_id: int | None = None,
+    ) -> None:
         """Flip a dispatch-time archive to a terminal state on error.
 
         ``archive_print`` commits the row before the upload/start block runs,
@@ -4013,11 +4064,13 @@ class BackgroundDispatchService:
         """
         from datetime import datetime, timezone
 
-        from backend.app.models.archive import PrintArchive
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
         try:
-            async with async_session() as fdb:
-                archive = await fdb.get(PrintArchive, archive_id)
+            async with async_session() as fdb, archive_write_scope(fdb, archive_id):
+                # Authoritative read under the archive guard AND row lock.
+                # Keep ORM writes: before_flush owns derived time metrics.
+                archive = await load_active_archive_for_write(fdb, archive_id)
                 if archive is None or archive.status != "printing":
                     return
                 archive.status = status
@@ -4026,10 +4079,12 @@ class BackgroundDispatchService:
                 await fdb.commit()
         except Exception as cleanup_err:
             logger.warning(
-                "Failed to mark dispatch archive %s as %s: %s",
+                "Dispatch terminal cleanup failed dispatch=%s queue_item=%s execution=%s target=%s class=%s",
+                dispatch_id,
+                queue_item_id,
                 archive_id,
                 status,
-                cleanup_err,
+                type(cleanup_err).__name__,
             )
 
     @staticmethod
