@@ -59,6 +59,9 @@ async def send_macro_and_await_ack(
 
     Returns ``(success, error_message)``.
     """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    farm_startup_guard.require(getattr(client, "_farm_printer_id", None))
     if not client or not client.state or not client.state.connected:
         return False, "Printer is not connected"
 
@@ -122,6 +125,9 @@ def dispatch_mqtt_action(
 
     Returns ``(success, error_message)``.
     """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    farm_startup_guard.require(getattr(client, "_farm_printer_id", None))
     from backend.app.core.mqtt_macro_actions import resolve_action
 
     if not client or not client.state or not client.state.connected:

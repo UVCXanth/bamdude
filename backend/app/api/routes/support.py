@@ -1066,6 +1066,8 @@ async def _collect_git_backup_info(db: AsyncSession) -> dict:
 
 async def _collect_support_info() -> dict:
     """Collect all support information."""
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
     in_docker = is_running_in_docker()
 
     from backend.app.core.install_id import get_install_id
@@ -1105,6 +1107,7 @@ async def _collect_support_info() -> dict:
         # tracked object, and a bundle request must not stall MQTT status ingest
         # while it does.
         "process": await asyncio.to_thread(_collect_process_info),
+        "farm_startup": farm_startup_guard.status(),
     }
 
     # Docker-specific info

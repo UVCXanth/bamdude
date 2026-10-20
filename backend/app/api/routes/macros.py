@@ -300,6 +300,9 @@ async def execute_macro(
 ):
     """Execute a macro on a specific printer by sending its GCode via MQTT."""
     # Get macro
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    farm_startup_guard.require(printer_id)
     result = await db.execute(select(Macro).where(Macro.id == macro_id))
     macro = result.scalar_one_or_none()
     if not macro:

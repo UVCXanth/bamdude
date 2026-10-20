@@ -33,6 +33,7 @@ from backend.app.schemas.smart_plug import (
     SmartPlugUpdate,
 )
 from backend.app.services.discovery import tasmota_scanner
+from backend.app.services.farm_startup_guard import manual_control
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
@@ -803,6 +804,7 @@ async def _get_service_for_plug(plug: SmartPlug, db: AsyncSession):
 
 
 @router.post("/{plug_id}/control")
+@manual_control
 async def control_smart_plug(
     plug_id: int,
     control: SmartPlugControl,

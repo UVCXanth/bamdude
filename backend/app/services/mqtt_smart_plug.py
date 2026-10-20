@@ -13,6 +13,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from backend.app.services.farm_startup_guard import guarded_power_on, owned_power_off, power_on_allowed
 from backend.app.services.measurement_buffer import measurement_buffer
 from backend.app.utils.paho_teardown import retire_paho_client
 
@@ -535,7 +536,18 @@ class MQTTSmartPlugService:
             logger.warning("MQTT smart plug: cannot publish to %s - not connected", topic)
             return False
         try:
-            info = await asyncio.to_thread(self.client.publish, topic, payload, qos=1, retain=False)
+            from backend.app.services.farm_startup_guard import _power_generation, farm_startup_guard
+            from backend.app.services.preview_artifacts import owned
+
+            def publish():
+                with farm_startup_guard._mutex:
+                    if _power_generation.get() is not None and not power_on_allowed():
+                        return None
+                    return self.client.publish(topic, payload, qos=1, retain=False)
+
+            info = await owned(asyncio.to_thread(publish))
+            if info is None:
+                return False
         except Exception as e:
             logger.error("MQTT smart plug: publish to %s failed: %s", topic, e)
             return False
@@ -546,6 +558,8 @@ class MQTTSmartPlugService:
 
     async def _switch(self, plug: Any, payload: str | None, expected_state: str) -> bool:
         """Publish a command and, where possible, confirm it took effect."""
+        if expected_state == "ON" and not power_on_allowed():
+            return False
         topic = getattr(plug, "mqtt_command_topic", None)
         if not topic:
             logger.info(
@@ -578,10 +592,12 @@ class MQTTSmartPlugService:
         )
         return True
 
+    @guarded_power_on
     async def turn_on(self, plug: Any) -> bool:
         """Turn on the plug. Returns True if the command was delivered."""
         return await self._switch(plug, getattr(plug, "mqtt_command_on", None), "ON")
 
+    @owned_power_off
     async def turn_off(self, plug: Any) -> bool:
         """Turn off the plug. Returns True if the command was delivered."""
         return await self._switch(plug, getattr(plug, "mqtt_command_off", None), "OFF")

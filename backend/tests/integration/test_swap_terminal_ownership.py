@@ -28,6 +28,41 @@ from backend.tests.integration.swap_terminal_support import (
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
+
+async def test_completion_under_farm_hold_keeps_swap_proven_owed_and_resumes_once(make_rig, tmp_path, monkeypatch):
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services import farm_startup_guard as module, swap_terminal
+    from backend.app.services.print_reconciliation import _resolve_pending_swaps
+    from backend.tests.integration.swap_terminal_support import item_of
+
+    guard = module.FarmStartupGuard()
+    guard.start(tmp_path / "farm-state")
+    guard.mark_ready()
+    monkeypatch.setattr(module, "farm_startup_guard", guard)
+    monkeypatch.setattr(main, "farm_startup_guard", guard)
+    rig = await make_rig(require_plate_clear=False, swap_mode=True)
+    archive_id, item_id = await an_execution(rig, fact=False, pending=["swap_mode_change_table"], start_effect="fired")
+    try:
+        await complete(rig)
+        archive = await archive_of(rig, archive_id)
+        assert archive.status == "completed"
+        assert swap_terminal.claim_stage(archive.extra_data) == swap_terminal.CLAIM_OWED
+        assert archive.extra_data[swap_terminal.HOLD_KEY]["reason"] == swap_terminal.HOLD_FARM_RECOVERY
+        assert (await item_of(rig, item_id)).status == "completed"
+        async with rig.db() as db:
+            queue = await db.get(PrinterQueue, rig.queue_id)
+            assert queue.status == "printing" and queue.current_item_id == item_id
+        rig.macro.assert_not_awaited()
+        state = guard.status()
+        guard.resume(state["boot_id"], state["hold_id"], actor="test")
+        await _resolve_pending_swaps(rig.printer_id, [archive_id])
+        await _resolve_pending_swaps(rig.printer_id, [archive_id])
+        assert rig.macro.await_count == 1
+        assert swap_terminal.claim_stage((await archive_of(rig, archive_id)).extra_data) == swap_terminal.CLAIM_FINISHED
+    finally:
+        guard.finish(clean=False)
+
+
 STATUSES = {
     "completed": {"status": "completed", "subtask_id": "81"},
     "failed": {"status": "failed", "subtask_id": "81"},

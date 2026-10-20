@@ -195,7 +195,9 @@ class TestTheReadingOutlivesTheClient:
 
     @staticmethod
     def _client(raw):
-        return SimpleNamespace(state=SimpleNamespace(raw_data=raw), disconnect=lambda timeout=0: None)
+        return SimpleNamespace(
+            state=SimpleNamespace(raw_data=raw, connection_generation=0), disconnect=lambda timeout=0: None
+        )
 
     def test_a_dropped_client_leaves_its_trays_behind(self):
         pm = PrinterManager()

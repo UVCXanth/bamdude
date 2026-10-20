@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from backend.app.services.farm_startup_guard import guarded_power_on, owned_power_off, power_on_allowed
+
 if TYPE_CHECKING:
     from backend.app.models.smart_plug import SmartPlug
 
@@ -72,6 +74,8 @@ class TasmotaService:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                if command == "Power On" and not power_on_allowed():
+                    return None
                 response = await client.get(url, auth=auth)
                 response.raise_for_status()
                 return response.json()
@@ -111,6 +115,7 @@ class TasmotaService:
 
         return {"state": state, "reachable": True, "device_name": None}
 
+    @guarded_power_on
     async def turn_on(self, plug: "SmartPlug") -> bool:
         """Turn on the plug. Returns True if successful."""
         result = await self._send_command(plug.ip_address, "Power On", plug.username, plug.password)
@@ -129,6 +134,7 @@ class TasmotaService:
 
         return success
 
+    @owned_power_off
     async def turn_off(self, plug: "SmartPlug") -> bool:
         """Turn off the plug. Returns True if successful."""
         result = await self._send_command(plug.ip_address, "Power Off", plug.username, plug.password)

@@ -48,6 +48,7 @@ HOLD_NOT_COMPLETED = "swap_hold_not_completed"
 HOLD_SWAP_OFF = "swap_hold_swap_off"
 HOLD_OUTCOME_UNCERTAIN = "swap_hold_outcome_uncertain"
 HOLD_MACRO_ERROR = "swap_hold_macro_error"
+HOLD_FARM_RECOVERY = "swap_hold_farm_recovery"
 HOLD_ATTEMPT_UNKNOWN = "swap_hold_attempt_unknown"
 HOLD_REASONS = frozenset(
     {
@@ -58,6 +59,7 @@ HOLD_REASONS = frozenset(
         HOLD_SWAP_OFF,
         HOLD_OUTCOME_UNCERTAIN,
         HOLD_MACRO_ERROR,
+        HOLD_FARM_RECOVERY,
         HOLD_ATTEMPT_UNKNOWN,
     }
 )
@@ -80,6 +82,7 @@ ANSWERED = frozenset({CLAIM_FINISHED, CLAIM_FAILED})
 #: printer.
 CLAIMED = "claimed"
 CLAIM_BUSY = "busy"
+CLAIM_HELD = "farm_recovery_hold"
 CLAIM_TAKEN = "taken"
 CLAIM_LOST = "lost"
 
@@ -219,6 +222,10 @@ async def claim_change_table(
     queue claim -- must hold. Returns :data:`CLAIMED`, or why the command must not go out. The archive is marked
     live before the commit, so no other owner can find it attempted and nobody's; a failed commit unmarks it.
     """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    if not farm_startup_guard.allowed() and not allow_absent:
+        return CLAIM_HELD
     from backend.app.services.queue_ops import claim_lanes
 
     # The print, then the lane -- the one order of every archive + lane writer (``claim_lanes``): every in-process
@@ -238,6 +245,11 @@ async def claim_change_table(
             return CLAIM_TAKEN
         if still_ours is not None and not await still_ours(db):
             return CLAIM_LOST
+        if not farm_startup_guard.allowed():
+            if stage is None:
+                archive.extra_data = _with_stage(extra, CLAIM_OWED, owner=owner)
+                await db.commit()
+            return CLAIM_HELD
         archive.extra_data = _with_stage(extra, CLAIM_ATTEMPTED, owner=owner)
         _sending.add(archive_id)
         try:

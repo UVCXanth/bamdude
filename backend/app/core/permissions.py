@@ -195,6 +195,7 @@ class Permission(StrEnum):
 
     # System Info
     SYSTEM_READ = "system:read"
+    FARM_RESUME = "farm:resume"
 
     # Settings (admin-level)
     SETTINGS_READ = "settings:read"
@@ -398,6 +399,7 @@ PERMISSION_CATEGORIES = {
         Permission.STATS_FILTER_BY_USER,
     ],
     "System": [
+        Permission.FARM_RESUME,
         Permission.SYSTEM_READ,
     ],
     "Settings": [

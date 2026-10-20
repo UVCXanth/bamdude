@@ -88,6 +88,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
 )
 from backend.app.services.cloud_link.service import cloud_link_service
+from backend.app.services.farm_startup_guard import manual_control
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
 from backend.app.services.plate_hold import (
@@ -3634,6 +3635,7 @@ async def set_print_speed(
 
 
 @router.post("/{printer_id}/bed-jog")
+@manual_control
 async def bed_jog(
     printer_id: int,
     distance: float = Query(
@@ -3719,6 +3721,7 @@ async def bed_jog(
 
 
 @router.post("/{printer_id}/jog")
+@manual_control
 async def jog_axis(
     printer_id: int,
     axis: str = Query(..., description="Which axis: x | y | z | e"),
@@ -4074,6 +4077,7 @@ async def set_fan_speed(
 
 
 @router.post("/{printer_id}/temperature")
+@manual_control
 async def set_temperature(
     printer_id: int,
     part: str = Query(..., description="Which heater: nozzle | bed | chamber"),

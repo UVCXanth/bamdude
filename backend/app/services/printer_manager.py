@@ -1126,6 +1126,9 @@ class PrinterManager:
         printer_id = printer.id
         client_generation = self._client_generations.get(printer_id, 0) + 1
         self._client_generations[printer_id] = client_generation
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.register_printer_owner(printer_id, client_generation)
 
         def on_state_change(state: PrinterState):
             if self._on_status_change:
@@ -1212,9 +1215,25 @@ class PrinterManager:
             # archive closed and queue advanced.
             from backend.app.services.print_reconciliation import reconcile_printer_prints
 
-            self._schedule_async(
-                reconcile_printer_prints(printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
-            )
+            generation = client.state.connection_generation
+
+            async def reconcile_session():
+                if self._clients.get(printer_id) is not client or client.state.connection_generation != generation:
+                    return
+                await reconcile_printer_prints(
+                    printer_id, live_state, live_file, live_subtask_id, live_subtask_name, strict=True
+                )
+                if self._clients.get(printer_id) is client and client.state.connected:
+                    from backend.app.main import maybe_register_external_stagger
+
+                    await maybe_register_external_stagger(printer_id)
+                    farm_startup_guard.printer_reconciled(printer_id, generation)
+                    if farm_startup_guard.printer_ready(printer_id):
+                        from backend.app.services.smart_plug_manager import smart_plug_manager
+
+                        await smart_plug_manager.resume_pending_auto_offs(printer_id)
+
+            self._schedule_async(reconcile_session())
 
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
@@ -1261,8 +1280,10 @@ class PrinterManager:
             self._forget_hms_mutes(pid, gone)
         )
 
-        client.connect()
+        client._farm_printer_id = printer_id
+        client._farm_owner = client_generation
         self._clients[printer_id] = client
+        client.connect()
         self._connected_at[printer_id] = time.time()
         self._models[printer_id] = printer.model  # Cache model for feature detection
         self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number)
@@ -1321,6 +1342,9 @@ class PrinterManager:
             trays = self._tray_keys(self._clients[printer_id].state.raw_data)
             if trays:
                 self._last_trays[printer_id] = trays
+            from backend.app.services.farm_startup_guard import farm_startup_guard
+
+            farm_startup_guard.printer_disconnected(printer_id, self._clients[printer_id].state.connection_generation)
             self._clients[printer_id].disconnect(timeout=timeout)
             del self._clients[printer_id]
         self._connected_at.pop(printer_id, None)  # Clean up connection timestamp
@@ -1528,6 +1552,9 @@ class PrinterManager:
         #1780). It rides through to the MQTT client untouched; the dispatch
         builder there parses + injects it only on dual-nozzle models.
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require(printer_id)
         caller = traceback.extract_stack(limit=3)[0]
         logger.info(
             "PRINT COMMAND: printer=%s, file=%s, caller=%s:%s:%s",
@@ -1589,6 +1616,9 @@ class PrinterManager:
 
         Returns ``(success, message)``.
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require(printer_id)
         from backend.app.services.macro_executor import send_macro_and_await_ack
 
         if may_run is not None and not may_run():

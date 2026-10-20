@@ -1506,10 +1506,15 @@ async def upload_file_async(
         """
         completion = {"success": False}
         done = threading.Event()
+        from backend.app.services.farm_startup_guard import track_command_io
+        from backend.app.services.preview_artifacts import owned
+
+        future = track_command_io(loop.run_in_executor(None, _upload, force_prot_c, completion, done))
         try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, _upload, force_prot_c, completion, done), timeout=timeout
-            )
+            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        except asyncio.CancelledError:
+            await owned(future)
+            raise
         except TimeoutError:
             grace = max(min(timeout, 30.0), 0.5)
             await loop.run_in_executor(None, done.wait, grace)

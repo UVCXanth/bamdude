@@ -23,6 +23,7 @@ from itertools import count
 
 import paho.mqtt.client as mqtt
 
+from backend.app.services.farm_startup_guard import typed_heater
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
 from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES
@@ -2798,6 +2799,12 @@ class BambuMQTTClient:
         if rc == 0:
             previous_fts = self.state.fila_switch.installed or self.state.fila_switch.authoritative
             self.state.connection_generation = next(_connection_generations)
+            from backend.app.services.farm_startup_guard import farm_startup_guard
+
+            if getattr(self, "_farm_printer_id", None) is not None:
+                farm_startup_guard.printer_connecting(
+                    self._farm_printer_id, self.state.connection_generation, owner=self._farm_owner
+                )
             self.state.feed_telemetry = FeedTelemetry()
             self.state.fila_switch = FilaSwitchState()
             self.state.fts_pending_confirmation = previous_fts
@@ -2926,6 +2933,10 @@ class BambuMQTTClient:
         # Always unblock disconnect() callers, regardless of whether we suppress
         # the state broadcast below.  disconnect() sets _disconnection_event and
         # waits on it - every callback path must fire it.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if getattr(self, "_farm_printer_id", None) is not None:
+            farm_startup_guard.printer_disconnected(self._farm_printer_id, self.state.connection_generation)
         if self._disconnection_event:
             self._disconnection_event.set()
 
@@ -8184,6 +8195,9 @@ class BambuMQTTClient:
         # job. IDLE / FINISH / FAILED are valid start targets; only active-print
         # states are refused. Callers treat False here as a DEFER (leave the queue
         # item pending), not a failure.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require(getattr(self, "_farm_printer_id", None))
         if routing_guard is not None:
             routing_guard.validate(
                 self.get_feed_snapshot(routing_guard.plan.printer_id),
@@ -8780,6 +8794,9 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False if not connected
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require(getattr(self, "_farm_printer_id", None))
         if not self._client or not self.state.connected:
             return False
 
@@ -8893,7 +8910,14 @@ class BambuMQTTClient:
                         handler(topic, raw)
                     except Exception:
                         logger.debug("[%s] raw-publish handler crashed", self.serial_number, exc_info=True)
-            return original(topic, payload, qos, retain, properties)
+            from backend.app.services.farm_startup_guard import farm_startup_guard
+
+            try:
+                packet = json.loads(payload) if isinstance(payload, (str, bytes)) else {}
+            except (ValueError, UnicodeError):
+                packet = {}
+            with farm_startup_guard.publication(packet, getattr(self, "_farm_printer_id", None)):
+                return original(topic, payload, qos, retain, properties)
 
         paho_client.publish = _publish
 
@@ -9814,6 +9838,9 @@ class BambuMQTTClient:
 
     def resume_print(self) -> bool:
         """Resume a paused print job."""
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require(getattr(self, "_farm_printer_id", None))
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot resume print: not connected", self.serial_number)
             return False
@@ -10210,6 +10237,10 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False otherwise
         """
+        from backend.app.services.farm_startup_guard import _cooling_control, _manual_service, farm_startup_guard
+
+        if not _cooling_control.get() and (not _manual_service.get() or farm_startup_guard.stopping):
+            farm_startup_guard.require(getattr(self, "_farm_printer_id", None))
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot send G-code: not connected", self.serial_number)
             return False
@@ -10245,6 +10276,7 @@ class BambuMQTTClient:
 
         return limits_for(self.model, self.state)
 
+    @typed_heater
     def set_bed_temperature(self, target: int) -> bool:
         """Set the bed target temperature.
 
@@ -10282,6 +10314,7 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         return True
 
+    @typed_heater
     def set_nozzle_temperature(self, target: int, extruder_index: int = 0) -> bool:
         """Set a nozzle's target temperature.
 
@@ -10330,6 +10363,7 @@ class BambuMQTTClient:
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         return True
 
+    @typed_heater
     def set_chamber_temperature(self, target: int) -> bool:
         """Set the chamber target temperature.
 

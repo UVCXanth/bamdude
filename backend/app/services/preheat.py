@@ -335,6 +335,9 @@ async def preheat_and_soak(
     ``cancel_check`` — if given — is called each poll iteration and raises to abort a
     long wait/soak when the dispatch is cancelled; that exception is allowed to
     propagate (everything else is swallowed)."""
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    farm_startup_guard.require(printer.id)
     opts = options or {}
     override = str(opts.get("preheat_override") or "inherit").lower()
     if override == "off":

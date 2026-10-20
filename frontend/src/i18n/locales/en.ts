@@ -215,6 +215,7 @@ export default {
       "filament_unavailable": "Check the material and feed configuration",
       "dispatch_failed": "Preparation failed",
       "storage_full": "Timelapse storage is full",
+      "farm_recovery_hold": 'New starts are paused while the farm recovers',
       "source_capture": "Waiting to copy the source",
       "unknown": "Waiting for a check"
     },
@@ -1358,6 +1359,7 @@ export default {
         blocked_filament_at_outlet: 'filament is at the AMS outlet',
         blocked_other: 'the AMS cannot start drying',
         interrupted: 'a print interrupted it',
+        farm_recovery_hold: 'New starts are paused while the farm recovers',
         window_passed: 'its start window passed',
         screen_only: 'this printer dries only from its own screen',
         unsupported: "this printer's firmware cannot dry",
@@ -1710,6 +1712,7 @@ export default {
         swap_hold_not_completed: 'The print did not complete, so the table swap was not run. Inspect and clear the plate, then resume the queue.',
         swap_hold_swap_off: 'The table swap was not run: swap mode is off on this printer or its change-table macro is missing. Run the table swap or clear the plate, then resume the queue.',
         swap_hold_outcome_uncertain: 'The table swap was not run: the print\'s outcome is uncertain after the outage. Inspect the plate, then resume the queue.',
+        swap_hold_farm_recovery: "The farm is paused for recovery. The table change has not been attempted and remains owed.",
         swap_hold_macro_error: 'The table swap did not finish: BamDude could not run the printer\'s change-table macro. Inspect the mechanism and plate, then resume the queue.',
         swap_hold_attempt_unknown: 'The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue.',
       },
@@ -8152,6 +8155,18 @@ export default {
     },
   },
 
+  farmStartup: {
+    "starting": "Restoring farm state — new automatic starts are held",
+    "held": "New automatic starts are paused",
+    "stopping": "BamDude is stopping — new starts are held",
+    "storage_unavailable": "Farm startup state cannot be saved — automation is held",
+    "unavailable": "Farm automation status is unavailable",
+    "detail": "The previous shutdown was not confirmed, or data was restored. Check the farm and its power supply before allowing new starts.",
+    "resume": "Allow new starts",
+    "confirm": "I have checked the farm and its power supply. Allow new automatic starts? Prints already recovered by printer firmware will not be restarted. Manual queue pauses, plate-clear checks and other printer holds remain in place. Typed manual service controls are available during this pause.",
+    "failed": "The pause could not be released. Read the current state and try again."
+  },
+
   // System info
   system: {
     zigbeeCoordinator: 'Zigbee Coordinator',
@@ -11274,6 +11289,7 @@ export default {
       adjust: 'Adjust'
     },
     labels: {
+      farmResume: 'Allow new farm starts after recovery',
       printerFiles: 'Printer Files',
       amsRfid: 'AMS RFID Re-read',
       clearPlate: 'Clear Plate',

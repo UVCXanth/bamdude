@@ -10,6 +10,37 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.smart_plug_manager import SmartPlugManager
 
 
+@pytest.mark.parametrize("resume_same_minute", [True, False])
+@pytest.mark.parametrize("manual", [None, "on", "off", "toggle"])
+async def test_crash_hold_does_not_consume_today_or_tomorrows_on(
+    schedule, monkeypatch, tmp_path, resume_same_minute, manual
+):
+    from backend.app.services import farm_startup_guard as guard_module, smart_plug_manager as manager_module
+
+    guard = guard_module.FarmStartupGuard()
+    guard.start(tmp_path)
+    guard.mark_ready()
+    monkeypatch.setattr(guard_module, "farm_startup_guard", guard)
+    monkeypatch.setattr(manager_module, "farm_startup_guard", guard)
+    first = datetime(2026, 10, 31, 7, 30)
+    schedule.plug.schedule_on_time = "07:30"
+    try:
+        await schedule.tick(first)
+        assert schedule.events == []
+        if manual:
+            await schedule.manual(manual)
+        before = len(schedule.events)
+        state = guard.status()
+        guard.resume(state["boot_id"], state["hold_id"], actor="test")
+        await schedule.tick(first + timedelta(seconds=30) if resume_same_minute else first.replace(hour=8))
+        assert schedule.events[before:] == ([(1, "on")] if resume_same_minute else [])
+        before = len(schedule.events)
+        await schedule.tick(first + timedelta(days=1))
+        assert schedule.events[before:] == [(1, "on")]
+    finally:
+        guard.finish(clean=False)
+
+
 @pytest.fixture
 def schedule(monkeypatch):
     from backend.app.api.routes import smart_plugs as routes

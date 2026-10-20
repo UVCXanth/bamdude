@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from backend.app.services.farm_startup_guard import guarded_power_on, owned_power_off, power_on_allowed
+
 if TYPE_CHECKING:
     from backend.app.models.smart_plug import SmartPlug
 
@@ -97,6 +99,7 @@ class HomeAssistantService:
             logger.warning("Failed to get HA entity state for %s: %s", plug.ha_entity_id, e)
             return {"state": None, "reachable": False, "device_name": None}
 
+    @guarded_power_on
     async def turn_on(self, plug: "SmartPlug") -> bool:
         """Turn on HA entity. Returns True if successful."""
         success = await self._call_service(plug, "turn_on")
@@ -104,6 +107,7 @@ class HomeAssistantService:
             logger.info("Turned ON HA entity '%s' (%s)", plug.name, plug.ha_entity_id)
         return success
 
+    @owned_power_off
     async def turn_off(self, plug: "SmartPlug") -> bool:
         """Turn off HA entity. Returns True if successful."""
         success = await self._call_service(plug, "turn_off")
@@ -127,6 +131,8 @@ class HomeAssistantService:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                if action == "turn_on" and not power_on_allowed():
+                    return False
                 response = await client.post(
                     f"{self.base_url}/api/services/{domain}/{action}",
                     headers=self._headers(),

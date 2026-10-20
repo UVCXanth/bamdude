@@ -26,6 +26,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
 from backend.app.services import ams_advertised_overlay as overlay, chamber_history, scheduled_drying
+from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.filament_intake import (
     item_descriptor,
     resolve_source_path,
@@ -361,6 +362,11 @@ class PrintScheduler:
         Returns True if this pass dispatched at least one item, so the caller can
         loop again quickly instead of sleeping the full interval (#2555).
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if not farm_startup_guard.allowed():
+            await self._tick_scheduled_drying(set())  # Follow already-running cycles; _try_start remains fenced.
+            return False
         if not self._scheduled_holds_seeded:
             await self._seed_scheduled_drying_holds()
         async with async_session() as db:
@@ -508,6 +514,8 @@ class PrintScheduler:
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:
                     continue
+                if printer_manager.is_connected(printer_id) and not farm_startup_guard.allowed(printer_id):
+                    continue
 
                 # Hold only this printer's pending work; a reachable HA sensor
                 # in its configured alert state is an operator-defined gate.
@@ -609,7 +617,7 @@ class PrintScheduler:
                             for extra_plug in auto_on_plugs[1:]:
                                 try:
                                     service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
-                                    await service.turn_on(extra_plug)
+                                    await service.turn_on(extra_plug) if farm_startup_guard.allowed() else False
                                     logger.info("Also powered on plug '%s' for printer %s", extra_plug.name, printer_id)
                                 except Exception as e:
                                     logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
@@ -1707,6 +1715,10 @@ class PrintScheduler:
           supports_drying_while_printing). Drying temperature is capped at
           max(40, preset_temp - 5) to protect spools mid-print.
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if not farm_startup_guard.allowed():
+            return
         queue_drying_enabled = await self._get_bool_setting(db, "queue_drying_enabled")
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
         print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
@@ -2281,7 +2293,7 @@ class PrintScheduler:
 
         # Turn on if not already on
         if status.get("state") != "ON":
-            success = await service.turn_on(plug)
+            success = await service.turn_on(plug) if farm_startup_guard.allowed() else False
             if not success:
                 logger.warning("Failed to turn on smart plug '%s'", plug.name)
                 return False
@@ -2625,6 +2637,9 @@ class PrintScheduler:
             except PrinterOccupancyConflict as exc:
                 await db.rollback()
                 logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
+                return
+            if not farm_startup_guard.allowed(printer.id):
+                await db.rollback()
                 return
             # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
             cooling = self._cooling_item_ids() - {item.id}

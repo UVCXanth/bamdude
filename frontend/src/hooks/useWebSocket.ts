@@ -620,6 +620,9 @@ export function useWebSocket() {
         }
         break;
 
+      case 'farm_startup_changed':
+        void queryClient.invalidateQueries({ queryKey: ['farm-startup'] });
+        break;
       case 'queue_changed':
         debouncedInvalidate('print-state-issues');
         // Auto-queue promotion creates a per-printer row in a scheduler

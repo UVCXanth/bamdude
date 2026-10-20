@@ -36,6 +36,7 @@ from typing import Any
 
 from zigpy.zcl import foundation
 
+from backend.app.services.farm_startup_guard import guarded_power_on, owned_power_off, power_on_allowed
 from backend.app.services.zigbee.coordinator import CoordinatorState, zigbee_coordinator
 from backend.app.services.zigbee.devices import ELECTRICAL_MEASUREMENT, METERING, ON_OFF
 from backend.app.services.zigbee.errors import describe_exception
@@ -209,6 +210,8 @@ class ZigbeeSmartPlugService:
     # ---- the plug driver interface ------------------------------------------
 
     async def _switch(self, plug: Any, command_id: int, what: str) -> bool:
+        if command_id == _CMD_ON and not power_on_allowed():
+            return False
         cluster = self._cluster(self._device_for(plug), ON_OFF)
         if cluster is None:
             logger.info("Zigbee plug %s: device not reachable, ignoring %s", plug.id, what)
@@ -322,9 +325,11 @@ class ZigbeeSmartPlugService:
             logger.warning("Zigbee plug %s: device refused power-on behavior '%s' (%r)", plug.id, mode, result)
         return ok
 
+    @guarded_power_on
     async def turn_on(self, plug: Any) -> bool:
         return await self._switch(plug, _CMD_ON, "turn on")
 
+    @owned_power_off
     async def turn_off(self, plug: Any) -> bool:
         return await self._switch(plug, _CMD_OFF, "turn off")
 

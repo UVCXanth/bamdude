@@ -89,6 +89,9 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  http.get('*/api/v1/system/farm-startup', () => HttpResponse.json({
+    state: 'running', boot_id: 'test', hold_id: null, reason: null, since: null, ready: true, can_resume: false,
+  })),
   // Spec part-thumbnails §11.2: the part editor asks for its plate objects; a test that does not
   // care sees none, instead of a request that leaves for the network (`onUnhandledRequest: 'bypass'`).
   http.get('/api/v1/product-parts/:id/image-candidates', () => HttpResponse.json([])),

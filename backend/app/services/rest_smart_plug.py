@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from backend.app.services.farm_startup_guard import guarded_power_on, owned_power_off, power_on_allowed
+
 if TYPE_CHECKING:
     from backend.app.models.smart_plug import SmartPlug
 
@@ -118,6 +120,10 @@ class RESTSmartPlugService:
                     except (json.JSONDecodeError, TypeError):
                         kwargs["content"] = body
 
+                from backend.app.services.farm_startup_guard import _power_generation
+
+                if _power_generation.get() is not None and not power_on_allowed():
+                    return None
                 response = await client.request(method.upper(), url, **kwargs)
                 response.raise_for_status()
                 return response
@@ -134,8 +140,11 @@ class RESTSmartPlugService:
             logger.error("Unexpected error communicating with REST smart plug at %s: %s", url, e)
             return None
 
+    @guarded_power_on
     async def turn_on(self, plug: "SmartPlug") -> bool:
         """Turn on the plug. Returns True if successful."""
+        if not power_on_allowed():
+            return False
         if not plug.rest_on_url:
             logger.warning("No ON URL configured for REST plug '%s'", plug.name)
             return False
@@ -151,6 +160,7 @@ class RESTSmartPlugService:
         logger.warning("Failed to turn ON REST smart plug '%s'", plug.name)
         return False
 
+    @owned_power_off
     async def turn_off(self, plug: "SmartPlug") -> bool:
         """Turn off the plug. Returns True if successful."""
         if not plug.rest_off_url:

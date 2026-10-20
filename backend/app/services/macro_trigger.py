@@ -133,6 +133,10 @@ async def _run_one(
             logger.info("[MACRO-TRIGGER] skipping stale macro '%s'", macro.name)
             return
 
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if not farm_startup_guard.allowed():
+            return
         success, err = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name, macro.mqtt_action_param)
         if not success:
             logger.warning(

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Review the farm after an unconfirmed shutdown.** New automatic prints, plug ON, drying and heating wait for an authorized operator to allow new starts. The pause survives restarts and restores; the first upgrade also asks once. Existing firmware-recovered prints are observed without another start command, while manual queue pauses, plate checks and other printer holds remain in place.
+
 ## [0.7.1] - 2026-10-19
 
 Images: `ghcr.io/kainpl/bamdude:0.7.1` / `kainpl/bamdude:0.7.1` (`:latest` tracks this release).

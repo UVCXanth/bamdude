@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
+from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.printer_manager import printer_manager
@@ -120,20 +121,14 @@ class SmartPlugManager:
             self._history_task = asyncio.create_task(self._history_loop())
             logger.info("Measurement history loop started")
 
-    def stop_scheduler(self):
-        """Stop the background scheduler."""
-        if self._scheduler_task:
-            self._scheduler_task.cancel()
-            self._scheduler_task = None
-            logger.info("Smart plug scheduler stopped")
-        if self._snapshot_task:
-            self._snapshot_task.cancel()
-            self._snapshot_task = None
-            logger.info("Smart plug energy snapshot loop stopped")
-        if self._history_task:
-            self._history_task.cancel()
-            self._history_task = None
-            logger.info("Measurement history loop stopped")
+    async def stop_scheduler(self):
+        tasks = [task for task in (self._scheduler_task, self._snapshot_task, self._history_task) if task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._scheduler_task = self._snapshot_task = self._history_task = None
+        logger.info("Smart plug scheduler and energy readers stopped")
 
     async def _history_loop(self):
         """Flush what was reported, read what does not report, prune daily.
@@ -328,11 +323,11 @@ class SmartPlugManager:
                     continue
 
                 # Check if we should turn on
-                if plug.schedule_on_time == current_time:
+                if plug.schedule_on_time == current_time and farm_startup_guard.allowed():
                     last_check = self._last_schedule_check.get((plug.id, "on"))
                     if last_check != scheduled_minute:
                         logger.info("Schedule: Turning on plug '%s' at %s", plug.name, current_time)
-                        success = await service.turn_on(plug)
+                        success = await service.turn_on(plug) if farm_startup_guard.allowed() else False
                         if success:
                             plug.last_state = "ON"
                             plug.last_checked = datetime.now(timezone.utc)
@@ -340,6 +335,16 @@ class SmartPlugManager:
 
                 # Check if we should turn off
                 if plug.schedule_off_time == current_time:
+                    if (
+                        farm_startup_guard.active
+                        and plug.controls_printer_power
+                        and plug.printer_id
+                        and (
+                            not farm_startup_guard.printer_ready(plug.printer_id)
+                            or (not farm_startup_guard.allowed() and printer_manager.is_print_active(plug.printer_id))
+                        )
+                    ):
+                        continue
                     last_check = self._last_schedule_check.get((plug.id, "off"))
                     if last_check != scheduled_minute:
                         logger.info("Schedule: Turning off plug '%s' at %s", plug.name, current_time)
@@ -401,7 +406,7 @@ class SmartPlugManager:
                 service = await self.get_service_for_plug(plug, db)
                 if may_run is not None and not may_run():
                     return
-                success = await service.turn_on(plug)
+                success = await service.turn_on(plug) if farm_startup_guard.allowed() else False
                 if success:
                     plug.last_state = "ON"
                     plug.last_checked = datetime.now(timezone.utc)
@@ -614,6 +619,9 @@ class SmartPlugManager:
             if may_run is not None and not may_run():
                 return
 
+            if controls_printer_power and not farm_startup_guard.printer_ready(printer_id):
+                return  # Keep persisted pending intent; unknown is not proof of idle.
+
             # #1890: never cut power while a print is loaded / running. The
             # delay fires unconditionally after N minutes, so if the user
             # re-started (or reprinted) in the meantime, the printer is active
@@ -732,6 +740,10 @@ class SmartPlugManager:
             while elapsed < max_wait:
                 if may_run is not None and not may_run():
                     return
+                if controls_printer_power and not farm_startup_guard.printer_ready(printer_id):
+                    await asyncio.sleep(check_interval)
+                    elapsed += check_interval
+                    continue
                 status = printer_manager.get_status(printer_id)
 
                 if status:
@@ -894,7 +906,7 @@ class SmartPlugManager:
         for plug_id in list(self._pending_off.keys()):
             self._cancel_pending_off(plug_id)
 
-    async def resume_pending_auto_offs(self):
+    async def resume_pending_auto_offs(self, printer_id: int | None = None):
         """Resume any pending auto-offs that were interrupted by a restart.
 
         Called on startup to check for plugs that had auto-off pending but
@@ -915,6 +927,10 @@ class SmartPlugManager:
                 pending_plugs = result.scalars().all()
 
                 for plug in pending_plugs:
+                    if printer_id is not None and plug.printer_id != printer_id:
+                        continue
+                    if plug.controls_printer_power and not farm_startup_guard.printer_ready(plug.printer_id):
+                        continue  # Revisited after this connection's reconciliation, not guessed idle.
                     # Check how long it's been pending (timeout after 2 hours)
                     if plug.auto_off_pending_since:
                         pending_since = plug.auto_off_pending_since

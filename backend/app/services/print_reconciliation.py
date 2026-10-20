@@ -1017,6 +1017,8 @@ async def reconcile_printer_prints(
     live_file: str,
     live_subtask_id: str = "",
     live_subtask_name: str = "",
+    *,
+    strict: bool = False,
 ) -> None:
     """Entry point — runs on the first full MQTT status after each fresh
     connect. Opens its own session and commits."""
@@ -1055,9 +1057,13 @@ async def reconcile_printer_prints(
             await db.commit()
     except _RepairSnapshotChanged:
         logger.info("reconcile: terminal queue repair deferred printer=%s reason=live_snapshot_changed", printer_id)
+        if strict:
+            raise
         return
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
+        if strict:
+            raise
 
     # Energy for a print that ended while we were down. Spawned rather than
     # awaited, and only after the commit: the reading is a live round-trip to
@@ -1093,6 +1099,8 @@ async def reconcile_printer_prints(
         resume, settle = await _stranded_swaps(printer_id, exclude=set(recovered))
     except Exception:  # noqa: BLE001 — the connect path survives it; the next edge looks again
         logger.exception("reconcile: could not look for an unsettled table swap on printer %d", printer_id)
+        if strict:
+            raise
         resume, settle = [], []
     if settle:
         await _resolve_pending_swaps(printer_id, settle)
@@ -1168,6 +1176,10 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
     A claim answered whose bookkeeping never ran (the process stopped after the answer) is settled the same way:
     released after a finished swap, held after a failed one.
     """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    if not farm_startup_guard.allowed():
+        return
     from types import SimpleNamespace
 
     from backend.app.core.database import async_session
@@ -1249,6 +1261,8 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                 )
                 if outcome == swap_terminal.CLAIM_BUSY:
                     return
+                if outcome == swap_terminal.CLAIM_HELD:
+                    return  # Still owed: keep its claim and do not manufacture an uncertain attempt.
                 if outcome == swap_terminal.CLAIMED:
                     state.claimed = True
                 else:

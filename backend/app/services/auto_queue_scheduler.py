@@ -51,6 +51,7 @@ from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance, swap_compatibility
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
+from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.filament_intake import (
     fail_auto_source,
     item_descriptor,
@@ -177,6 +178,10 @@ class AutoQueueScheduler:
 
     async def tick(self) -> None:
         """Single iteration: assign pending auto items to eligible printers."""
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if not farm_startup_guard.allowed():
+            return
         async with async_session() as db:
             sjf = await _get_bool_setting(db, SJF_SETTING_KEY)
             prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY, default=True)
@@ -573,6 +578,8 @@ class AutoQueueScheduler:
             try:
                 for plug in plugs:
                     service = await smart_plug_manager.get_service_for_plug(plug, db)
+                    if not farm_startup_guard.allowed():
+                        return False
                     await service.turn_on(plug)
             except Exception:
                 logger.exception("Failed to power on %s for auto item %s", printer.name, item.id)
@@ -707,6 +714,8 @@ class AutoQueueScheduler:
                     )
                 )
                 next_pos = (max_pos or 0) + 1
+                if not farm_startup_guard.allowed():
+                    raise AutoPlacementConflict("farm_recovery_hold")
                 claimed = await db.execute(
                     update(AutoQueueItem)
                     .where(

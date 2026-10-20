@@ -781,6 +781,9 @@ PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Resta
 
 
 async def _restore_backup(file: UploadFile, db: AsyncSession):
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    farm_startup_guard.hold("restore")
     import asyncio
     import tempfile
 
@@ -847,7 +850,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
-                smart_plug_manager.stop_scheduler()
+                await smart_plug_manager.stop_scheduler()
                 notification_service.stop_digest_scheduler()
                 await background_dispatch.stop()
                 await zigbee_supervisor.stop()
