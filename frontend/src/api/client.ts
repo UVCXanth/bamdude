@@ -2617,6 +2617,13 @@ export interface PlanPartCount {
  * pick, so it is NOT the plate's per-print yield: see `planMath.ts`.
  */
 export interface PlanRow {
+  line_token?: string | null;
+  entry_id?: string | null;
+  source_token?: string | null;
+  target_printer_id?: number | null;
+  manual?: boolean;
+  protected_count?: number;
+  issue?: string | null;
   /** `ProductPlate.id` — NOT the slicer's plate index. */
   plate_id: number;
   library_file_id: number;
@@ -2661,6 +2668,7 @@ export interface PlanRow {
  * move with the switch.
  */
 export interface PlanAlternative {
+  source_token?: string | null;
   /** `ProductPlate.id`. */
   plate_id: number;
   library_file_id: number;
@@ -2725,6 +2733,8 @@ export interface OrderPrintOptionsResponse {
 }
 
 export interface OrderPlan {
+  mode?: 'recommendation' | 'working';
+  working_revision?: number | null;
   inputs_token?: string | null;
   lines: LinePlan[];
   totals: PlanTotals;
@@ -6532,15 +6542,52 @@ export interface OrderForecastDetail extends OrderForecast {
 }
 
 export interface DraftEntry extends PlanEnqueueItem {
+  line_token?: string | null;
   entry_id: string;
   target?: PlanEnqueueTarget;
   source_token?: string | null;
 }
 export interface DraftPreviewRequest {
+  saved_revision?: number;
+  comparison_epoch?: number;
   schema_version?: 1;
   client_revision: string;
   inputs_token?: string | null;
   entries: DraftEntry[];
+}
+export interface WorkingEntry extends DraftEntry {
+  manual: boolean;
+  protected_count: number;
+}
+export interface WorkingPlan {
+  inputs_changed?: boolean;
+  saved_entries?: WorkingEntry[] | null;
+  saved_machine_seconds?: number | null;
+  schema_version: 1;
+  revision: number;
+  entries: WorkingEntry[];
+  saved_revision: number;
+  saved_at: string | null;
+  saved_by: string | null;
+  epoch: number;
+  saved_epoch: number | null;
+  active_operation: string | null;
+  inputs_token: string;
+  changed: boolean;
+  issues: { entry_id: string; code: string; current_source_token?: string }[];
+}
+export interface PlanSubmission {
+  operation_id: string;
+  status: 'pending' | 'complete' | 'cancelled';
+  created: { entry_id: string; count: number; queue_kind: string; queue_item_ids: number[] }[];
+  remaining: { entry_id: string; count: number }[];
+  error?: string;
+}
+export interface PlanProposal {
+  proposal_token: string;
+  inputs_token: string;
+  entries: WorkingEntry[];
+  previous_entries: WorkingEntry[];
 }
 export interface DraftWorkloadGroup {
   model?: string | null;
@@ -13035,8 +13082,8 @@ export const api = {
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
   updateOrder: (id: number, data: OrderUpdate) =>
     request<Order>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  deleteOrder: (id: number) =>
-    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
+  deleteOrder: (id: number, options?: { onlyIfUnsubmitted: boolean }) =>
+    request<{ message: string }>(`/projects/${id}${options?.onlyIfUnsubmitted ? '?only_if_unsubmitted=true' : ''}`, { method: 'DELETE' }),
   duplicateOrder: (id: number, name?: string) =>
     request<Order>(`/projects/${id}/duplicate`, {
       method: 'POST',
@@ -13123,6 +13170,21 @@ export const api = {
   setOrderPrintOptions: (id: number, overrides: OrderPrintOptionsResponse['overrides']) =>
     request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
+  getWorkingPlan: (id: number) => request<WorkingPlan>(`/projects/${id}/working-plan`),
+  writeWorkingPlan: (id: number, body: { expected_revision: number; inputs_token?: string; entries: WorkingEntry[] }) =>
+    request<WorkingPlan>(`/projects/${id}/working-plan`, { method: 'PUT', body: JSON.stringify(body) }),
+  actWorkingPlan: (id: number, action: 'save' | 'discard', state: WorkingPlan) =>
+    request<WorkingPlan>(`/projects/${id}/working-plan/${action}`, { method: 'POST', body: JSON.stringify({
+      expected_revision: state.revision, expected_saved_revision: state.saved_revision,
+      expected_epoch: state.epoch, inputs_token: state.inputs_token,
+    }) }),
+  replanWorkingPlan: (id: number, body: { expected_revision: number; kind: 'remainder' | 'rebuild'; inputs_token?: string; apply?: boolean; proposal_token?: string }) =>
+    request<PlanProposal | WorkingPlan>(`/projects/${id}/working-plan/replan`, { method: 'POST', body: JSON.stringify(body) }),
+  registerPlanSubmission: (id: number, body: { operation_id: string; expected_revision: number; parts: { entry_id: string; count: number }[] }) =>
+    request<PlanSubmission>(`/projects/${id}/working-plan/submissions`, { method: 'POST', body: JSON.stringify(body) }),
+  getPlanSubmission: (id: number, operation: string) => request<PlanSubmission>(`/projects/${id}/working-plan/submissions/${operation}`),
+  actPlanSubmission: (id: number, operation: string, action: 'execute' | 'cancel') =>
+    request<PlanSubmission>(`/projects/${id}/working-plan/submissions/${operation}/${action}`, { method: 'POST' }),
   previewOrderDraft: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>
     request<DraftPreview>(`/projects/${id}/plan/forecast-preview`, { method: 'POST', body: JSON.stringify(body), signal }),
   previewDraftFilament: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>

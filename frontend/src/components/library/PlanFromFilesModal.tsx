@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, Loader2 } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { Order, PartsPreview } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -56,6 +56,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
   const [nameEdited, setNameEdited] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<number | null>(null);
   const [enqueued, setEnqueued] = useState(false);
+  const [retained, setRetained] = useState(false);
 
   const defaultName = preview.data?.files[0] ? stem(preview.data.files[0].filename) : '';
   const name = nameEdited ?? defaultName;
@@ -92,7 +93,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
   const forgetOrder = useForgetOnUnmount(['project', orderId]);
 
   const cancel = useMutation({
-    mutationFn: () => api.deleteOrder(orderId as number),
+    mutationFn: () => api.deleteOrder(orderId as number, { onlyIfUnsubmitted: true }),
     // ⚠️ The LISTS only, exactly as the order page does it. `invalidateOrderViews`
     // marks the `project` prefix — and the plan and forecast — stale while this
     // dialog is still mounted and watching all three, so TanStack refetched the
@@ -104,7 +105,12 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
       forgetOrder();
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => {
+      if (e instanceof ApiError && e.code === 'order_has_work') {
+        setRetained(true);
+        showToast(t('workingPlan.orderRetained'), 'info');
+      } else showToast(e.message, 'error');
+    },
   });
 
   const finish = (key: 'created' | 'queued') => {
@@ -246,6 +252,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
           {order.data ? (
             // Sending the plan files new work under the order (Fф, WS-13 E13 ORD-33).
             <PlanBlock
+              key={order.data.id}
               order={order.data}
               canEdit={canFileFuturePrint(hasPermission)}
               variant="dialog"
@@ -260,8 +267,8 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
               {t('orders.fromFiles.openOrder')}
             </SectionLink>
             <div className="flex gap-2">
-              {enqueued ? (
-                <Button onClick={() => finish('queued')}>{t('orders.fromFiles.close')}</Button>
+              {enqueued || retained ? (
+                <Button onClick={() => finish(enqueued ? 'queued' : 'created')}>{t('orders.fromFiles.close')}</Button>
               ) : (
                 <>
                   {/* «Cancel» deletes the order this dialog created — the right to delete orders

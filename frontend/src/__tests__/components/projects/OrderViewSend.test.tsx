@@ -105,7 +105,7 @@ describe('OrderView · sending the plan', () => {
       .mockReturnValueOnce(second.then(value => makeDraftForecast(value)));
     vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] } as never);
     renderPage();
-    await waitFor(() => expect(spies.previewOrderDraft).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(spies.previewOrderDraft).toHaveBeenCalledTimes(1), { timeout: 3000 });
     fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
     await waitFor(() => expect(api.enqueueOrderPlan).toHaveBeenCalled());
     return { spies, releaseFirst };

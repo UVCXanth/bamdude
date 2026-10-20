@@ -99,6 +99,7 @@ from backend.app.schemas.order_print_options import (
     capabilities,
 )
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
+from backend.app.schemas.order_working_plan import ReplanRequest, SubmissionRequest, WorkingAction, WorkingWrite
 from backend.app.schemas.plate_fit import PlateFitPlate, PlateFitRequest, PlateFitResponse
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -1448,6 +1449,10 @@ async def update_project(
         # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
         project.contact_id = None
     if project.status != status_before:
+        if project.status in ("completed", "cancelled"):
+            from backend.app.services.order_plan_submission import fence
+
+            await fence(db, project.id)
         await order_journal.record(
             db, project.id, "status_changed", {"from": status_before, "to": project.status}, actor=current_user
         )
@@ -1717,10 +1722,15 @@ async def take_stock(
 async def delete_project(
     project_id: int,
     request: Request,
+    only_if_unsubmitted: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_DELETE),
 ):
     """Archives and queue rows survive, unlinked (SET NULL done explicitly — SQLite enforces nothing)."""
+    if only_if_unsubmitted:
+        from backend.app.services import order_plan_access
+
+        discard_access = await order_plan_access.capture(request, db, current_user)
     project = await _get_project(db, project_id)
     gated = {line.product_id for line in project.lines}
     # The gates of its products first (WS-13 E1 BL3): the cascade below may delete a
@@ -1756,6 +1766,22 @@ async def delete_project(
             await finished_stock.lock_lines_with_parts(db, project.lines)
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
+    if only_if_unsubmitted:
+        # The library wizard may discard an unsubmitted draft, not un-file
+        # work whose response was lost. Lines precede draft, matching the FK
+        # key-share order of publication; this check is inside that guard.
+        if not still_owns_its_stock:
+            await finished_stock.lock_lines_with_parts(db, project.lines)
+        from backend.app.services import order_plan_submission, order_working_plan
+
+        draft = await order_working_plan.lock(db, project_id)
+        await order_plan_access.fresh(db, discard_access, edit=False, delete=True)
+        has_work = bool(draft and draft.epoch)
+        for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
+            has_work |= await db.scalar(select(model.id).where(model.project_id == project_id).limit(1)) is not None
+        if has_work:
+            raise HTTPException(409, {"code": "order_has_work"})
+        await order_plan_submission.fence(db, project_id)
     for line in list(project.lines):
         if still_owns_its_stock:
             await _release(db, line, part_stock.NOTE_PROJECT_DELETED, actor)
@@ -1801,6 +1827,15 @@ async def delete_project(
         if prints_are_free:
             await part_stock.credit_if_unfiled(db, archive, note=part_stock.NOTE_PROJECT_DELETED)
     line_products = {line.product_id for line in project.lines}
+    # SQLite does not enforce cascades; receipts belong to this order only.
+    from sqlalchemy import delete
+
+    from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSubmission, OrderWorkingPlan
+
+    operations = select(OrderPlanSubmission.id).where(OrderPlanSubmission.plan_id == project_id)
+    await db.execute(delete(OrderPlanReceipt).where(OrderPlanReceipt.operation_id.in_(operations)))
+    await db.execute(delete(OrderPlanSubmission).where(OrderPlanSubmission.plan_id == project_id))
+    await db.execute(delete(OrderWorkingPlan).where(OrderWorkingPlan.id == project_id))
     # The journal goes with the order — in code, SQLite runs no CASCADE.
     await order_journal.delete_for_project(db, project_id)
     # The order row itself goes LAST and without waiting (WS-13 E1 BL6): its FOR UPDATE
@@ -3654,6 +3689,8 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int], file_names: di
     part_names = plan.part_names
     product_names = plan.product_names
     return OrderPlanResponse(
+        mode=plan.mode,
+        working_revision=plan.working_revision,
         lines=[
             LinePlanOut(
                 line_id=line.line_id,
@@ -3663,6 +3700,13 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int], file_names: di
                 outstanding_before=_counts(line.outstanding_before, part_names),
                 rows=[
                     PlanRowOut(
+                        entry_id=row.entry_id,
+                        line_token=row.line_token,
+                        source_token=row.source_token,
+                        target_printer_id=row.target_printer_id,
+                        manual=row.manual,
+                        protected_count=row.protected_count,
+                        issue=row.issue,
                         plate_id=row.plate_id,
                         library_file_id=row.library_file_id,
                         plate_index=row.plate_index,
@@ -3683,6 +3727,7 @@ def _plan_response(plan: OrderPlan, pending_auto: dict[int, int], file_names: di
                         # nobody has made yet.
                         alternatives=[
                             PlanAlternativeOut(
+                                source_token=alt.source_token,
                                 plate_id=alt.plate_id,
                                 library_file_id=alt.library_file_id,
                                 plate_index=alt.plate_index,
@@ -3761,9 +3806,14 @@ async def get_order_plan(
         await _pending_auto_prints(db, [line.line_id for line in plan.lines]),
         await _plan_file_names(db, _plan_file_ids(plan), user, scope),
     )
-    from backend.app.services import order_draft
-
-    response.inputs_token = (await order_draft.inputs(db, project_id)).token
+    response.inputs_token = plan.inputs_token
+    for line in response.lines:
+        for row in line.rows:
+            if row.hidden:
+                row.source_token = None
+            for alternative in row.alternatives:
+                if alternative.hidden:
+                    alternative.source_token = None
     return response
 
 
@@ -3786,6 +3836,8 @@ async def preview_order_draft(
         inputs_token=data.inputs_token,
         visible=lambda file: file_name_visible(file, user, scope),
         printer_scope=key_printer_scope(request),
+        saved_revision=data.saved_revision,
+        comparison_epoch=data.comparison_epoch,
     )
     return DraftPreviewResponse(client_revision=data.client_revision, **result)
 
@@ -3814,6 +3866,151 @@ async def preview_draft_filament(
         stock_unavailable=needs.stock_unavailable,
         assumptions=list(filament_needs.ASSUMPTIONS),
     )
+
+
+@router.get("/{project_id}/working-plan")
+async def read_working_plan(
+    project_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_working_plan
+
+    scope = await library_name_scope(request, db, user)
+    return await order_working_plan.read(db, project_id, lambda file: file_name_visible(file, user, scope))
+
+
+@router.put("/{project_id}/working-plan")
+async def write_working_plan(
+    project_id: int,
+    data: WorkingWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_plan_access, order_working_plan
+
+    access = await order_plan_access.capture(request, db, user)
+    return await order_working_plan.write(db, project_id, data, access)
+
+
+@router.post("/{project_id}/working-plan/save")
+async def save_working_baseline(
+    project_id: int,
+    data: WorkingAction,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_plan_access, order_working_plan
+
+    return await order_working_plan.act(db, project_id, data, await order_plan_access.capture(request, db, user))
+
+
+@router.post("/{project_id}/working-plan/discard")
+async def discard_working_draft(
+    project_id: int,
+    data: WorkingAction,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_plan_access, order_working_plan
+
+    return await order_working_plan.act(
+        db, project_id, data, await order_plan_access.capture(request, db, user), discard=True
+    )
+
+
+@router.post("/{project_id}/working-plan/replan")
+async def replan_working_draft(
+    project_id: int,
+    data: ReplanRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    from backend.app.services import order_plan_access, order_working_plan
+
+    return await order_working_plan.replan(db, project_id, data, await order_plan_access.capture(request, db, user))
+
+
+@router.post("/{project_id}/working-plan/submissions")
+async def register_plan_submission(
+    project_id: int,
+    data: SubmissionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+    _queue: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    from backend.app.services import order_plan_access, order_plan_submission
+
+    return await order_plan_submission.register(
+        db, project_id, data, await order_plan_access.capture(request, db, user)
+    )
+
+
+@router.get("/{project_id}/working-plan/submissions/{operation_id}")
+async def read_plan_submission(
+    project_id: int,
+    operation_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+    _queue: User | None = RequireAnyPermission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN),
+):
+    from backend.app.services import order_plan_access, order_plan_submission
+
+    return await order_plan_submission.read(
+        db, project_id, operation_id, await order_plan_access.capture(request, db, user)
+    )
+
+
+@router.post("/{project_id}/working-plan/submissions/{operation_id}/{action}")
+async def act_plan_submission(
+    project_id: int,
+    operation_id: str,
+    action: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequireAnyPermission(*_FILES_FUTURE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+    _queue: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    from backend.app.services import order_plan_access, order_plan_submission
+
+    access = await order_plan_access.capture(request, db, user)
+    if action == "cancel":
+        return await order_plan_submission.cancel(db, project_id, operation_id, access)
+    if action != "execute":
+        raise HTTPException(404, "Unknown submission action")
+
+    async def publish(part, context, actor):
+        entry = part["entry"]
+        data = PlanEnqueueRequest.model_validate(
+            {
+                "target": entry["target"],
+                "items": [
+                    {
+                        "line_id": entry["line_id"],
+                        "plate_id": entry["plate_id"],
+                        "count": part["count"],
+                    }
+                ],
+            }
+        )
+        return await _enqueue_order_plan(
+            project_id, data, db, actor, consumption=context, frozen_options=part["frozen_options"]
+        )
+
+    return await order_plan_submission.execute(db, project_id, operation_id, access, publish)
 
 
 async def _order_print_options_response(db, project, user) -> OrderPrintOptionsResponse:
@@ -4017,6 +4214,10 @@ async def enqueue_order_plan(
     current_user: User | None = RequireAnyPermission(*_FILES_FUTURE),
     _queue: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
+    return await _enqueue_order_plan(project_id, data, db, current_user)
+
+
+async def _enqueue_order_plan(project_id, data, db, current_user, *, consumption=None, frozen_options=None):
     """Send plan rows to the auto-queue, or to one printer's queue.
 
     Both queue doors (``POST /queue/``, ``POST /auto-queue/``) require
@@ -4060,7 +4261,11 @@ async def enqueue_order_plan(
     lines_by_id = {line.id: line for line in project.lines}
     # Plain validated values BEFORE any writer commits. This is the order's
     # snapshot at job creation, not a reference to its future settings.
-    order_options = OrderPrintOptions(overrides=project.order_print_options or {}).model_dump()["overrides"]
+    order_options = (
+        frozen_options["order_overrides"]
+        if frozen_options is not None
+        else OrderPrintOptions(overrides=project.order_print_options or {}).model_dump()["overrides"]
+    )
     await order_filing.resolve_link(db, project_id, None)
 
     printer_id: int | None = None
@@ -4150,7 +4355,7 @@ async def enqueue_order_plan(
     # plates were sliced for two machines legitimately reads two profiles. A
     # file that names no model falls back to the operator's most recent row.
     profiles = {
-        model: await preference_options(db, current_user, model)
+        model: await preference_options(db, current_user, model) if frozen_options is None else None
         for model in ({printer_model} if printer_id is not None else {p.sliced_for_model for p in resolved})
     }
 
@@ -4184,6 +4389,8 @@ async def enqueue_order_plan(
         else:
             options = profile.for_printer_queue() if profile else {}
         options.update(explicit_options[plate.sliced_for_model])
+        if frozen_options is not None:
+            options = deepcopy(frozen_options["options"])
         # Explicit order choices win over the profile. Swap macros are NOT decided
         # here from the library row: the printer branch's writer decides them from
         # the declaration its capture confirms and that printer's swap mode, and an
@@ -4204,6 +4411,7 @@ async def enqueue_order_plan(
                     current_user,
                     requirements_cache=requirements_cache,
                     order_print_options=order_options or None,
+                    **({"consumption": consumption} if consumption is not None else {}),
                 )
             else:
                 rows, _batch_id = await enqueue_batch_copies(
@@ -4216,6 +4424,7 @@ async def enqueue_order_plan(
                     project_id=project_id,
                     project_line_id=plate.line_id,
                     created_by_id=current_user.id if current_user else None,
+                    **({"consumption": consumption} if consumption is not None else {}),
                     **options,
                 )
         except Exception as exc:

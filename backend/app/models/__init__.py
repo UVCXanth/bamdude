@@ -20,6 +20,7 @@ from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, 
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.orca_base_cache import OrcaBaseProfile
+from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSubmission, OrderWorkingPlan
 from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
 from backend.app.models.printer import Printer
@@ -42,6 +43,9 @@ from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 
 __all__ = [
+    "OrderWorkingPlan",
+    "OrderPlanSubmission",
+    "OrderPlanReceipt",
     "Macro",
     "Printer",
     "PrintArchive",

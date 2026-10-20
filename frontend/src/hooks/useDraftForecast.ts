@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError, type DraftPreview, type DraftPreviewRequest, type OrderNeeds, type PlanEnqueueItem } from '../api/client';
+import { api, ApiError, type DraftEntry, type DraftPreview, type DraftPreviewRequest, type OrderNeeds, type PlanEnqueueItem } from '../api/client';
 
 export const DRAFT_DEBOUNCE_MS = 500;
 export interface DraftForecastState {
@@ -15,9 +15,10 @@ export interface DraftForecastState {
 
 /** One owner for exact work, shared by the page, figures, lines and modal. */
 export function useDraftForecast(orderId: number, items: PlanEnqueueItem[], inputsToken: string | null | undefined,
-  enabled: boolean, invalid: boolean, refreshRevision = 0) {
+  enabled: boolean, invalid: boolean, refreshRevision = 0,
+  working?: { entries: DraftEntry[]; saved_revision: number; epoch: number }) {
   const queryClient = useQueryClient();
-  const signature = JSON.stringify([items, inputsToken, refreshRevision]);
+  const signature = JSON.stringify([items, inputsToken, refreshRevision, working]);
   const [settled, setSettled] = useState('');
   useEffect(() => {
     if (!enabled || invalid) return;
@@ -27,8 +28,10 @@ export function useDraftForecast(orderId: number, items: PlanEnqueueItem[], inpu
   const body = useMemo<DraftPreviewRequest>(() => ({
     client_revision: signature.length > 90 ? String(hash(signature)) : signature,
     inputs_token: inputsToken,
-    entries: items.map((item, index) => ({ ...item, entry_id: `${item.line_id}:${item.plate_id}:${index}` })),
-  }), [signature, inputsToken, items]);
+    saved_revision: working?.saved_revision,
+    comparison_epoch: working?.epoch,
+    entries: working?.entries.filter(e => e.count > 0) ?? items.map((item, index) => ({ ...item, entry_id: `${item.line_id}:${item.plate_id}:${index}` })),
+  }), [signature, inputsToken, items, working]);
   const current = enabled && !invalid && settled === signature;
   const forecast = useQuery({
     queryKey: ['order-draft-forecast', orderId, signature],

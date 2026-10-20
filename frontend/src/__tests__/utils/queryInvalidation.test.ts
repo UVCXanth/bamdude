@@ -128,6 +128,8 @@ describe('invalidateOrderViews', () => {
       // spec 2026-09-06: the ETA is read off the plan, so it moves with it.
       'order-forecast',
       'orders-forecast',
+      'order-draft-forecast',
+      'order-draft-filament',
       // spec 2026-09-07: the need moves with the plan
       'order-filament',
       'orders-filament',

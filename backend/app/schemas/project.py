@@ -597,6 +597,7 @@ class PlanPartCount(BaseModel):
 
 
 class PlanAlternativeOut(BaseModel):
+    source_token: str | None = None
     """Another plate of the row's line that makes exactly the same counted parts.
 
     The same part is routinely sliced once per printer model — two files, one
@@ -629,6 +630,13 @@ class PlanAlternativeOut(BaseModel):
 
 
 class PlanRowOut(BaseModel):
+    line_token: str | None = None
+    entry_id: str | None = None
+    source_token: str | None = None
+    target_printer_id: int | None = None
+    manual: bool = False
+    protected_count: int = 0
+    issue: str | None = None
     """One plate, printed ``count`` times.
 
     ``print_time_seconds`` / ``filament_used_grams`` / ``cost`` are PER PRINT —
@@ -689,6 +697,8 @@ class PlanTotalsOut(BaseModel):
 
 class OrderPlanResponse(BaseModel):
     inputs_token: str | None = None
+    mode: str = "recommendation"
+    working_revision: int | None = None
     lines: list[LinePlanOut] = []
     totals: PlanTotalsOut
     # The engine's iteration guard stopped the covering of at least one line, so

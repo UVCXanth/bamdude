@@ -507,6 +507,9 @@ async def close(
     # and then no statement at all.
     await product_gate(db, {line.product_id for line in lines})
     await lock_order(db, project.id)
+    from backend.app.services.order_plan_submission import fence
+
+    await fence(db, project.id)
     ordered = sorted(lines, key=lambda line: line.id)
     # Positions, lines, parts — before the first line is handled (BL0).
     await finished_stock.lock_lines_with_parts(db, ordered)

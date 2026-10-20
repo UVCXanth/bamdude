@@ -152,7 +152,7 @@ function DraftForecastBody({ draft }: { draft: DraftForecastState }) {
   const delta = result?.comparison.machine_seconds_delta;
   return <div className="space-y-3 text-sm" data-testid="draft-forecast">
     {draft.pending && <p className="text-bambu-gray" role="status">{t('orderDraft.updating')}</p>}
-    {draft.error && <p className="text-red-500">{t('farmForecast.error')} <Button size="sm" onClick={draft.retry}>{t('common.retry')}</Button></p>}
+    {draft.error && <p className="text-red-600 dark:text-red-500">{t('farmForecast.error')} <Button size="sm" onClick={draft.retry}>{t('common.retry')}</Button></p>}
     {result && <>
       <div>
         <p className="text-bambu-gray-light">{t('orderDraft.machineHours')}</p>
@@ -182,9 +182,14 @@ function DraftForecastBody({ draft }: { draft: DraftForecastState }) {
       <div className="border-t border-bambu-dark-tertiary pt-2">
         <p className="text-xs text-bambu-gray">{t(result.coverage_complete ? 'orderDraft.orderDate' : 'orderDraft.selectedDate')}</p>
         {result.forecast?.now_eta ? <>
-          <p className={`font-medium ${result.forecast.late ? 'text-red-500' : 'text-white'}`}
+          <p className={`font-medium ${result.forecast.late ? 'text-red-600 dark:text-red-500' : 'text-white'}`}
             data-testid="order-forecast-eta">{when(result.forecast.now_eta)}</p>
           {!result.forecast.eta_complete && <p className="text-amber-600 dark:text-amber-400">{t('orderDraft.incompleteDate')}</p>}
+          {result.comparison.now_seconds_delta != null && <p className="text-xs text-bambu-gray-light" data-testid="draft-date-delta">
+            {result.comparison.now_seconds_delta === 0 ? t('workingPlan.dateSame') : t(result.comparison.now_seconds_delta < 0 ? 'workingPlan.dateSooner' : 'workingPlan.dateLater', {
+              time: Math.abs(result.comparison.now_seconds_delta) < 60 ? t('orderDraft.lessThanMinute') : formatDuration(Math.abs(result.comparison.now_seconds_delta)),
+            })}
+          </p>}
           {result.forecast.ahead_count > 0 && result.forecast.after_eta && <p className="text-xs text-bambu-gray">
             {t('orders.figures.afterAhead', { count: result.forecast.ahead_count, when: when(result.forecast.after_eta) })}
           </p>}

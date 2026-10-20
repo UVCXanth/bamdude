@@ -60,7 +60,13 @@ async def inputs(db, project_id: int) -> Inputs:
     queued = await queued_yield_by_line(db, recipes, ctx.lines, counted_parts_by_line({project_id: figures}))
     rate = await default_rate_per_kg(db)
     price = rate / 1000 if rate > 0 else None
-    baseline = plan_lines(ctx, figures, recipes, queued, price)
+    return from_context(ctx, recipes, queued, price)
+
+
+def from_context(ctx, recipes, queued, price, *, baseline=None):
+    recipes = {product_id: recipes.get(product_id, []) for product_id in ctx.products_by_id}
+    figures = attribute(ctx)[0]
+    baseline = baseline if baseline is not None else plan_lines(ctx, figures, recipes, queued, price)
     source_tokens = {
         plate.id: digest(
             [
@@ -81,6 +87,7 @@ async def inputs(db, project_id: int) -> Inputs:
             ctx.project.status,
             ctx.project.order_print_options,
             ctx.project.auto_eject_enabled,
+            {line.id: line.plan_identity for line in ctx.lines},
             [
                 (
                     line.line_id,
@@ -109,6 +116,9 @@ def project(data: Inputs, entries: list[DraftEntry], *, visible=None):
         line = requested.get(entry.line_id)
         if line is None:
             raise HTTPException(422, {"code": "invalid_draft", "message": "Order line does not belong to this order"})
+        if entry.line_token is not None and entry.line_token != line.plan_identity:
+            issues.append({"entry_id": entry.entry_id, "code": "line_unavailable"})
+            continue
         candidate = next((c for c in data.recipes.get(line.product_id, []) if c[0].id == entry.plate_id), None)
         if candidate is None or (visible and not visible(candidate[1])):
             issues.append({"entry_id": entry.entry_id, "code": "source_unavailable"})
@@ -172,6 +182,9 @@ def project(data: Inputs, entries: list[DraftEntry], *, visible=None):
         line.unsatisfiable = []
         line.unsatisfiable_reasons = {}
     plan = replace(data.baseline, lines=list(lines.values()), truncated=False)
+    plan.unplanned_parts = {
+        line.line_id: sum(p["missing"] for p in coverage if p["line_id"] == line.line_id) for line in plan.lines
+    }
     plan.totals = plan_totals(plan.lines, data.price)
     return plan, coverage, issues, targets
 
@@ -198,7 +211,8 @@ def workload(plan, entries, issues):
     rows = [r for line in plan.lines for r in line.rows]
     out = group(rows)
     bad_ids = {i["entry_id"] for i in issues}
-    missing = sum(e.count for e in entries if e.entry_id in bad_ids)
+    represented = {row.entry_id for row in rows if row.entry_id}
+    missing = sum(e.count for e in entries if e.entry_id in bad_ids and e.entry_id not in represented)
     if missing:
         out.update(unknown_prints=out["unknown_prints"] + missing, total_seconds=None, prints=out["prints"] + missing)
     models = sorted({r.printer_model for r in rows}, key=lambda m: m or "")
@@ -206,7 +220,11 @@ def workload(plan, entries, issues):
     out["by_line"] = []
     for line in plan.lines:
         counts = group(line.rows)
-        missing_line = sum(e.count for e in entries if e.line_id == line.line_id and e.entry_id in bad_ids)
+        missing_line = sum(
+            e.count
+            for e in entries
+            if e.line_id == line.line_id and e.entry_id in bad_ids and e.entry_id not in represented
+        )
         if missing_line:
             counts.update(
                 total_seconds=None,
@@ -240,7 +258,18 @@ async def simulate(snapshot, plans, walk, project_id, now):
             raise
 
 
-async def preview(db, project_id, entries, now: datetime, *, inputs_token=None, visible=None, printer_scope=None):
+async def preview(
+    db,
+    project_id,
+    entries,
+    now: datetime,
+    *,
+    inputs_token=None,
+    visible=None,
+    printer_scope=None,
+    saved_revision=None,
+    comparison_epoch=None,
+):
     data = await inputs(db, project_id)
     if inputs_token and inputs_token != data.token:
         raise HTTPException(
@@ -259,6 +288,19 @@ async def preview(db, project_id, entries, now: datetime, *, inputs_token=None, 
         "totals": asdict(plan.totals) | {"rows": sum(len(line.rows) for line in plan.lines)},
         "workload": workload(plan, entries, issues),
     }
+    from backend.app.services.order_working_plan import comparison
+
+    answer["comparison"], previous = await comparison(
+        db,
+        data,
+        plan,
+        entries,
+        coverage,
+        issues,
+        visible=visible,
+        saved_revision=saved_revision,
+        epoch=comparison_epoch,
+    )
     try:
         snapshot = await ff.load_snapshot(db, now)
         if printer_scope is not None:
@@ -274,9 +316,15 @@ async def preview(db, project_id, entries, now: datetime, *, inputs_token=None, 
         f.late = complete and ff.eta_is_late(f.now_eta if f.eta_complete else None, data.ctx.project.due_date)
         if issues:
             f.eta_complete = False
-        if not complete:
-            f.incomplete_reasons.append(("unplanned_parts", sum(p["missing"] for p in coverage)))
         answer.update(forecast=wire(f), order_ready_at=f.now_eta if complete and f.eta_complete else None)
+        if previous is not None and complete and f.eta_complete:
+            baseline_plans = {**plans, project_id: previous}
+            old = await simulate(snapshot, baseline_plans, walk, project_id, now)
+            if old.eta_complete:
+                for key in ("now_seconds", "after_seconds"):
+                    before, after = getattr(old, key), getattr(f, key)
+                    if before is not None and after is not None:
+                        answer["comparison"][key + "_delta"] = after - before
     except Exception as exc:
         logger.warning("Draft forecast unavailable: %s", type(exc).__name__)
         await db.rollback()

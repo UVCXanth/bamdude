@@ -7,11 +7,13 @@ the claim is the one §2 exemption — a print BamDude never sent has no source 
 copy at the moment its row is created.
 """
 
+from __future__ import annotations
+
 import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +41,9 @@ from backend.app.services.queue_source_capture import (
     swap_request,
 )
 from backend.app.services.queue_sources import CaptureRequest
+
+if TYPE_CHECKING:
+    from backend.app.services.order_plan_submission import PlanConsumption
 
 
 def _item_columns(
@@ -322,6 +327,7 @@ async def enqueue_batch_copies(
     filament_overrides: list[dict] | None = None,
     manual_mapping: bool = False,
     requirements_cache=None,
+    consumption: PlanConsumption | None = None,
 ) -> tuple[list[PrintQueueItem], str | None]:
     """Append ``count`` identical pending items to the given printer's queue.
 
@@ -414,6 +420,11 @@ async def enqueue_batch_copies(
 
         async def attach(session: AsyncSession, source: QueueSource) -> None:
             async with queue_scope_lock(session, queue_id):
+                ticket = None
+                if consumption is not None:
+                    from backend.app.services import order_plan_submission
+
+                    ticket = await order_plan_submission.claim(session, consumption, source.sha256)
                 result = await session.execute(
                     select(func.max(PrintQueueItem.position))
                     .where(PrintQueueItem.queue_id == queue_id)
@@ -457,6 +468,9 @@ async def enqueue_batch_copies(
                     inherited_settings=archive_settings(prior),
                     preserve=bool(prior),
                 )
+                if ticket is not None:
+                    eject = ticket.part["auto_eject"]["enabled"]
+                    eject_settings = ticket.part["auto_eject"]["settings"]
                 stamped_routing = record_queue_source(routing, source)
                 items: list[PrintQueueItem] = []
                 for i in range(count):
@@ -502,6 +516,8 @@ async def enqueue_batch_copies(
                 session.add_all(items)
                 await session.flush()
                 created_ids.extend(item.id for item in items)
+                if ticket is not None:
+                    await order_plan_submission.consume(session, ticket, created_ids, "printer")
                 await update_queue_counters(session, queue_id)
 
         await publish_staged(staged, attach)

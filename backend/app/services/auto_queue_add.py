@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import uuid
 from copy import deepcopy
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -54,6 +55,9 @@ from backend.app.services.queue_source_capture import (
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
+if TYPE_CHECKING:
+    from backend.app.services.order_plan_submission import PlanConsumption
+
 
 async def add_items_to_auto_queue(
     db: AsyncSession,
@@ -62,6 +66,7 @@ async def add_items_to_auto_queue(
     *,
     requirements_cache: PrintRequirementsCache | None = None,
     order_print_options: dict | None = None,
+    consumption: PlanConsumption | None = None,
 ) -> list[AutoQueueItem]:
     """Validate, build and persist the auto-queue rows ``data`` asks for.
 
@@ -136,7 +141,14 @@ async def add_items_to_auto_queue(
         if any(o.slot_id not in used_slots for o in data.filament_overrides or []):
             raise HTTPException(422, routing_detail("override_slot_not_used"))
         created_ids = await _publish_items(
-            data, staged, resolved, effective_project_id, current_user, library_file, order_print_options
+            data,
+            staged,
+            resolved,
+            effective_project_id,
+            current_user,
+            library_file,
+            order_print_options,
+            **({"consumption": consumption} if consumption is not None else {}),
         )
     except BaseException:
         await discard_staged(staged)
@@ -163,6 +175,7 @@ async def _publish_items(
     current_user: User | None,
     library_file: LibraryFile | None,
     order_print_options: dict | None = None,
+    consumption: PlanConsumption | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write every row in ONE transaction (§5 step 6).
 
@@ -194,6 +207,11 @@ async def _publish_items(
     created_ids: list[int] = []
 
     async def attach(session: AsyncSession, source: QueueSource) -> None:
+        ticket = None
+        if consumption is not None:
+            from backend.app.services import order_plan_submission
+
+            ticket = await order_plan_submission.claim(session, consumption, source.sha256)
         # Compute next position (auto-queue is global, single ordering) — read in
         # the same transaction as the inserts it feeds.
         max_pos_q = await session.execute(
@@ -255,7 +273,11 @@ async def _publish_items(
 
             from backend.app.services.order_auto_eject import capture
 
-            eject, eject_settings = await capture(session, project_id=effective_project_id, options=data)
+            if ticket is not None:
+                eject = ticket.part["auto_eject"]["enabled"]
+                eject_settings = deepcopy(ticket.part["auto_eject"]["settings"])
+            else:
+                eject, eject_settings = await capture(session, project_id=effective_project_id, options=data)
             for _ in range(_quantity_for(requested_plate_id)):
                 pos_offset += 1
                 items.append(
@@ -302,6 +324,8 @@ async def _publish_items(
         session.add_all(items)
         await session.flush()
         created_ids.extend(item.id for item in items)
+        if ticket is not None:
+            await order_plan_submission.consume(session, ticket, created_ids, "auto")
 
     await publish_staged(staged, attach)
     return created_ids

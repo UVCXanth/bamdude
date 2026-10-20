@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Keep a shared working order plan and a stable comparison baseline.** Counts and file splits autosave without losing manual choices when inputs change. Save the plan explicitly to compare nominal machine-hours; remainder planning and full rebuild are separate reviewed actions. Queue publication atomically records receipts and consumes only committed work, so a lost response can be continued without duplicate jobs. Comparisons restart explicitly after submission; full database backups retain both plan states and receipts.
+
 - **Forecast the print plan while editing it.** Counts, file choices and splits receive their own read-only estimate before queueing. Nominal machine-hours sum the selected slicer times independently of live farm load; calendar dates use the farm snapshot and explicitly distinguish selected work from uncovered order demand. The filament estimate follows the edited files as well.
 
 - **AutoQueue alerts describe obstacles that need attention.** Ordinary printer occupancy stays visible in the queue without repeated notifications. Material, mapping and availability problems are grouped into one bounded digest of new facts; printer ordering, renaming, language changes, extra copies and progress elsewhere no longer create repeat alerts. Resolved problems can alert again if they return; this memory resets when BamDude restarts.

@@ -275,6 +275,7 @@ export function OrderView({
             />
           )}
           <PlanBlock
+            key={order.id}
             order={order}
             fitDraft={fitDraft?.orderId === id ? fitDraft : null}
             onPlateSelection={rememberPlates}

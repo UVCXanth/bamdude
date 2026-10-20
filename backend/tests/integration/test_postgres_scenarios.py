@@ -66,6 +66,28 @@ def _async_url(url: str) -> str:
     return url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
+def test_order_plan_publication_and_cancel_use_database_locks(tmp_path):
+    env = {**os.environ, "DATA_DIR": str(tmp_path), "ORDER_PLAN_TEST_POSTGRES_URL": _async_url(_pg_url())}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_order_plan_concurrency.py",
+            "-q",
+            "--timeout=45",
+            "--tb=short",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout[-12000:] + result.stderr[-3000:]
+
+
 def test_dispatch_rollback_runners_and_competing_terminal_writer(tmp_path):
     """The same real-runner matrix on independent PostgreSQL connections."""
     url = _pg_url()

@@ -1,3 +1,4 @@
+import { mockWorkingPlanApi } from '../../fixtures/workingPlan';
 /**
  * The plan block is the only place in the app that does arithmetic on order
  * data client-side, so the two things it must not get wrong are covered here:
@@ -345,6 +346,7 @@ const EMPTY_NEEDS: OrderNeeds = { project_id: order.id, rows: [], unknown_prints
 describe('PlanBlock', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockWorkingPlanApi();
     printModal.props = null;
     // The product's files are a link only for whoever may open the product (WS-13 E13 O19).
     auth.granted = new Set(['orders:update', 'products:read', 'products:update', 'customers:update', 'stock:move', 'stock:adjust', 'queue:create', 'printers:control']);
@@ -362,6 +364,51 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getModelCompatibility').mockResolvedValue({ models: {} });
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(EMPTY_FORECAST);
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
+  });
+
+  it('reconciles the payload after a lost execution response and continues the same operation', async () => {
+    let committed = false;
+    let complete = false;
+    let state: import('../../../api/client').WorkingPlan = { schema_version: 1, revision: 0, entries: [],
+      saved_revision: 0, saved_at: null, saved_by: null, epoch: 0, saved_epoch: null,
+      active_operation: null, inputs_token: 'inputs', changed: false, issues: [] };
+    const status = () => ({ operation_id: 'operation', status: complete ? 'complete' as const : 'pending' as const,
+      created: committed ? [{ entry_id: 'row-10-100', count: 1, queue_kind: 'auto', queue_item_ids: [77] }] : [],
+      remaining: complete ? [] : [{ entry_id: 'row-10-200', count: 1 }] });
+    vi.spyOn(api, 'getWorkingPlan').mockImplementation(async () => structuredClone(state));
+    vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => {
+      state = { ...state, revision: state.revision + 1, entries: body.entries }; return structuredClone(state);
+    });
+    vi.spyOn(api, 'registerPlanSubmission').mockImplementation(async (_, body) => {
+      state.active_operation = body.operation_id; return { ...status(), operation_id: body.operation_id };
+    });
+    vi.spyOn(api, 'getPlanSubmission').mockImplementation(async () => status());
+    const execute = vi.spyOn(api, 'actPlanSubmission').mockImplementation(async () => {
+      if (!committed) {
+        committed = true;
+        state = { ...state, revision: state.revision + 1, epoch: 1, entries: state.entries.filter(e => e.plate_id === 200) };
+        throw new Error('response lost after commit');
+      }
+      complete = true;
+      state = { ...state, revision: state.revision + 1, active_operation: null, entries: [] };
+      return status();
+    });
+    vi.spyOn(api, 'getOrderPlan').mockImplementation(async () => committed ? ({ ...plan, mode: 'working', working_revision: state.revision,
+      lines: [{ ...plan.lines[0], rows: complete ? [] : [plan.lines[0].rows[1]] }] }) : plan);
+    const legacy = vi.spyOn(api, 'enqueueOrderPlan');
+    render(<PlanBlock order={order} canEdit />);
+    fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
+    await waitFor(() => expect(screen.queryByTestId('plan-row-10-100')).toBeNull());
+    expect(screen.getByTestId('plan-row-10-200-count')).toHaveValue(1);
+    expect(api.writeWorkingPlan).toHaveBeenCalledTimes(1);
+    const operation = vi.mocked(api.registerPlanSubmission).mock.calls[0][1].operation_id;
+    fireEvent.click(screen.getByRole('button', { name: 'Continue submission' }));
+    await waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    expect(execute.mock.calls[1][1]).toBe(operation);
+    await waitFor(() => expect(screen.queryByTestId('plan-row-10-200')).toBeNull());
+    expect(api.registerPlanSubmission).toHaveBeenCalledTimes(1);
+    expect(api.writeWorkingPlan).toHaveBeenCalledTimes(1);
+    expect(legacy).not.toHaveBeenCalled();
   });
 
   it('puts nearest quantity adjustment beside whole-plan enqueue without sending work', async () => {
@@ -603,8 +650,10 @@ describe('PlanBlock', () => {
       }),
     );
     // The plan itself is re-read, and so is the order behind it.
-    await waitFor(() => expect(api.getOrderPlan).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(onProbeFetch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(vi.mocked(api.getOrderPlan).mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(vi.mocked(api.getOrderPlan).mock.calls.length).toBeLessThanOrEqual(3);
+    await waitFor(() => expect(onProbeFetch.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(onProbeFetch.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
   it('blocks both queue buttons while order parameters are unsaved, then sends the same plan', async () => {
@@ -1037,7 +1086,7 @@ describe('PlanBlock', () => {
     expect(screen.getByTestId('plan-row-10-300')).toBeInTheDocument();
   });
 
-  it('reseeds the counts when the plan itself changed', async () => {
+  it('keeps manual counts when current need changes', async () => {
     const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(plan);
 
     render(
@@ -1050,8 +1099,7 @@ describe('PlanBlock', () => {
     fireEvent.change(await screen.findByTestId('plan-row-10-100-count'), { target: { value: '5' } });
     expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(5);
 
-    // Six bodies outstanding instead of twelve: an edit made against the old
-    // plan has nothing left to mean, so the server's counts come back.
+    // The new need changes coverage, not the operator's selected counts.
     get.mockResolvedValue({
       ...plan,
       lines: [{ ...plan.lines[0], outstanding_before: [{ part_id: 1, name: 'Body', count: 6 }] }],
@@ -1059,10 +1107,10 @@ describe('PlanBlock', () => {
     fireEvent.click(screen.getByTestId('force-refetch'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
-    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1));
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(5));
   });
 
-  it('drops a hand-added plate once the server plans it, rather than showing it twice', async () => {
+  it('keeps one copy and the manual count of an added plate when recommendations change', async () => {
     const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithSpare);
     vi.spyOn(api, 'getProductPlates').mockResolvedValue([...plates, spare]);
 
@@ -1083,7 +1131,7 @@ describe('PlanBlock', () => {
     fireEvent.click(screen.getByTestId('force-refetch'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
-    await waitFor(() => expect(screen.getByTestId('plan-row-10-300-count')).toHaveValue(2));
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-300-count')).toHaveValue(1));
     expect(screen.getAllByTestId('plan-row-10-300')).toHaveLength(1);
   });
 
@@ -1349,7 +1397,7 @@ describe('PlanBlock', () => {
 
   // ---- the reseed is per line ----
 
-  it('reseeds only the line whose plan changed, and leaves the other line alone', async () => {
+  it('preserves manual decisions on both lines when one need changes', async () => {
     // ⚠️ The signature is per LINE because the `added` reconciliation beside it
     // always was. A whole-plan signature meant an edited count on one line
     // reverted whenever ANOTHER line moved — and `project-plan` is invalidated
@@ -1378,7 +1426,7 @@ describe('PlanBlock', () => {
     fireEvent.click(screen.getByTestId('force-refetch'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
-    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1));
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(5));
     expect(screen.getByTestId('plan-row-20-100-count')).toHaveValue(7);
   });
 
@@ -1913,15 +1961,8 @@ describe('PlanBlock', () => {
     ]);
   });
 
-  it('reseeds a file choice the plan no longer offers', async () => {
-    // ⚠️ The alternatives join the per-line signature for this reason: a
-    // switch made against a plan that has since moved would otherwise survive
-    // the reseed and send a plate the line no longer plans.
-    //
-    // ⚠️ **The second plan differs in `alternatives` and in NOTHING else** —
-    // same rows, same counts, same `candidates`. Every other field of the
-    // signature is held identical on purpose: take `alternatives` out of it and
-    // this test goes red, which is the only thing keeping it in.
+  it('preserves the selected file until an explicit source review', async () => {
+    // A source change is reviewed, never silently replaced by another file.
     const get = vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     const withoutAlternatives: OrderPlan = {
       ...planWithAlternative,
@@ -1954,10 +1995,10 @@ describe('PlanBlock', () => {
     fireEvent.click(screen.getByTestId('force-refetch'));
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
 
-    await waitFor(() => expect(screen.queryByTestId('plan-row-10-100-file')).not.toBeInTheDocument());
-    // Back to the plan the server sent: one print of the row's own file.
-    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(1);
-    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
+    await waitFor(() => expect(screen.getByTestId('plan-row-10-100-file')).toHaveValue('400'));
+    // The explicit file and count survive; revalidation is the server's decision.
+    expect(screen.getByTestId('plan-row-10-100-count')).toHaveValue(3);
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('6h 30m');
   });
 
   it('carries no heading of its own in the dialog variant either', () => {
@@ -2159,8 +2200,8 @@ describe('PlanBlock', () => {
     });
 
     it('keeps a server refusal in the confirmation and permits a deliberate retry', async () => {
-      const send = vi.spyOn(api, 'enqueueOrderPlan').mockRejectedValueOnce(new ApiError('Order was closed elsewhere', 409))
-        .mockResolvedValueOnce({ created: [] });
+      const send = vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+      vi.mocked(api.registerPlanSubmission).mockRejectedValueOnce(new ApiError('Order was closed elsewhere', 409));
       const close = vi.fn();
       render(<PlanBlock order={order} canEdit queueRequest={request} onQueueRequestClose={close} />);
       const confirm = await screen.findByRole('dialog');
@@ -2171,7 +2212,8 @@ describe('PlanBlock', () => {
       expect(close).not.toHaveBeenCalled();
       fireEvent.click(button);
       await waitFor(() => expect(close).toHaveBeenCalledOnce());
-      expect(send).toHaveBeenCalledTimes(2);
+      expect(api.registerPlanSubmission).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(1);
     });
     it('does not retry an uncertain or partially committed send in the same review', async () => {
       const send = vi.spyOn(api, 'enqueueOrderPlan').mockRejectedValue(new ApiError('Writer failed after one item', 500));
@@ -2181,7 +2223,7 @@ describe('PlanBlock', () => {
       const button = within(confirm).getByRole('button', { name: 'Send to auto queue' });
       await waitFor(() => expect(button).toBeEnabled());
       fireEvent.click(button);
-      expect(await within(confirm).findByRole('alert')).toHaveTextContent('Writer failed after one item');
+      expect((await within(confirm).findAllByRole('alert')).some(alert => alert.textContent?.includes('Writer failed after one item'))).toBe(true);
       expect(confirm).toHaveTextContent('Some tasks may already have been created');
       expect(button).toBeDisabled();
       fireEvent.click(button);

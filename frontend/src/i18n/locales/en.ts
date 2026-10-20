@@ -6561,7 +6561,7 @@ export default {
       queueConfirm: {
         refreshFailed: 'Could not refresh the order and its plan. Read both again before sending.',
         position: 'Line {{position}}',
-        uncertain: 'Some tasks may already have been created. Close this review and open it again to read the remaining plan before sending anything else.',
+        uncertain: 'Some tasks may already have been created. Close this review and read the pending submission status before continuing the same operation.',
         title: 'Send the plan to auto queue?',
         send: 'Send to auto queue',
         orderScope: 'Send the current print plan for the whole order.',
@@ -8156,6 +8156,7 @@ export default {
     },
     // Why an estimate is not whole — one label per server code (utils/estimateReasons.ts).
     estimateReasons: {
+      unplanned_parts: "Outstanding parts not covered by this working plan",
       unknown_time: 'Prints without a time estimate',
       unroutable: 'Prints no printer takes',
       material_mismatch: 'Parts only on plates of another material',
@@ -11645,6 +11646,7 @@ export default {
   farmForecast: {
     assumptionsTitle: 'Not counted in this estimate:',
     assumptions: {
+      earlier_orders_incomplete: "Completion after earlier orders is unavailable because their plans are incomplete",
       drying: 'drying between prints',
       operator_service_parallel: 'manual service estimated per printer; shared operator time not modeled',
       slicer_estimate: 'slicer estimate, not the archive\'s actual usage',
@@ -11805,4 +11807,51 @@ export default {
       },
     },
   },
+  workingPlan: {
+    orderRetained: "The order already has submitted work and was kept. Read its submission status before continuing.",
+    "targetIssue": "The selected printer is unavailable or incompatible. Review the target.",
+    "useAuto": "Route through AutoQueue",
+    "closedDraft": "View retained working draft",
+    "notSaved": "Recommendation; no working draft saved yet",
+
+    "dateSame": "Same completion as the saved plan on the current farm.",
+    "dateSooner": "{{time}} sooner than the saved plan on the current farm.",
+    "dateLater": "{{time}} later than the saved plan on the current farm.",
+
+    "baselineChanged": "Another operator saved a new comparison baseline. Your local draft is preserved.",
+    "readStatus": "Read submission status",
+
+    leaveConfirm: "Leave with local changes that are not saved?",
+    "inputsChanged": "Order inputs changed. Manual choices are preserved; review coverage and plan the remainder.",
+    "viewBaseline": "View saved baseline",
+
+    "save": "Save plan",
+    "saved": "Comparison baseline saved",
+    "discard": "Discard draft changes",
+    "discardConfirm": "Replace the draft with the saved plan? Submitted prints stay in their queues.",
+    "remainder": "Plan the remainder",
+    "rebuild": "Rebuild whole draft",
+    "rebuildConfirm": "Replace all manual choices? The saved baseline and queues stay unchanged.",
+    "saving": "Saving draft…",
+    "unsaved": "Local changes are not saved yet",
+    "autosaved": "Working draft saved automatically",
+    "baseline": "Comparison: saved by {{who}}, {{when}}",
+    "noBaseline": "Save the plan explicitly to begin a machine-hour comparison.",
+    "scopeChanged": "Some work was submitted. Save the remainder to begin a new comparison.",
+    "conflict": "Could not save. Your edits are still here. Read the shared plan before continuing.",
+    "reload": "Read shared plan again",
+    "reloadConfirm": "Replace your local edits with the shared draft?",
+    "pending": "Submission is pending. Check receipts, then continue or cancel the unsubmitted remainder.",
+    "partial": "Submitted {{count}} prints; some work remains. Check the pending operation.",
+    "receipts": "Committed: {{done}}. Remaining: {{remaining}}.",
+    "continue": "Continue submission",
+    "cancel": "Cancel unsubmitted remainder",
+    "sourceIssue": "A source changed or is unavailable. Review it before submitting.",
+    "acceptSource": "Use current source",
+    "removeEntry": "Remove draft entry",
+    "removeConfirm": "Remove this draft entry? Submitted prints stay in their queues.",
+    "proposal": "Proposed draft: {{before}} → {{after}} prints. Queues and baseline stay unchanged.",
+    "protected": "manual: {{count}}",
+    "apply": "Apply to draft"
+},
 };

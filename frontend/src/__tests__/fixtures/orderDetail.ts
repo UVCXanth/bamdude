@@ -1,3 +1,4 @@
+import { mockWorkingPlanApi } from './workingPlan';
 /**
  * One order as the detail page receives it, and the reads the page makes, for
  * the WS-13 E3 order-detail tests. Every read is a spy on `api`, so a request
@@ -149,6 +150,7 @@ export function makeDraftForecast(forecast = makeForecast()): DraftPreview {
 
 /** Spy every read the detail page makes; returns the spies a test may want to inspect. */
 export function mockOrderDetailApi(order: Order, { forecast = makeForecast(), needs = makeNeeds() } = {}) {
+  mockWorkingPlanApi();
   return {
     getOrder: vi.spyOn(api, 'getOrder').mockResolvedValue(order),
     getOrderPlan: vi.spyOn(api, 'getOrderPlan').mockResolvedValue({

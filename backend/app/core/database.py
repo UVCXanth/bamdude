@@ -387,6 +387,7 @@ def import_all_models() -> None:
         notification_template,
         oidc_provider,
         orca_base_cache,
+        order_working_plan,
         part_stock,
         plate_render,
         print_completion_receipt,

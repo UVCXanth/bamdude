@@ -582,9 +582,12 @@ def jobs_from_plan(order_id: int, plan: OrderPlan | None) -> list[PrintJob]:
     jobs: list[PrintJob] = []
     for line in plan.lines if plan else []:
         for row in line.rows:
-            options = [PlateOption(row.plate_id, row.printer_model, row.print_time_seconds)] + [
-                PlateOption(a.plate_id, a.printer_model, a.print_time_seconds) for a in row.alternatives
-            ]
+            options = (
+                [PlateOption(row.plate_id, row.printer_model, row.print_time_seconds)]
+                + [PlateOption(a.plate_id, a.printer_model, a.print_time_seconds) for a in row.alternatives]
+                if plan.mode != "working"
+                else [PlateOption(row.plate_id, row.printer_model, row.print_time_seconds)]
+            )
             jobs.extend(
                 PrintJob(order_id, line.line_id, row.plate_id, options, plan.auto_eject, row.target_printer_id)
                 for _ in range(row.count)
@@ -595,7 +598,7 @@ def jobs_from_plan(order_id: int, plan: OrderPlan | None) -> list[PrintJob]:
 def machine_seconds_of(plan: OrderPlan | None) -> int | None:
     """Σ count × estimate over rows with one; None when rows exist but none has
     an estimate; 0 for an order with nothing left to plan."""
-    rows = [r for line in (plan.lines if plan else []) for r in line.rows]
+    rows = [r for line in (plan.lines if plan else []) for r in line.rows if r.count > 0]
     if not rows:
         return 0
     timed = [r for r in rows if r.print_time_seconds and r.print_time_seconds > 0]
@@ -630,7 +633,15 @@ def _eta(now: datetime, seconds: float | None) -> tuple[datetime | None, int | N
 
 
 #: WS-13 E1 OR5a — the reasons in the order a surface lists them.
-REASON_ORDER = ("unknown_time", "unroutable", "material_mismatch", "needs_slicing", "no_plate", "truncated")
+REASON_ORDER = (
+    "unknown_time",
+    "unroutable",
+    "material_mismatch",
+    "needs_slicing",
+    "no_plate",
+    "unplanned_parts",
+    "truncated",
+)
 
 
 def incomplete_reasons(plan: OrderPlan | None, unknown: int, unroutable: int) -> list[tuple[str, int | None]]:
@@ -641,7 +652,12 @@ def incomplete_reasons(plan: OrderPlan | None, unknown: int, unroutable: int) ->
     for line in plan.lines if plan else []:
         for pid, code in line.unsatisfiable_reasons.items():
             units[code] += line.outstanding_before.get(pid, 0)
-    found: dict[str, int | None] = {"unknown_time": unknown, "unroutable": unroutable, **units}
+    found: dict[str, int | None] = {
+        "unknown_time": unknown,
+        "unroutable": unroutable,
+        **units,
+        "unplanned_parts": sum(plan.unplanned_parts.values()) if plan else 0,
+    }
     reasons: list[tuple[str, int | None]] = [(code, found[code]) for code in REASON_ORDER[:-1] if found[code]]
     if plan is not None and plan.truncated:
         reasons.append(("truncated", None))
@@ -655,6 +671,8 @@ def by_model(plan: OrderPlan | None, accepting: dict[str | None, int]) -> list[d
     groups: dict[str | None, dict] = {}
     for line in plan.lines if plan else []:
         for row in line.rows:
+            if row.count <= 0:
+                continue
             key = model_key(row.printer_model)
             group = groups.setdefault(
                 key,
@@ -718,7 +736,11 @@ def _order_result(
                 after_seconds=None,
                 unknown_prints=state.line_unknown[line.line_id],
                 unroutable_prints=state.line_unroutable[line.line_id],
-                eta_complete=(state.line_unknown[line.line_id] == 0 and state.line_unroutable[line.line_id] == 0),
+                eta_complete=(
+                    state.line_unknown[line.line_id] == 0
+                    and state.line_unroutable[line.line_id] == 0
+                    and not plan.unplanned_parts.get(line.line_id)
+                ),
                 rows=rows,
             )
         )
@@ -732,7 +754,9 @@ def _order_result(
         machine_seconds=machine_seconds_of(plan),
         unknown_prints=state.unknown[order_id],
         unroutable_prints=state.unroutable[order_id],
-        eta_complete=state.unknown[order_id] == 0 and state.unroutable[order_id] == 0,
+        eta_complete=state.unknown[order_id] == 0
+        and state.unroutable[order_id] == 0
+        and not any(plan.unplanned_parts.values() if plan else []),
         ahead_count=ahead,
         lines=lines,
         assumptions=list(state.assumptions),
@@ -754,20 +778,31 @@ def forecast_orders(
     split comes from the ``now`` run — it is what the button enqueues.
     """
     ahead_state = _initial_state(snapshot)
+    ahead_incomplete = False
     out: dict[int, OrderForecast] = {}
     for index, order_id in enumerate(ordered_ids):
         plan = plans.get(order_id)
         jobs = jobs_from_plan(order_id, plan)
         if order_id not in targets:
             _place(ahead_state, jobs)
+            ahead_incomplete |= bool(
+                incomplete_reasons(plan, ahead_state.unknown[order_id], ahead_state.unroutable[order_id])
+            )
             continue
         fresh = _initial_state(snapshot)
         result = _order_result(order_id, plan, fresh, _place(fresh, jobs), now, ahead=index)
         after = _order_result(order_id, plan, ahead_state, _place(ahead_state, jobs), now, ahead=index)
-        result.after_eta, result.after_seconds = after.now_eta, after.now_seconds
+        result.after_eta, result.after_seconds = (
+            (None, None) if ahead_incomplete else (after.now_eta, after.now_seconds)
+        )
+        if ahead_incomplete:
+            result.assumptions.append("earlier_orders_incomplete")
         for line, after_line in zip(result.lines, after.lines, strict=True):
-            line.after_eta, line.after_seconds = after_line.now_eta, after_line.now_seconds
+            line.after_eta, line.after_seconds = (
+                (None, None) if ahead_incomplete else (after_line.now_eta, after_line.now_seconds)
+            )
         out[order_id] = result
+        ahead_incomplete |= bool(after.incomplete_reasons)
     return out
 
 

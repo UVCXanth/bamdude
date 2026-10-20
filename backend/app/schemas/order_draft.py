@@ -12,6 +12,7 @@ from backend.app.schemas.project import PlanEnqueueTarget, PlanTotalsOut
 class DraftEntry(BaseModel):
     entry_id: str = Field(min_length=1, max_length=100)
     line_id: int = Field(gt=0)
+    line_token: str | None = Field(default=None, max_length=36)
     plate_id: int = Field(gt=0)
     count: int = Field(ge=1, le=999)
     target: PlanEnqueueTarget = Field(default_factory=lambda: PlanEnqueueTarget(kind="auto"))
@@ -23,6 +24,8 @@ class DraftPreviewRequest(BaseModel):
     client_revision: str = Field(min_length=1, max_length=100)
     inputs_token: str | None = Field(default=None, max_length=64)
     entries: list[DraftEntry] = Field(max_length=10_000)
+    saved_revision: int | None = Field(default=None, ge=0)
+    comparison_epoch: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def bounded(self):

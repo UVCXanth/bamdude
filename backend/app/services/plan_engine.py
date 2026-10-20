@@ -186,6 +186,7 @@ class PlanAlternative:
     filament_used_grams: float | None = None
     cost: float | None = None
     time_unknown: bool = False
+    source_token: str | None = None
 
 
 @dataclass
@@ -218,6 +219,12 @@ class PlanRow:
     alternatives: list[PlanAlternative] = field(default_factory=list)
     # An exact draft may pin this run to a machine; recommendation rows do not.
     target_printer_id: int | None = None
+    entry_id: str | None = None
+    line_token: str | None = None
+    source_token: str | None = None
+    manual: bool = False
+    protected_count: int = 0
+    issue: str | None = None
 
 
 @dataclass
@@ -269,6 +276,10 @@ class OrderPlan:
     # :func:`cover`.
     truncated: bool = False
     auto_eject: bool = False
+    mode: str = "recommendation"
+    working_revision: int | None = None
+    inputs_token: str | None = None
+    unplanned_parts: dict[int, int] = field(default_factory=dict)
 
 
 def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int]:
@@ -666,6 +677,8 @@ def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
     costed = False
     for line in lines:
         for row in line.rows:
+            if row.count <= 0:
+                continue
             totals.prints += row.count
             if row.print_time_seconds is None:
                 unknown = True
@@ -980,7 +993,7 @@ async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[i
 
 
 async def plan_for_orders(
-    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None
+    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None, working: bool = True
 ) -> dict[int, OrderPlan]:
     """The plan of every order in ``project_ids``, in ONE round of queries.
 
@@ -1033,7 +1046,7 @@ async def plan_for_orders(
     # dialog is one caller), so every order starts from the same farm snapshot.
     # Within an order ``plan_lines`` shares its copy across every line.
     fleet = capacity if capacity is not None else await _current_fleet_capacity(db)
-    return {
+    plans = {
         ctx.project.id: plan_lines(
             ctx,
             figures_by_project[ctx.project.id],
@@ -1044,6 +1057,11 @@ async def plan_for_orders(
         )
         for ctx in contexts
     }
+    if working:
+        from backend.app.services.order_working_plan import effective_plans
+
+        await effective_plans(db, plans, contexts, recipes_by_product, queued, price_per_gram)
+    return plans
 
 
 async def plan_for_order(
