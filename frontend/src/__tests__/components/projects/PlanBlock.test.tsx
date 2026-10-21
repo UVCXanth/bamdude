@@ -366,6 +366,34 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
   });
 
+  it.each(['whole plan', 'one row', 'order review'] as const)(
+    'submits %s over HTTP without crypto.randomUUID',
+    async (action) => {
+      const descriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+      Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+      try {
+        vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [] });
+        render(<PlanBlock order={order} canEdit queueRequest={action === 'order review' ? { requestedAt: 0 } : undefined}
+          onQueueRequestClose={vi.fn()} />);
+        const button = action === 'order review'
+          ? await within(await screen.findByRole('dialog')).findByRole('button', { name: 'Send to auto queue' })
+          : await screen.findByTestId(action === 'one row' ? 'plan-row-10-200-queue' : 'plan-enqueue-all');
+        await waitFor(() => expect(button).toBeEnabled());
+        fireEvent.click(button);
+        await waitFor(() => expect(api.actPlanSubmission).toHaveBeenCalledTimes(1));
+        expect(api.registerPlanSubmission).toHaveBeenCalledTimes(1);
+        const [orderId, body] = vi.mocked(api.registerPlanSubmission).mock.calls[0];
+        expect(orderId).toBe(order.id);
+        expect(body.operation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(body.parts).toHaveLength(action === 'one row' ? 1 : 2);
+        expect(api.actPlanSubmission).toHaveBeenCalledWith(order.id, body.operation_id, 'execute');
+      } finally {
+        if (descriptor) Object.defineProperty(crypto, 'randomUUID', descriptor);
+        else Reflect.deleteProperty(crypto, 'randomUUID');
+      }
+    },
+  );
+
   it('reconciles the payload after a lost execution response and continues the same operation', async () => {
     let committed = false;
     let complete = false;

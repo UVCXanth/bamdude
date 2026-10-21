@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Order plans can be sent to the queue over plain HTTP on the LAN: submission IDs use the existing secure-random UUID helper instead of the HTTPS-only `crypto.randomUUID()` method.
+
 - A refilled AMS slot no longer loses its new spool to a repeated autoswitch status while the print continues from its backup. Positive sensor and journal evidence suppress the false episode in live recording and saved-history accounting, including Spoolman; returning to the refilled slot still permits a real subsequent runout.
 
 - Keep the mobile file library focused on files: search and filters collapse without clearing their values, occasional commands move into More actions, and selection tools appear when files are selected. Desktop controls remain expanded.

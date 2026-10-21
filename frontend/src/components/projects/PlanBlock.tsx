@@ -9,6 +9,7 @@ import { canFileFuturePrint } from '../../utils/workshopRights';
 import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { formatDuration } from '../../utils/date';
+import { newOperationId } from '../../utils/swapCompatibility';
 import { Button } from '../Button';
 import { ActionConfirm } from '../workshop/ActionConfirm';
 import { FilamentNeeds } from './FilamentNeeds';
@@ -257,7 +258,7 @@ export function PlanBlock({
       const state = await working.flush();
       const parts = state.entries.filter(e => e.count > 0 && items.some(i => i.line_id === e.line_id && i.plate_id === e.plate_id))
         .map(e => ({ entry_id: e.entry_id, count: e.count }));
-      const operation = crypto.randomUUID();
+      const operation = newOperationId();
       submissionAttempt.current = { id: operation, registered: false };
       const registered = await api.registerPlanSubmission(order.id, { operation_id: operation, expected_revision: state.revision, parts });
       submissionAttempt.current = { id: operation, registered: true };
