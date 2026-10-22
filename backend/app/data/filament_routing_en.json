@@ -1,4 +1,12 @@
 {
+  "incompatible_target": "The selected printer cannot run this target model.",
+  "compatible_fallback_disabled": "Routing to a compatible printer model is disabled. Review the AutoQueue compatibility setting.",
+  "autoqueue_any_model": "any printer model",
+  "autoqueue_location_unavailable": "unavailable location",
+  "autoqueue_location_suffix": " in {path}",
+  "autoqueue_more_issues_one": "And {count} more issue. Open AutoQueue for the full list.",
+  "autoqueue_more_issues_few": "And {count} more issues. Open AutoQueue for the full list.",
+  "autoqueue_more_issues_many": "And {count} more issues. Open AutoQueue for the full list.",
   "plate_selection_required": "Select one printable plate from this file.",
   "plate_not_found": "The selected plate is not in this file.",
   "plate_gcode_missing": "The selected plate has no sliced G-code.",
@@ -17,6 +25,7 @@
   "source_check_busy": "Waiting for a file-check worker to become available.",
   "source_retry_not_failed": "Only a failed auto-queue job can be retried.",
   "mapping_review_required": "Review the selected filament slots.",
+  "printer_waking": "Printer is waking up; waiting for a fresh connection.",
   "printer_offline": "Printer is offline; fresh filament state is required.",
   "printer_off_missing_filament": "Printer is switched off, and what it holds cannot run this job, so it is not switched on.",
   "model_unavailable": "Printer model is unknown.",
@@ -73,5 +82,9 @@
   "swap_hold_swap_off": "The table swap was not run: swap mode is off on this printer or its change-table macro is missing. Run the table swap or clear the plate, then resume the queue.",
   "swap_hold_outcome_uncertain": "The table swap was not run: the print's outcome is uncertain after the outage. Inspect the plate, then resume the queue.",
   "swap_hold_macro_error": "The table swap did not finish: BamDude could not run the printer's change-table macro. Inspect the mechanism and plate, then resume the queue.",
-  "swap_hold_attempt_unknown": "The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue."
+  "swap_hold_attempt_unknown": "The table swap may already have run: BamDude cannot confirm whether the change-table macro went out or finished, so it is not sent again. Inspect the mechanism and plate, then resume the queue.",
+  "routing_unclassified": "Routing could not determine a supported reason. Review this job in AutoQueue.",
+  "autoqueue_more_issues": "And {count} more issues. Open AutoQueue for the full list.",
+  "autoqueue_multiple_models": "multiple printer models",
+  "autoqueue_no_eligible_printer": "No active {model} printers{location} eligible"
 }

@@ -1,8 +1,8 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo, useRef, useCallback, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ClipboardList, Loader2 } from 'lucide-react';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { Order, PartsPreview } from '../../api/client';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -43,6 +43,9 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const headingId = useId();
+  const leaveGuard = useRef<(() => boolean) | null>(null);
+  const registerLeaveGuard = useCallback((guard: (() => boolean) | null) => { leaveGuard.current = guard; }, []);
+  const close = () => { if (!leaveGuard.current || leaveGuard.current()) onClose(); };
 
   const preview = useQuery<PartsPreview>({
     queryKey: ['parts-preview', fileIds],
@@ -56,6 +59,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
   const [nameEdited, setNameEdited] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<number | null>(null);
   const [enqueued, setEnqueued] = useState(false);
+  const [retained, setRetained] = useState(false);
 
   const defaultName = preview.data?.files[0] ? stem(preview.data.files[0].filename) : '';
   const name = nameEdited ?? defaultName;
@@ -92,7 +96,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
   const forgetOrder = useForgetOnUnmount(['project', orderId]);
 
   const cancel = useMutation({
-    mutationFn: () => api.deleteOrder(orderId as number),
+    mutationFn: () => api.deleteOrder(orderId as number, { onlyIfUnsubmitted: true }),
     // ⚠️ The LISTS only, exactly as the order page does it. `invalidateOrderViews`
     // marks the `project` prefix — and the plan and forecast — stale while this
     // dialog is still mounted and watching all three, so TanStack refetched the
@@ -104,10 +108,16 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
       forgetOrder();
       onClose();
     },
-    onError: (e: Error) => showToast(e.message, 'error'),
+    onError: (e: Error) => {
+      if (e instanceof ApiError && e.code === 'order_has_work') {
+        setRetained(true);
+        showToast(t('workingPlan.orderRetained'), 'info');
+      } else showToast(e.message, 'error');
+    },
   });
 
   const finish = (key: 'created' | 'queued') => {
+    if (leaveGuard.current && !leaveGuard.current()) return;
     showToast(t(`orders.fromFiles.${key}`), 'success');
     onClose();
   };
@@ -118,7 +128,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
 
   return (
     <Modal
-      onClose={onClose}
+      onClose={close}
       labelledBy={headingId}
       size="3xl"
       header={
@@ -228,7 +238,7 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
               )}
 
               <div className="flex justify-end gap-2">
-                <Button variant="secondary" onClick={onClose}>{t('orders.fromFiles.cancel')}</Button>
+                <Button variant="secondary" onClick={close}>{t('orders.fromFiles.cancel')}</Button>
                 <Button
                   onClick={() => create.mutate()}
                   disabled={!canCalculate || create.isPending}
@@ -246,28 +256,30 @@ export function PlanFromFilesModal({ fileIds, onClose }: PlanFromFilesModalProps
           {order.data ? (
             // Sending the plan files new work under the order (Fф, WS-13 E13 ORD-33).
             <PlanBlock
+              key={order.data.id}
               order={order.data}
               canEdit={canFileFuturePrint(hasPermission)}
               variant="dialog"
               onEnqueued={() => setEnqueued(true)}
+              onLeaveGuard={registerLeaveGuard}
             />
           ) : (
             <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
           )}
           <p className="text-xs text-bambu-gray">{t('orders.fromFiles.hoursNote')}</p>
           <div className="flex justify-between items-center gap-2 flex-wrap">
-            <SectionLink action to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={onClose}>
+            <SectionLink action to={`/projects/${orderId}`} className="text-sm text-bambu-green hover:underline" onClick={event => { if (leaveGuard.current && !leaveGuard.current()) event.preventDefault(); else onClose(); }}>
               {t('orders.fromFiles.openOrder')}
             </SectionLink>
             <div className="flex gap-2">
-              {enqueued ? (
-                <Button onClick={() => finish('queued')}>{t('orders.fromFiles.close')}</Button>
+              {enqueued || retained ? (
+                <Button onClick={() => finish(enqueued ? 'queued' : 'created')}>{t('orders.fromFiles.close')}</Button>
               ) : (
                 <>
                   {/* «Cancel» deletes the order this dialog created — the right to delete orders
                       (WS-13 E13 T17); without it the order is kept. */}
                   {hasPermission('orders:delete') && (
-                    <Button variant="secondary" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+                    <Button variant="secondary" onClick={() => { if (!leaveGuard.current || leaveGuard.current()) cancel.mutate(); }} disabled={cancel.isPending}>
                       {t('orders.fromFiles.cancel')}
                     </Button>
                   )}

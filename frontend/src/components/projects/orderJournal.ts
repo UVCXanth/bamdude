@@ -10,7 +10,7 @@ export const ORDER_JOURNAL_KINDS = [
   'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
   'line_added', 'line_changed', 'line_removed', 'line_configured',
   'prints_filed', 'prints_unfiled', 'prints_relined', 'print_trashed', 'print_restored', 'defects_recorded',
-  'queue_items_filed', 'queue_items_unfiled', 'plan_enqueued', 'line_rebalanced',
+  'queue_items_filed', 'queue_items_unfiled', 'plan_enqueued', 'plan_submission_cancelled', 'line_rebalanced',
   'surplus_banked', 'procurement_updated',
   'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken', 'goods_written_off', 'goods_stocked',
   'attachment_added', 'attachment_removed', 'cover_changed',
@@ -59,6 +59,8 @@ export function journalText(event: TimelineEvent, t: TFunction): string | null {
   if (!isJournalKind(event.event_type)) return null;
   const m = event.metadata ?? {};
   switch (event.event_type) {
+    case 'plan_submission_cancelled':
+      return t('orders.timeline.events.plan_submission_cancelled', { count: Number(m.count) || 0, author: named(m.original_author) }) + (m.note ? ` · ${text(m.note)}` : '');
     case 'order_created':
       if (m.source === 'copy') return t('orders.timeline.created.copy', { code: text(m.from_code) });
       if (m.source === 'files') return t('orders.timeline.created.files');

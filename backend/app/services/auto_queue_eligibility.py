@@ -49,11 +49,20 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.i18n import current_language, t
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
+from backend.app.services.auto_queue_waiting import (
+    KNOWN_REASONS,
+    WaitingFact,
+    fact,
+    file_params,
+    offline_params,
+    routing_params,
+)
 from backend.app.services.filament_intake import read_item_requirements, routing_detail
 from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_preflight import feed_signature
@@ -146,7 +155,12 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
         # move" is not helped by a row id — and with a tree, not by a bare name
         # either: "no printers in Shelf" reads oddly when a workshop was chosen.
         if item.target_location_id in tree:
-            location_suffix = f" in {path_of(tree, item.target_location_id)}"
+            location_suffix = t(
+                current_language(),
+                "filament_routing",
+                "autoqueue_location_suffix",
+                path=path_of(tree, item.target_location_id),
+            )
 
     result = await db.execute(query)
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
@@ -199,6 +213,7 @@ class EligiblePrinter:
     #: it moves on a profile retag a job with «allow base material match» was
     #: told to ignore.
     snapshot_signature: tuple[int, str] | None = None
+    facts: tuple[WaitingFact, ...] = ()
 
     def __iter__(self):
         # Compatibility for callers that only display the result. Assignment
@@ -216,6 +231,7 @@ async def find_eligible_printer(
     prefer_lowest: bool = False,
     offline_feeds=None,
     interlocked_printers: set[int] | None = None,
+    exclusion_reasons: dict[int, str] | None = None,
 ) -> EligiblePrinter:
     """The best printer for ``item`` now, or why there is none.
 
@@ -227,28 +243,68 @@ async def find_eligible_printer(
     if item.target_model:
         printers, normalized_model, location_suffix = await printers_for_item(db, item)
         if not printers:
-            return EligiblePrinter(reason=f"No active {normalized_model} printers{location_suffix} eligible")
+            reason = t(
+                current_language(),
+                "filament_routing",
+                "autoqueue_no_eligible_printer",
+                model=normalized_model,
+                location=location_suffix,
+            )
+            return EligiblePrinter(reason=reason, facts=(fact("no_eligible_printer", message=reason),))
     req = await read_item_requirements(db, item, cache)
     if req.status != "ok":
-        return EligiblePrinter(reason=routing_detail(req.reason)["message"], requirements=req)
+        reason = routing_detail(req.reason if req.reason in KNOWN_REASONS else "routing_unclassified")["message"]
+        return EligiblePrinter(
+            reason=reason, requirements=req, facts=(fact(req.reason, params=file_params(item, req), message=reason),)
+        )
     item.plate_id = req.resolved_plate_id
     if not item.target_model:
         item.target_model = req.model
     printers, normalized_model, location_suffix = await printers_for_item(db, item)
     if not printers:
-        return EligiblePrinter(reason=f"No active {normalized_model} printers{location_suffix} eligible")
+        reason = t(
+            current_language(),
+            "filament_routing",
+            "autoqueue_no_eligible_printer",
+            model=normalized_model,
+            location=location_suffix,
+        )
+        return EligiblePrinter(reason=reason, facts=(fact("no_eligible_printer", message=reason),))
     policy = auto_policy(item)
-    candidates, reasons = [], []
+    candidates, facts = [], []
+
+    def refuse(printer, code, message, params=None, *, uncertain=False):
+        if code not in KNOWN_REASONS:
+            message = routing_detail("routing_unclassified")["message"]
+        facts.append(
+            fact(
+                code,
+                printer.id,
+                params=params,
+                message=f"{printer.name}: {message}",
+                printer_name=printer.name,
+                uncertain=uncertain,
+            )
+        )
+
     for printer in printers:
         verdict = model_compatibility(req.model, printer_manager.effective_model_for(printer.id, printer.model))
         if verdict not in ("exact", "compatible"):
-            reasons.append(f"{printer.name}: incompatible file model")
+            refuse(printer, "model_mismatch", routing_detail("model_mismatch")["message"], {"file_model": req.model})
             continue
         if printer.id in busy_printers:
-            reasons.append(f"{printer.name}: " + routing_detail("printer_busy")["message"])
+            code = (exclusion_reasons or {}).get(printer.id, "printer_busy")
+            display_code = (
+                "swap_source_unknown"
+                if code == "swap_request_refused"
+                else code
+                if code in {"incompatible_target", "compatible_fallback_disabled"}
+                else "printer_busy"
+            )
+            refuse(printer, code, routing_detail(display_code)["message"])
             continue
         if item.require_previous_success and not await scheduler.previous_print_succeeded(db, printer.id):
-            reasons.append(f"{printer.name}: " + routing_detail("previous_print_failed")["message"])
+            refuse(printer, "previous_print_failed", routing_detail("previous_print_failed")["message"])
             continue
         # Bound, not inlined: the snapshot the plan was resolved against is what
         # the assignment's re-read is compared to, and only here are the policy
@@ -259,14 +315,16 @@ async def find_eligible_printer(
             missing = offline_shortfall(req, policy, feed)
             if missing:
                 loaded = ", ".join(dict.fromkeys(s.material for s in feed.sources))
-                reasons.append(
-                    f"{printer.name}: "
-                    + routing_detail(
+                refuse(
+                    printer,
+                    "printer_off_missing_filament",
+                    routing_detail(
                         "printer_off_missing_filament",
                         slot=missing[0]["slot"],
                         wanted=missing[0]["wanted"],
                         loaded=loaded,
-                    )["message"]
+                    )["message"],
+                    offline_params(req, policy, snapshot, missing, feed),
                 )
                 continue
         result = resolve_filament_routing(
@@ -276,7 +334,13 @@ async def find_eligible_printer(
             # With the facts: this line names ONE printer, so its trays can be
             # listed. Without them a farm-wide refusal reads as 24 identical
             # sentences and the operator cannot tell which channel disagreed.
-            reasons.append(f"{printer.name}: " + routing_detail(result.reason, **result.params)["message"])
+            refuse(
+                printer,
+                result.reason,
+                routing_detail(result.reason, **result.params)["message"],
+                routing_params(result.reason, req, policy, snapshot, result.slots),
+                uncertain=result.status == "unknown" and result.reason != "printer_offline",
+            )
             continue
         ready = scheduler._is_printer_idle(printer.id, require_plate_clear) and printer.id not in (
             interlocked_printers or ()
@@ -289,4 +353,7 @@ async def find_eligible_printer(
         return EligiblePrinter(
             printer, plan=plan, requirements=req, snapshot_signature=feed_signature(policy, snapshot)
         )
-    return EligiblePrinter(reason=" | ".join(reasons))
+    facts.sort(key=lambda item: (item.printer_id or 0, item.code, repr(item.params)))
+    if not facts:
+        facts.append(fact("routing_unclassified", message=routing_detail("routing_unclassified")["message"]))
+    return EligiblePrinter(reason=" | ".join(item.message for item in facts), requirements=req, facts=tuple(facts))

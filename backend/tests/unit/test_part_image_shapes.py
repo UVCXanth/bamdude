@@ -15,6 +15,7 @@ PART_FIELDS = {"part_id", "product_part_id", "source_part_id", "target_part_id"}
 
 #: Shapes that name a part and deliberately carry no picture -- each with its reason.
 NOT_A_SURFACE = {
+    "order_draft.DraftCoverage": "exact draft coverage counters; the panel shows aggregate missing units, not a part-image surface",
     "archive.ArchivePartRow": "a print's part row (print_archive_parts), not a product part (spec §11.3)",
     "printer.AirductFan": "a printer fan's part number, not a product part",
     "product.ProductPartMerge": "a request body",

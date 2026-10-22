@@ -18,7 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
-from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.models.spool_usage_history import AMS_SYNC_STATUS, RUNOUT_STATUS, SpoolUsageHistory
+from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.utils.filament_remaining import usable_remain_percent
 
 logger = logging.getLogger(__name__)
@@ -687,17 +688,6 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
         logger.exception("[UsageTracker] filament_low notification failed for spool %s", spool.id)
 
 
-# The status an AMS-sync correction carries in ``spool_usage_history``. Distinct
-# from the print outcomes (completed/failed/aborted/cancelled) because it is not
-# a print — it is filament this instance never saw leave the spool.
-AMS_SYNC_STATUS = "ams_sync"
-
-# The status a runout zero-correction carries: the tail of a spool our books
-# never saw leave it, written when a detected runout proves the spool holds
-# exactly 0 g. Not a print either — the print's own segment rows are separate.
-RUNOUT_STATUS = "runout"
-
-
 def journal_touched_trays(events: list) -> set[int]:
     """Every tray the journal names — excluded from the remain%-delta path.
 
@@ -751,7 +741,8 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         KIND_MANUAL,
     )
 
-    runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
+    events = without_stale_refill_runouts(events)
+    runouts = [e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
     if not runouts:
         return []
 
@@ -871,46 +862,13 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     return merged if len(merged) > 1 else []
 
 
-def _add_autoswitch_purge(
-    segments: list[tuple[int, int, float]],
-    tray_changes: list[tuple[int, int]],
-    events: list,
-    purge_grams: float,
-) -> list[tuple[int, int, float]]:
-    """Add the emergency-swap purge to each autoswitch backup segment.
-
-    The slicer's estimate contains the *planned* colour-change flushes but not
-    the purge of an AMS backup switch — that filament is physically fed by the
-    backup spool, so it lands inside the backup segment's grams (never a
-    separate row). Coarse by nature; ``runout_purge_grams`` defaults to 0.
-    """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
-
-    if purge_grams <= 0 or not events or not segments:
-        return segments
-    runouts = [
-        e for e in events if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id is not None
-    ]
-    if not runouts:
-        return segments
-
-    out = [list(s) for s in segments]
-    for runout in runouts:
-        for seg_idx, tray_global, _grams in segments:
-            seg_layer = tray_changes[seg_idx][1]
-            if tray_global != runout.global_tray_id and abs(seg_layer - runout.layer_num) <= 1:
-                out[seg_idx][2] += purge_grams
-                break
-    return [tuple(s) for s in out]
-
-
 def _autoswitch_purge_for_tray(events: list, global_tray_id: int, purge_grams: float) -> float:
     """The purge grams owed to a journal-split backup segment on this tray."""
     from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
 
     if purge_grams <= 0 or not events:
         return 0.0
-    for e in events:
+    for e in without_stale_refill_runouts(events):
         if e.event == EVENT_RUNOUT and e.kind == KIND_AUTOSWITCH and e.global_tray_id == global_tray_id:
             return purge_grams
     return 0.0
@@ -973,6 +931,7 @@ async def apply_runout_zero_corrections(
         KIND_MANUAL,
     )
 
+    events = without_stale_refill_runouts(events)
     runouts = [
         e
         for e in (events or [])
@@ -1462,7 +1421,7 @@ async def on_print_complete(
         try:
             from backend.app.services.print_usage_journal import load_events
 
-            journal_events = await load_events(db, printer_id, archive_id)
+            journal_events = without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
         except Exception:
             logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
     # "Live assignment wins" is suspended only when the journal holds
@@ -1897,9 +1856,18 @@ async def _track_from_3mf(
     nonzero_slots = [u for u in filament_usage if u.get("used_g", 0) > 0]
     tray_now_override: int | None = None
     tray_changes: list[tuple[int, int]] = []  # [(global_tray_id, layer_num), ...]
+    sole_tray: int | None = None
     state = printer_manager.get_status(printer_id) if len(nonzero_slots) == 1 else None
     if state is not None:
-        tray_changes = getattr(state, "tray_change_log", []) or []
+        # Normalized: an entry followed by another on the same layer fed nothing
+        # the layer number can see (a BMCU reports tray_now=254 for a moment on
+        # every load). Read at full resolution, those blips sent a same-tray
+        # refill down the tray split and lost the new reel's share.
+        from backend.app.utils.usage_attribution import normalize_tray_changes, sole_feeding_tray
+
+        raw_tray_log = getattr(state, "tray_change_log", []) or []
+        tray_changes = normalize_tray_changes(raw_tray_log)
+        sole_tray = sole_feeding_tray(raw_tray_log)
     elif len(nonzero_slots) > 1:
         # Multi-material print: every filament change moves tray_now, so the log
         # can't be read as "this slot moved to that tray" and splitting would
@@ -1923,6 +1891,11 @@ async def _track_from_3mf(
         # skips both trays because they're already in handled_trays after
         # splitting, eliminating the double-credit.
         logger.info("[UsageTracker] 3MF: tray change log: %s (will split weight)", tray_changes)
+    elif sole_tray is not None:
+        # The log moved, but every move except one fed nothing: that one tray fed
+        # the whole print, and as the split's evidence it outranks the mapping.
+        tray_now_override = sole_tray
+        logger.info("[UsageTracker] 3MF: tray change log collapses to tray %d (fed the whole print)", sole_tray)
     elif not slot_to_tray and len(nonzero_slots) == 1:
         if 0 <= tray_now_at_start <= 254:
             # Try tray_now_at_start first (captured at print start)
@@ -2002,11 +1975,14 @@ async def _track_from_3mf(
         if used_g <= 0:
             continue
 
-        # --- Mid-print tray switch: split weight across trays ---
-        # Split math is shared with the Spoolman writer via
-        # ``utils.tray_split.compute_tray_split_grams`` (#1793) — both
-        # inventory backends must attribute segments identically or a user
-        # running dual-mode sees divergent totals.
+        # --- Mid-print tray switch: split weight across feed intervals ---
+        # The intervals are the tray chronology projected over the journal's
+        # spool identities, shared with the Spoolman writer
+        # (``utils.usage_attribution.feed_intervals``) so both inventory
+        # backends attribute every interval identically (#1793). Each interval
+        # is charged exactly once — a tray the print returns to is charged
+        # again for its new stretch, to the reel that sat in it then; skipping
+        # it as "already handled" lost that stretch (BMCU refill, 2026-10-21).
         if len(tray_changes) > 1:
             # Compute total weight for this slot (same logic as normal path)
             if layer_grams and slot_id in layer_grams:
@@ -2021,10 +1997,12 @@ async def _track_from_3mf(
             split_layer_usage = analysis.layer_usage
             split_props = analysis.filament_properties.get(slot_id, {})
 
-            from backend.app.utils.tray_split import compute_tray_split_grams
+            from backend.app.utils.tray_split import compute_layer_segment_grams
+            from backend.app.utils.usage_attribution import add_autoswitch_purge, feed_intervals
 
-            segments = compute_tray_split_grams(
-                tray_changes=tray_changes,
+            layer_intervals = feed_intervals(tray_changes, journal_events or [])
+            interval_grams = compute_layer_segment_grams(
+                boundary_layers=[iv.start_layer for iv in layer_intervals],
                 total_weight=total_weight,
                 slot_id=slot_id,
                 layer_usage=split_layer_usage,
@@ -2033,12 +2011,17 @@ async def _track_from_3mf(
                 total_layers=(state.total_layers if state else 0) or 0,
                 last_layer_num=last_layer_num,
             )
-            segments = _add_autoswitch_purge(segments, tray_changes, journal_events or [], runout_purge_grams)
+            # A purge whose backup normalized away comes back as an interval of
+            # its own, after the layer intervals.
+            intervals, interval_grams = add_autoswitch_purge(
+                layer_intervals, interval_grams, journal_events or [], runout_purge_grams
+            )
 
-            for seg_idx, tray_global, segment_grams in segments:
+            for seg_idx, (interval, segment_grams) in enumerate(zip(intervals, interval_grams, strict=True)):
                 if segment_grams <= 0:
                     continue
 
+                tray_global = interval.tray
                 # Convert global tray ID to (ams_id, tray_id)
                 if tray_global >= 254:
                     seg_ams_id = 255
@@ -2051,11 +2034,8 @@ async def _track_from_3mf(
                     seg_tray_id = tray_global % 4
 
                 seg_key = (seg_ams_id, seg_tray_id)
-                if seg_key in handled_trays:
-                    continue
-
-                seg_start_layer = tray_changes[seg_idx][1]
-                is_last = seg_idx + 1 >= len(tray_changes)
+                seg_start_layer = interval.start_layer
+                is_last = seg_idx + 1 >= len(layer_intervals)
                 logger.info(
                     "[UsageTracker] 3MF split: segment %d tray=%d (AMS%d-T%d) layers %d-%s -> %.1fg",
                     seg_idx,
@@ -2063,25 +2043,48 @@ async def _track_from_3mf(
                     seg_ams_id,
                     seg_tray_id,
                     seg_start_layer,
-                    tray_changes[seg_idx + 1][1] if not is_last else "end",
+                    intervals[seg_idx + 1].start_layer if not is_last else "end",
                     segment_grams,
                 )
 
-                seg_spool_id = await _resolve_spool_id_for_tray(
-                    printer_id=printer_id,
-                    ams_id=seg_ams_id,
-                    tray_id=seg_tray_id,
-                    db=db,
-                    spool_assignments_snapshot=spool_assignments,
-                    print_started_at=print_started_at,
-                )
+                if interval.frozen:
+                    # The journal names this interval's reel; an unknown one stays
+                    # unattributed — never filled from the live slot against a
+                    # journal boundary.
+                    seg_spool_id = interval.spool_id
+                    if seg_spool_id is None:
+                        logger.info(
+                            "[UsageTracker] 3MF split: segment %d from layer %d has no attributable spool "
+                            "(printer %d tray %d) — %.1fg uncharged rather than guessed",
+                            seg_idx,
+                            seg_start_layer,
+                            printer_id,
+                            tray_global,
+                            segment_grams,
+                        )
+                        handled_trays.add(seg_key)
+                        if uncharged is not None:
+                            uncharged.append((tray_global, round(float(segment_grams), 2)))
+                        continue
+                else:
+                    seg_spool_id = await _resolve_spool_id_for_tray(
+                        printer_id=printer_id,
+                        ams_id=seg_ams_id,
+                        tray_id=seg_tray_id,
+                        db=db,
+                        spool_assignments_snapshot=spool_assignments,
+                        print_started_at=print_started_at,
+                    )
                 if seg_spool_id is None:
-                    logger.info(
-                        "[UsageTracker] 3MF split: no spool at printer %d AMS%d-T%d, skipping segment",
+                    logger.warning(
+                        "[UsageTracker] 3MF split: no spool at printer %d AMS%d-T%d — %.1f g not charged",
                         printer_id,
                         seg_ams_id,
                         seg_tray_id,
+                        segment_grams,
                     )
+                    if uncharged is not None:
+                        uncharged.append((tray_global, round(float(segment_grams), 2)))
                     continue
 
                 spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
@@ -2284,6 +2287,8 @@ async def _track_from_3mf(
                         global_tray_id,
                         segment_grams,
                     )
+                    if uncharged is not None:
+                        uncharged.append((global_tray_id, round(float(segment_grams), 2)))
                     continue
                 spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
                 spool = spool_result.scalar_one_or_none()

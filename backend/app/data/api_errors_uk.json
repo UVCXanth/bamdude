@@ -1102,5 +1102,10 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "Order line does not belong to this order": "Позиція не належить цьому замовленню",
+  "Planning inputs changed": "Вхідні дані планування змінилися",
+  "Submission not found": "Операцію надсилання не знайдено",
+  "The working plan changed. Read it again.": "Робочий план змінився. Прочитайте його знову.",
+  "Unknown submission action": "Невідома дія надсилання"
 }

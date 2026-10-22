@@ -1,0 +1,250 @@
+"""Which physical tray fed a one-slot print, and which spool sat in it.
+
+A projection over two sources of boundaries, read-only over both:
+
+* the tray chronology — ``state.tray_change_log``, written by ``bambu_mqtt``
+  every time ``tray_now`` moves during a print;
+* the usage journal (``print_usage_events``) — spool identities frozen at the
+  moment they changed: the print start, a tray change, a reel loaded into a
+  slot, a runout.
+
+Both inventory writers (``usage_tracker`` and ``spoolman_tracking``) read the
+same intervals, so they cannot attribute a print differently.
+
+⚠️ Each interval is charged exactly once, and the same spool may legitimately
+feed several of them (a print that leaves a tray and comes back to it). The
+writers once skipped a tray they had already charged, which silently dropped
+every later stretch of it — a P1S with a BMCU reports ``tray_now=254`` for a
+moment on every load, so a refill mid-print came back to the same tray and the
+new reel's whole share was lost (vault ``bmcu-same-tray-segment-loss``).
+
+The single-tray case (a normalized chronology of at most one entry) is not
+this module's question: the journal's own per-tray boundaries
+(``usage_tracker.journal_boundaries_for_tray``) answer it, as before.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FeedInterval:
+    """One stretch of the print fed from one tray by one spool.
+
+    ``frozen`` says who names the spool. True: the journal named it, and a
+    ``None`` id is explicitly unattributed — the live slot assignment must not
+    fill the gap against a journal boundary. False: the journal holds no spool
+    boundary for this tray, so the writer resolves it as it always has (start
+    snapshot, live assignment, Spoolman tag).
+    """
+
+    start_layer: int
+    tray: int
+    spool_id: int | None
+    spoolman_spool_id: int | None
+    frozen: bool
+
+
+def normalize_tray_changes(tray_changes: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
+    """The tray chronology at the resolution the layer number gives.
+
+    An entry followed by another on the SAME layer fed nothing that layer
+    granularity can see, and is dropped; neighbouring entries of the same tray
+    then merge. This is a projection rule, not proof that nothing was extruded
+    — a layer is a coarse unit — and it must run before any fallback weight
+    split: the equal-split fallback gives every entry a share, zero-length ones
+    included. The open last entry is never zero-length, whatever layer it
+    started on. The raw log is not modified.
+    """
+    entries = list(tray_changes or [])
+    kept = [entry for idx, entry in enumerate(entries) if idx + 1 >= len(entries) or entries[idx + 1][1] > entry[1]]
+    merged: list[tuple[int, int]] = []
+    for tray, layer in kept:
+        if merged and merged[-1][0] == tray:
+            continue
+        merged.append((tray, layer))
+    return merged
+
+
+def sole_feeding_tray(tray_changes: list[tuple[int, int]] | None) -> int | None:
+    """The tray a chronology that MOVED proves fed the whole print, or None.
+
+    ``[(A, 0), (B, 0)]`` — the tray left loaded at print start, then the real
+    feeder on layer 0 — normalizes to B alone. The raw log was the tray split's
+    evidence, and that evidence outranks the dispatched mapping and the start
+    tray (#957); losing it to the single-tray ladder charged the whole print to
+    a reel that fed nothing. A log of one entry never moved and proves nothing
+    new, so it stays with the ladder.
+    """
+    entries = list(tray_changes or [])
+    if len(entries) < 2:
+        return None
+    normalized = normalize_tray_changes(entries)
+    return normalized[0][0] if len(normalized) == 1 else None
+
+
+def _identity_events(events: list, tray: int) -> list:
+    """Events that say which spool sat in ``tray`` from their layer on, in journal order."""
+    from backend.app.models.print_usage_event import EVENT_SPOOL_LOADED, EVENT_START, EVENT_TRAY_CHANGE
+
+    return [
+        e
+        for e in events
+        if e.global_tray_id == tray and e.event in (EVENT_START, EVENT_TRAY_CHANGE, EVENT_SPOOL_LOADED)
+    ]
+
+
+def _refill_layers(events: list, tray: int) -> dict[int, int]:
+    """The layer each refill of ``tray`` feeds from, by event id.
+
+    The first reel loaded into a tray after it ran out (and before its next
+    runout) fed from the RUNOUT's layer: the print stood there until the new
+    reel was in, however much later the operator named it. That is the rule
+    ``usage_tracker.journal_boundaries_for_tray`` splits a single tray by, so
+    the two paths agree on the same refill.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+
+    runouts = [e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == tray]
+    loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == tray]
+    layers: dict[int, int] = {}
+    for idx, runout in enumerate(runouts):
+        next_id = runouts[idx + 1].id if idx + 1 < len(runouts) else None
+        load = next((e for e in loads if e.id > runout.id and (next_id is None or e.id < next_id)), None)
+        if load is not None:
+            layers[load.id] = runout.layer_num
+    return layers
+
+
+def _has_spool_boundary(events: list, tray: int) -> bool:
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+
+    return any(e.global_tray_id == tray and e.event in (EVENT_RUNOUT, EVENT_SPOOL_LOADED) for e in events)
+
+
+def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: list | None) -> list[FeedInterval]:
+    """Feed intervals of a one-slot print that moved between trays.
+
+    ``tray_changes`` is the raw chronology; it is normalized here. Returns
+    ``[]`` when, normalized, it names at most one tray — the journal's per-tray
+    boundaries answer that case. Otherwise one interval per normalized entry,
+    each split further where the journal shows another reel loaded into that
+    very tray while it was feeding (a refill at a runout pause). Neighbours with
+    the same tray and the same attribution merge.
+
+    The spool in a tray at a layer is the last identity event on that tray at
+    or before the layer: the start, a tray change to it, or a reel loaded into
+    it — in journal order, so a later event on the same layer wins; a refill
+    counts from its runout's layer (``_refill_layers``). A tray the
+    journal holds no spool boundary for (no runout, no reel loaded) is left for
+    the writer to resolve (``frozen=False``).
+    """
+    from backend.app.services.print_usage_journal import without_stale_refill_runouts
+
+    chronology = normalize_tray_changes(tray_changes)
+    if len(chronology) <= 1:
+        return []
+    events = sorted(without_stale_refill_runouts(list(journal_events or [])), key=lambda e: e.id)
+
+    intervals: list[FeedInterval] = []
+    for idx, (tray, start) in enumerate(chronology):
+        end = chronology[idx + 1][1] if idx + 1 < len(chronology) else None
+        if not _has_spool_boundary(events, tray):
+            intervals.append(FeedInterval(start, tray, None, None, False))
+            continue
+        identities = _identity_events(events, tray)
+        refills = _refill_layers(events, tray)
+        current = None
+        changes: list[tuple[int, int | None, int | None]] = []
+        for e in identities:
+            layer = refills.get(e.id, e.layer_num)
+            if layer <= start:
+                current = e
+            elif end is None or layer < end:
+                changes.append((layer, e.spool_id, e.spoolman_spool_id))
+        changes.sort(key=lambda change: change[0])  # stable: journal order within a layer
+        first = (start, current.spool_id, current.spoolman_spool_id) if current is not None else (start, None, None)
+        stretch = [first]
+        for change in changes:
+            if stretch[-1][0] == change[0]:
+                stretch[-1] = change  # a later identity on the same layer wins
+            else:
+                stretch.append(change)
+        intervals.extend(FeedInterval(layer, tray, spool, spoolman, True) for layer, spool, spoolman in stretch)
+
+    merged: list[FeedInterval] = []
+    for iv in intervals:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.tray == iv.tray
+            and prev.frozen == iv.frozen
+            and (prev.spool_id, prev.spoolman_spool_id) == (iv.spool_id, iv.spoolman_spool_id)
+        ):
+            continue
+        merged.append(iv)
+    return merged
+
+
+def add_autoswitch_purge(
+    intervals: list[FeedInterval], grams: list[float], journal_events: list | None, purge_grams: float
+) -> tuple[list[FeedInterval], list[float]]:
+    """The emergency-swap purge of each autoswitch, charged to the backup that took over.
+
+    The slicer's estimate holds the planned colour-change flushes but not the
+    purge of an AMS backup switch — the backup reel feeds it, so it lands on
+    the backup's interval: the first interval of ANOTHER tray starting within
+    one layer of the runout. Added once per runout.
+
+    ⚠️ It does not vanish with a zero-length interval (spec): a backup that fed
+    the purge and nothing a layer number sees normalizes away, so the purge
+    becomes an interval of its own — the backup the journal names for the
+    runout (the first tray change to another tray by the next layer, as
+    ``usage_tracker.journal_boundaries_for_tray`` names it), at the runout
+    layer, appended after the print's intervals; ``None`` spool when the
+    journal names none, which the writers report as not recorded. Returns the
+    intervals to charge and their grams. ``runout_purge_grams`` defaults to 0.
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_TRAY_CHANGE, KIND_AUTOSWITCH
+    from backend.app.services.print_usage_journal import without_stale_refill_runouts
+
+    charged = list(intervals)
+    out = list(grams)
+    if purge_grams <= 0 or not journal_events:
+        return charged, out
+    events = sorted(without_stale_refill_runouts(list(journal_events)), key=lambda e: e.id)
+    for runout in events:
+        if runout.event != EVENT_RUNOUT or runout.kind != KIND_AUTOSWITCH or runout.global_tray_id is None:
+            continue
+        idx = next(
+            (
+                i
+                for i, iv in enumerate(intervals)
+                if iv.tray != runout.global_tray_id and abs(iv.start_layer - runout.layer_num) <= 1
+            ),
+            None,
+        )
+        if idx is not None:
+            out[idx] += purge_grams
+            continue
+        backup = next(
+            (
+                e
+                for e in events
+                if e.id > runout.id
+                and e.event == EVENT_TRAY_CHANGE
+                and e.global_tray_id is not None
+                and e.global_tray_id != runout.global_tray_id
+                and e.layer_num <= runout.layer_num + 1
+            ),
+            None,
+        )
+        if backup is not None:
+            charged.append(
+                FeedInterval(runout.layer_num, backup.global_tray_id, backup.spool_id, backup.spoolman_spool_id, True)
+            )
+        else:
+            charged.append(FeedInterval(runout.layer_num, runout.global_tray_id, None, None, True))
+        out.append(purge_grams)
+    return charged, out

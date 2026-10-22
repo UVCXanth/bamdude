@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
+from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.services.spoolman import (
     SpoolmanClientError,
     SpoolmanNotFoundError,
@@ -501,7 +502,7 @@ async def _load_journal_events(printer_id: int, archive_id: int) -> list:
     from backend.app.services.print_usage_journal import load_events
 
     async with async_session() as db:
-        return await load_events(db, printer_id, archive_id)
+        return without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
 
 
 def _as_positive_number(value) -> float | None:
@@ -607,6 +608,7 @@ async def _report_journal_splits(
     method_label: str,
     runout_purge_grams: float = 0.0,
     cost_out: _PrintCost | None = None,
+    uncharged_out: list[tuple[int, float]] | None = None,
 ) -> tuple[int, set[int], list[tuple[int, float]]]:
     """Charge slots whose tray has journal (runout) boundaries per-segment.
 
@@ -674,6 +676,8 @@ async def _report_journal_splits(
                     global_tray_id,
                     grams,
                 )
+                if uncharged_out is not None:
+                    uncharged_out.append((global_tray_id, round(float(grams), 2)))
                 continue
             try:
                 await client.use_spool(spoolman_id, round(grams, 2))
@@ -721,6 +725,7 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
         KIND_MANUAL,
     )
 
+    journal_events = without_stale_refill_runouts(journal_events)
     runouts = [
         e
         for e in (journal_events or [])
@@ -1008,34 +1013,41 @@ async def _report_spool_usage_split_by_tray_changes(
     journal_events: list | None = None,
     runout_purge_grams: float = 0.0,
     cost_out: _PrintCost | None = None,
+    uncharged_out: list[tuple[int, float]] | None = None,
 ) -> tuple[int, set[int]]:
     """Split each slot's grams across ``tray_changes`` and charge per-segment.
 
     Mirrors ``usage_tracker`` Path 1's tray-switch branch so Spoolman and the
     internal Spool inventory attribute mid-print AMS-backup switches identically
     (#1793 — reporter's origin spool was over-charged the whole print because
-    this path didn't exist). ``compute_tray_split_grams`` holds the shared
-    segment-math; this function wraps the per-segment spool resolution +
-    ``use_spool`` sink for the Spoolman side.
+    this path didn't exist). ``utils.usage_attribution.feed_intervals`` gives
+    both backends the same intervals and frozen reels, and
+    ``compute_layer_segment_grams`` the same grams; this function wraps the
+    per-interval spool resolution + ``use_spool`` sink for the Spoolman side.
 
     Returns ``(spools_updated, handled_global_tray_ids)`` — the caller passes
     ``handled_global_tray_ids`` into the remain-delta fallback so a tray
     attributed here is not double-charged there.
     """
-    from backend.app.utils.tray_split import compute_tray_split_grams
+    from backend.app.utils.tray_split import compute_layer_segment_grams
+    from backend.app.utils.usage_attribution import add_autoswitch_purge, feed_intervals
 
     spools_updated = 0
     handled_global_tray_ids: set[int] = set()
+    # Shared with usage_tracker: each feed interval charged exactly once, to
+    # the reel the journal froze for it — not to whatever tag the tray holds at
+    # completion, which is the reel that arrived LAST.
+    intervals = feed_intervals(tray_changes, journal_events or [])
 
     for usage in filament_usage:
         slot_id = usage.get("slot_id", 0)
         total_weight = usage.get("used_g", 0)
-        if total_weight <= 0 or slot_id <= 0:
+        if total_weight <= 0 or slot_id <= 0 or not intervals:
             continue
 
         props = (filament_properties or {}).get(str(slot_id)) or (filament_properties or {}).get(slot_id) or {}
-        segments = compute_tray_split_grams(
-            tray_changes=tray_changes,
+        interval_grams = compute_layer_segment_grams(
+            boundary_layers=[iv.start_layer for iv in intervals],
             total_weight=float(total_weight),
             slot_id=slot_id,
             layer_usage=layer_usage,
@@ -1044,14 +1056,14 @@ async def _report_spool_usage_split_by_tray_changes(
             total_layers=total_layers,
             last_layer_num=last_layer_num,
         )
-        if runout_purge_grams > 0 and journal_events:
-            from backend.app.services.usage_tracker import _add_autoswitch_purge
+        slot_intervals, interval_grams = add_autoswitch_purge(
+            intervals, interval_grams, journal_events or [], runout_purge_grams
+        )
 
-            segments = _add_autoswitch_purge(segments, tray_changes, journal_events, runout_purge_grams)
-
-        for seg_idx, tray_global, segment_grams in segments:
+        for seg_idx, (interval, segment_grams) in enumerate(zip(slot_intervals, interval_grams, strict=True)):
             if segment_grams <= 0:
                 continue
+            tray_global = interval.tray
 
             # Mark this tray as handled BEFORE the resolution attempt so
             # remain-delta doesn't double-charge it, even if we fail to find a
@@ -1067,21 +1079,40 @@ async def _report_spool_usage_split_by_tray_changes(
             spool_material: str | None = None
             spool_obj: dict | None = None
 
-            spool_tag = _resolve_spool_tag(tray_info, printer_serial, tray_global) if tray_info else ""
-            if spool_tag:
-                spool = await client.find_spool_by_tag(spool_tag)
-                if spool:
-                    spool_id_to_use = spool["id"]
-                    resolution_path = "tag"
-                    spool_obj = spool
-                    spool_color_hex = (spool.get("filament") or {}).get("color_hex")
-                    spool_material = (spool.get("filament") or {}).get("material")
+            if interval.frozen:
+                # The journal names this interval's reel; an unknown one stays
+                # unattributed rather than charged to the reel there now.
+                spool_id_to_use = interval.spoolman_spool_id
+                resolution_path = "journal"
+                if spool_id_to_use is None:
+                    logger.info(
+                        "[SPOOLMAN] Split slot %s seg %s tray=%d from layer %d: no attributable spool — "
+                        "%.2fg uncharged rather than guessed",
+                        slot_id,
+                        seg_idx,
+                        tray_global,
+                        interval.start_layer,
+                        segment_grams,
+                    )
+                    if uncharged_out is not None:
+                        uncharged_out.append((tray_global, round(float(segment_grams), 2)))
+                    continue
+            else:
+                spool_tag = _resolve_spool_tag(tray_info, printer_serial, tray_global) if tray_info else ""
+                if spool_tag:
+                    spool = await client.find_spool_by_tag(spool_tag)
+                    if spool:
+                        spool_id_to_use = spool["id"]
+                        resolution_path = "tag"
+                        spool_obj = spool
+                        spool_color_hex = (spool.get("filament") or {}).get("color_hex")
+                        spool_material = (spool.get("filament") or {}).get("material")
 
-            if spool_id_to_use is None:
-                seg_ams_id, seg_tray_id = _global_tray_id_to_ams_slot(tray_global)
-                spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, seg_ams_id, seg_tray_id)
-                if spool_id_to_use is not None:
-                    resolution_path = "slot-assignment"
+                if spool_id_to_use is None:
+                    seg_ams_id, seg_tray_id = _global_tray_id_to_ams_slot(tray_global)
+                    spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, seg_ams_id, seg_tray_id)
+                    if spool_id_to_use is not None:
+                        resolution_path = "slot-assignment"
 
             if spool_id_to_use is None:
                 logger.info(
@@ -1091,6 +1122,8 @@ async def _report_spool_usage_split_by_tray_changes(
                     tray_global,
                     segment_grams,
                 )
+                if uncharged_out is not None:
+                    uncharged_out.append((tray_global, round(float(segment_grams), 2)))
                 continue
 
             # Colour (#1494) + material (#2563) rewrite — first segment for a slot
@@ -1396,11 +1429,20 @@ def _single_slot_tray_from_state(state, tray_changes: list) -> int | None:
 
 
 def _completion_slot_to_tray(
-    slot_to_tray: list | None, filament_usage: list[dict], tray_changes: list, state
+    slot_to_tray: list | None,
+    filament_usage: list[dict],
+    tray_changes: list,
+    state,
+    sole_tray: int | None = None,
 ) -> tuple[list | None, str]:
     """The mapping the completion writer charges by, and where it came from.
 
-    ⚠️ Priority unchanged (CLAUDE.md, "Filament attribution believes the
+    A one-slot print whose tray log moved but collapses to one tray
+    (``usage_attribution.sole_feeding_tray``) is charged to that tray
+    (``tray-log``): the log is the tray split's evidence and outranks the
+    mapping, as the split did before the log was normalized.
+
+    ⚠️ Priority otherwise unchanged (CLAUDE.md, "Filament attribution believes the
     DISPATCHED mapping"): the dispatched / queue mapping captured at start wins
     (``dispatched``). Without one, a multi-switch log is charged per segment by
     the tray split (``split`` — each segment to the tray the printer announced,
@@ -1409,11 +1451,16 @@ def _completion_slot_to_tray(
     default (``positional``) — right for an AMS loaded in slicer order, but a
     guess, and the caller treats it as one.
     """
+    used = [u for u in filament_usage if (u.get("used_g") or 0) > 0]
+    if sole_tray is not None and len(used) == 1:
+        slot_id = int(used[0].get("slot_id") or 1)
+        mapping = [-2] * slot_id
+        mapping[slot_id - 1] = sole_tray
+        return mapping, "tray-log"
     if slot_to_tray:
         return slot_to_tray, "dispatched"
     if len(tray_changes) > 1:
         return None, "split"
-    used = [u for u in filament_usage if (u.get("used_g") or 0) > 0]
     if len(used) == 1:
         tray = _single_slot_tray_from_state(state, tray_changes)
         if tray is not None:
@@ -1500,13 +1547,20 @@ async def report_usage(printer_id: int, archive_id: int):
         # ``slot_to_tray`` mapping).
         nonzero_slots = [u for u in filament_usage if u.get("used_g", 0) > 0]
         tray_changes: list[tuple[int, int]] = []
+        sole_tray: int | None = None
         _state = None
         if len(nonzero_slots) == 1:
             from backend.app.services.printer_manager import printer_manager as _pm
 
             _state = _pm.get_status(printer_id)
             if _state is not None:
-                tray_changes = list(getattr(_state, "tray_change_log", []) or [])
+                # Normalized the same way as usage_tracker: a same-layer blip
+                # (BMCU tray_now=254 on every load) fed nothing.
+                from backend.app.utils.usage_attribution import normalize_tray_changes, sole_feeding_tray
+
+                raw_tray_log = list(getattr(_state, "tray_change_log", []) or [])
+                tray_changes = normalize_tray_changes(raw_tray_log)
+                sole_tray = sole_feeding_tray(raw_tray_log)
         _total_layers = int(getattr(_state, "total_layers", 0) or 0) if _state else 0
         _current_layer = int(getattr(_state, "layer_num", 0) or 0) if _state else 0
         # For the linear-fallback denominator when total_layers is 0 (P1S
@@ -1518,9 +1572,17 @@ async def report_usage(printer_id: int, archive_id: int):
         # print start wins; below it, for a one-slot print, the tray the printer
         # itself named (upstream 935d4b5b, #2953). A positional default is a
         # guess: charged, said at WARNING, and it does not restamp the archive.
-        slot_to_tray, mapping_source = _completion_slot_to_tray(slot_to_tray, filament_usage, tray_changes, _state)
+        slot_to_tray, mapping_source = _completion_slot_to_tray(
+            slot_to_tray, filament_usage, tray_changes, _state, sole_tray
+        )
         mapping_is_guess = mapping_source == "positional" and bool(nonzero_slots)
-        if mapping_source == "printer-tray":
+        if mapping_source == "tray-log":
+            logger.info(
+                "[SPOOLMAN] Archive %s: tray change log collapses to one tray; charging it: %s",
+                archive_id,
+                slot_to_tray,
+            )
+        elif mapping_source == "printer-tray":
             logger.info(
                 "[SPOOLMAN] Archive %s: no dispatched mapping; charging the tray the printer named: %s",
                 archive_id,
@@ -1585,7 +1647,7 @@ async def report_usage(printer_id: int, archive_id: int):
                         # AttributeError catches ``inner.items()`` when the
                         # inner value isn't dict-shaped (corrupt JSON row).
                         # Missing gcode falls through to the linear-ratio branch
-                        # inside ``compute_tray_split_grams`` — still gives a
+                        # inside ``compute_layer_segment_grams`` — still gives a
                         # correct split, just less precise.
                         layer_usage = None
                 split_updated, split_handled = await _report_spool_usage_split_by_tray_changes(
@@ -1605,6 +1667,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     journal_events=journal_events,
                     runout_purge_grams=runout_purge_grams,
                     cost_out=print_cost,
+                    uncharged_out=uncharged,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
@@ -1626,6 +1689,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     f"Archive {archive_id}",
                     runout_purge_grams=runout_purge_grams,
                     cost_out=print_cost,
+                    uncharged_out=uncharged,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled

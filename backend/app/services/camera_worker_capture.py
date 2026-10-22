@@ -18,6 +18,7 @@ CapturePurpose = Literal[
     "snapshot",
     "diagnose",
     "finish_photo",
+    "finish_bank",
     "obico",
     "plate_check",
     "layer_timelapse",

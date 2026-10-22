@@ -109,7 +109,6 @@ const KNOWN_MISSING = new Set([
   'inventory.tagClearFailed',
   'inventory.unassignFailed',
   'inventory.unassignSuccess',
-  'printModal.plateNumber',
   'printers.connection.ethernet',
   'printers.networkLabel',
   'settings.preheatOverride_',

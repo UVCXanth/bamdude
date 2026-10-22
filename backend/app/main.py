@@ -3437,11 +3437,17 @@ async def _spoolman_bidirectional_weight_sync(client, db, printer_id: int, ams_i
             )
 
 
-async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -> bytes | None:
+async def _capture_snapshot_for_notification(
+    printer_id: int, printer, logger, *, purpose: str = "snapshot"
+) -> bytes | None:
     """Capture a camera snapshot for notification image attachment.
 
     Returns JPEG bytes (max 2.5MB) or None if capture fails or is unavailable.
     Uses: external camera > buffered frame > fresh capture.
+
+    ``purpose`` is what the chamber-light lease reads (services/camera_light):
+    a notification photo is a ``snapshot``; the in-print frame banked for the
+    finish photo passes ``finish_bank``, which never takes the light.
     """
     if not printer:
         return None
@@ -3466,6 +3472,7 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                         url=printer.external_camera_url,
                         camera_type=printer.external_camera_type or "mjpeg",
                         snapshot_url=printer.external_camera_snapshot_url,
+                        purpose=purpose,
                         printer_id=printer_id,
                     )
                 )
@@ -3495,6 +3502,7 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                     access_code=printer.access_code,
                     model=printer.model,
                     timeout=15,
+                    purpose=purpose,
                     printer_id=printer_id,
                 )
             )
@@ -3597,8 +3605,11 @@ async def _maybe_bank_inprint_frame(printer_id: int, layer_num: int) -> None:
                 return
         # Reuses the notification snapshot path, which honours the
         # ``capture_finish_photo`` setting (returns None when disabled) so we
-        # don't bank frames the user never asked for.
-        frame = await _capture_snapshot_for_notification(printer_id, printer, logger)
+        # don't bank frames the user never asked for. Under its own purpose:
+        # this runs every few layers all print long, and lighting it flashed
+        # the chamber light on every other layer — ``finish_bank`` never takes
+        # the light; the finish photo that actually shoots still does.
+        frame = await _capture_snapshot_for_notification(printer_id, printer, logger, purpose="finish_bank")
         if frame and print_effect_is_current(printer_manager, token):
             _inprint_frame_bank[photo_key] = frame
             logger.debug(
@@ -11131,7 +11142,7 @@ async def lifespan(app: FastAPI):
                 if tray_global is not None:
                     spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
                 if event == "runout":
-                    await record_runout(
+                    accepted = await record_runout(
                         db,
                         printer_id=printer_id,
                         archive_id=archive_id,
@@ -11141,6 +11152,8 @@ async def lifespan(app: FastAPI):
                         spool_id=spool_id,
                         spoolman_spool_id=spoolman_spool_id,
                     )
+                    if not accepted.should_notify:
+                        return
                     # Notify — pause/external doubles as the human-in-the-loop
                     # prompt to assign the replacement spool. Ambiguous stays
                     # silent (could equally be a jam).

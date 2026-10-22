@@ -1211,6 +1211,7 @@ async def test_the_plan_names_the_other_file_the_same_part_is_sliced_for(committ
 
     # The faster file wins the pick; the slower one is the alternative.
     assert row["filename"] == "lamp.gcode.3mf" and row["printer_model"] == "X1C"
+    assert len(row["alternatives"][0].pop("source_token")) == 64
     assert row["alternatives"] == [
         {
             "plate_id": twin_plate.id,

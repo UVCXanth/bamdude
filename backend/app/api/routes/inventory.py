@@ -3212,11 +3212,10 @@ async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: li
     * ``spool.weight_used`` drops by the rows' total (clamped at 0; the filament
       becomes available again, remaining weight goes up) and the "total consumed"
       baseline is pulled down to stay <= the counter.
-    * each linked ``PrintArchive.filament_used_grams`` drops by the weight of the
-      rows that referenced it (clamped at 0). Subtracting the *row's* share —
-      rather than zeroing the archive — keeps a multi-colour print's total
-      correct when only some of its slots are removed, so the Statistics page
-      (sum of archive grams) stays equal to inventory (sum of usage rows).
+    * each linked ``PrintArchive.filament_used_grams`` drops only by the row's
+      actual print contribution (clamped at 0). Runout tails and AMS-sync
+      corrections are lifetime drift, never part of that archive's grams.
+      An ordinary row still subtracts only its own share of a multi-spool print.
 
     Caller is responsible for deleting the rows and committing.
     """
@@ -3236,8 +3235,8 @@ async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: li
 
     per_archive: dict[int, float] = {}
     for r in rows:
-        if r.archive_id:
-            per_archive[r.archive_id] = per_archive.get(r.archive_id, 0.0) + (r.weight_used or 0)
+        if r.archive_id and r.archive_weight_used:
+            per_archive[r.archive_id] = per_archive.get(r.archive_id, 0.0) + r.archive_weight_used
     for archive_id, used in per_archive.items():
         archive = (await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))).scalar_one_or_none()
         if archive is not None and archive.filament_used_grams is not None:
@@ -3253,7 +3252,8 @@ async def clear_spool_usage_history(
     """Clear all usage history for a spool, returning the weight to the spool.
 
     Same accounting as the per-row delete (see :func:`_return_usage_weight`):
-    every cleared row's weight goes back to the spool and to its linked archive.
+    every cleared row's weight goes back to the spool; only print contributions
+    are removed from the linked archive's grams.
     """
     from backend.app.models.spool_usage_history import SpoolUsageHistory
 

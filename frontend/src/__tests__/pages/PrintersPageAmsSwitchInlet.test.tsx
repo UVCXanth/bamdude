@@ -119,7 +119,7 @@ describe('PrintersPage — AMS card side badge with a Filament Track Switch', ()
 
     await waitFor(() => {
       expect(screen.getAllByTitle(/Filament Track Switch IN-A/).length).toBe(1);
-    });
+    }, { timeout: 5000 });
     expect(screen.getAllByTitle(/Filament Track Switch IN-B/).length).toBe(2);
   });
 

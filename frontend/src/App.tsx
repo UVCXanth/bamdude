@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router';
+import { WorkingPlanNavigationProvider } from './components/projects/WorkingPlanNavigationGuard';
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from 'react-router';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { LoadingBlock } from './components/LoadingBlock';
@@ -225,6 +226,75 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+function AppRoutes() {
+  return (
+    <WorkingPlanNavigationProvider>
+      <Routes>
+        {/* Setup page - only accessible if auth not enabled */}
+        <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
+
+        {/* Login page */}
+        <Route path="/login" element={<LoginPage />} />
+
+        {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
+        <Route path="/camera/:printerId" element={<CameraPage />} />
+        {/* The same page for a camera that belongs to no printer.
+            Declared BEFORE nothing in particular — "standalone" is not a
+            number, so it cannot collide with the route above. */}
+        <Route path="/camera/standalone/:cameraId" element={<CameraPage />} />
+
+        {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
+        <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
+
+        {/* Cam Wall - bookmarkable, and runnable on a login-less kiosk
+            screen via ?token= (upstream #2531) */}
+        <Route path="/camwall" element={<CamWallPage />} />
+
+        {/* Main app with WebSocket for real-time updates */}
+        <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>
+          <Route index element={<PrintersPage />} />
+          <Route path="archives" element={<ArchivesPage />} />
+          <Route path="archives/trash" element={<ArchiveTrashPage />} />
+          <Route path="queue" element={<QueuePage />} />
+          <Route path="firmware" element={<FirmwareUpdatePage />} />
+          <Route path="stats" element={<StatsPage />} />
+          <Route path="profiles" element={<ProfilesPage />} />
+          <Route path="maintenance" element={<MaintenancePage />} />
+          {/* The Workshop by its four reads (WS-13 E13 O13); a dispatch note by any of
+              the three domains it belongs to — the server decides the rest (O25). */}
+          <Route path="projects" element={<PermissionRoute permission="orders:read"><OrdersPage /></PermissionRoute>} />
+          <Route path="projects/:id" element={<PermissionRoute permission="orders:read"><OrderPage /></PermissionRoute>} />
+          <Route path="products" element={<PermissionRoute permission="products:read"><ProductsPage /></PermissionRoute>} />
+          <Route path="products/:id" element={<PermissionRoute permission="products:read"><ProductPage /></PermissionRoute>} />
+          <Route path="customers" element={<PermissionRoute permission="customers:read"><CustomersPage /></PermissionRoute>} />
+          <Route path="customers/:id" element={<PermissionRoute permission="customers:read"><CustomerPage /></PermissionRoute>} />
+          <Route path="stock" element={<PermissionRoute permission="stock:read"><StockPage /></PermissionRoute>} />
+          <Route path="stock/:id" element={<PermissionRoute permission="stock:read"><StockItemPage /></PermissionRoute>} />
+          <Route
+            path="stock/dispatch-notes/:id"
+            element={<PermissionRoute permission={['stock:read', 'orders:read', 'customers:read']}><DispatchNotePage /></PermissionRoute>}
+          />
+          <Route path="inventory" element={<InventoryPage />} />
+          <Route path="files" element={<FileManagerPage />} />
+          <Route path="files/trash" element={<LibraryTrashPage />} />
+          <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+          <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
+          <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
+          <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
+          <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
+          <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
+          <Route path="system" element={<SystemInfoPage />} />
+          <Route path="notifications" element={<PermissionRoute permission="notifications:inbox"><NotificationCenterPage /></PermissionRoute>} />
+          <Route path="external/:id" element={<ExternalLinkPage />} />
+        </Route>
+      </Routes>
+    </WorkingPlanNavigationProvider>
+  );
+}
+
+// A data router owns every navigation, including Back and programmatic links.
+const router = createBrowserRouter([{ path: "*", element: <AppRoutes /> }]);
+
 function App() {
   return (
     <ErrorBoundary>
@@ -236,67 +306,7 @@ function App() {
             <ColorCatalogProvider>
             <SliceJobTrackerProvider>
             <StreamTokenSync />
-            <BrowserRouter>
-              <Routes>
-                {/* Setup page - only accessible if auth not enabled */}
-                <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
-
-                {/* Login page */}
-                <Route path="/login" element={<LoginPage />} />
-
-                {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
-                <Route path="/camera/:printerId" element={<CameraPage />} />
-                {/* The same page for a camera that belongs to no printer.
-                    Declared BEFORE nothing in particular — "standalone" is not a
-                    number, so it cannot collide with the route above. */}
-                <Route path="/camera/standalone/:cameraId" element={<CameraPage />} />
-
-                {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
-                <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
-
-                {/* Cam Wall - bookmarkable, and runnable on a login-less kiosk
-                    screen via ?token= (upstream #2531) */}
-                <Route path="/camwall" element={<CamWallPage />} />
-
-                {/* Main app with WebSocket for real-time updates */}
-                <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>
-                  <Route index element={<PrintersPage />} />
-                  <Route path="archives" element={<ArchivesPage />} />
-                  <Route path="archives/trash" element={<ArchiveTrashPage />} />
-                  <Route path="queue" element={<QueuePage />} />
-                  <Route path="firmware" element={<FirmwareUpdatePage />} />
-                  <Route path="stats" element={<StatsPage />} />
-                  <Route path="profiles" element={<ProfilesPage />} />
-                  <Route path="maintenance" element={<MaintenancePage />} />
-                  {/* The Workshop by its four reads (WS-13 E13 O13); a dispatch note by any of
-                      the three domains it belongs to — the server decides the rest (O25). */}
-                  <Route path="projects" element={<PermissionRoute permission="orders:read"><OrdersPage /></PermissionRoute>} />
-                  <Route path="projects/:id" element={<PermissionRoute permission="orders:read"><OrderPage /></PermissionRoute>} />
-                  <Route path="products" element={<PermissionRoute permission="products:read"><ProductsPage /></PermissionRoute>} />
-                  <Route path="products/:id" element={<PermissionRoute permission="products:read"><ProductPage /></PermissionRoute>} />
-                  <Route path="customers" element={<PermissionRoute permission="customers:read"><CustomersPage /></PermissionRoute>} />
-                  <Route path="customers/:id" element={<PermissionRoute permission="customers:read"><CustomerPage /></PermissionRoute>} />
-                  <Route path="stock" element={<PermissionRoute permission="stock:read"><StockPage /></PermissionRoute>} />
-                  <Route path="stock/:id" element={<PermissionRoute permission="stock:read"><StockItemPage /></PermissionRoute>} />
-                  <Route
-                    path="stock/dispatch-notes/:id"
-                    element={<PermissionRoute permission={['stock:read', 'orders:read', 'customers:read']}><DispatchNotePage /></PermissionRoute>}
-                  />
-                  <Route path="inventory" element={<InventoryPage />} />
-                  <Route path="files" element={<FileManagerPage />} />
-                  <Route path="files/trash" element={<LibraryTrashPage />} />
-                  <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
-                  <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
-                  <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
-                  <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
-                  <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
-                  <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
-                  <Route path="system" element={<SystemInfoPage />} />
-                  <Route path="notifications" element={<PermissionRoute permission="notifications:inbox"><NotificationCenterPage /></PermissionRoute>} />
-                  <Route path="external/:id" element={<ExternalLinkPage />} />
-                </Route>
-              </Routes>
-            </BrowserRouter>
+            <RouterProvider router={router} />
             </SliceJobTrackerProvider>
             </ColorCatalogProvider>
             </ConnectionProvider>

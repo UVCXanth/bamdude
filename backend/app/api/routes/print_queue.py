@@ -38,6 +38,7 @@ from backend.app.schemas.print_queue import (
     PrintQueueBatchCreate,
     PrintQueueBulkDelete,
     PrintQueueBulkDeleteResponse,
+    PrintQueueBulkRetry,
     PrintQueueBulkUpdate,
     PrintQueueBulkUpdateResponse,
     PrintQueueItemCreate,
@@ -1784,6 +1785,32 @@ async def toggle_manual_start(
         item.manual_start = new_value
     await db.commit()
     return {"manual_start": new_value, "item_id": item_id}
+
+
+@router.post("/bulk-retry")
+async def retry_failed_block(
+    request: Request,
+    data: PrintQueueBulkRetry,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Retry only the confirmed, still failed jobs in one committed block."""
+    from backend.app.models.api_key import APIKey
+    from backend.app.services.queue_bulk_retry import retry_block
+    from backend.app.services.swap_source_declarations import actor_for
+
+    actor = await actor_for(request, db, user)
+    key = await db.get(APIKey, actor.key_id) if actor.key_id else None
+    result = await retry_block(
+        db,
+        data.queue_id,
+        data.item_ids,
+        actor=actor,
+        granted_scope=key_printer_scope(request),
+        key_hash=key.key_hash if key else None,
+    )
+    _end_capture_cooldowns(result["retried"])
+    return result
 
 
 @router.post("/{item_id}/retry", response_model=PrintQueueItemResponse)

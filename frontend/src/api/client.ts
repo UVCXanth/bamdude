@@ -2617,6 +2617,13 @@ export interface PlanPartCount {
  * pick, so it is NOT the plate's per-print yield: see `planMath.ts`.
  */
 export interface PlanRow {
+  line_token?: string | null;
+  entry_id?: string | null;
+  source_token?: string | null;
+  target_printer_id?: number | null;
+  manual?: boolean;
+  protected_count?: number;
+  issue?: string | null;
   /** `ProductPlate.id` — NOT the slicer's plate index. */
   plate_id: number;
   library_file_id: number;
@@ -2661,6 +2668,7 @@ export interface PlanRow {
  * move with the switch.
  */
 export interface PlanAlternative {
+  source_token?: string | null;
   /** `ProductPlate.id`. */
   plate_id: number;
   library_file_id: number;
@@ -2725,6 +2733,9 @@ export interface OrderPrintOptionsResponse {
 }
 
 export interface OrderPlan {
+  mode?: 'recommendation' | 'working';
+  working_revision?: number | null;
+  inputs_token?: string | null;
   lines: LinePlan[];
   totals: PlanTotals;
   /** The engine's iteration guard stopped the covering, so these rows are a
@@ -6528,6 +6539,84 @@ export interface ModelHours {
 export interface OrderForecastDetail extends OrderForecast {
   lines: LineForecast[];
   by_model: ModelHours[];
+}
+
+export interface DraftEntry extends PlanEnqueueItem {
+  line_token?: string | null;
+  entry_id: string;
+  target?: PlanEnqueueTarget;
+  source_token?: string | null;
+}
+export interface DraftPreviewRequest {
+  saved_revision?: number;
+  comparison_epoch?: number;
+  schema_version?: 1;
+  client_revision: string;
+  inputs_token?: string | null;
+  entries: DraftEntry[];
+}
+export interface WorkingEntry extends DraftEntry {
+  manual: boolean;
+  protected_count: number;
+}
+export interface WorkingPlan {
+  inputs_changed?: boolean;
+  saved_entries?: WorkingEntry[] | null;
+  saved_machine_seconds?: number | null;
+  schema_version: 1;
+  revision: number;
+  entries: WorkingEntry[];
+  saved_revision: number;
+  saved_at: string | null;
+  saved_by: string | null;
+  epoch: number;
+  saved_epoch: number | null;
+  active_operation: string | null;
+  inputs_token: string;
+  changed: boolean;
+  issues: { entry_id: string; code: string; current_source_token?: string }[];
+}
+export interface PlanSubmission {
+  created_count?: number;
+  remaining_count?: number;
+  can_execute?: boolean;
+  can_cancel?: boolean;
+  is_foreign?: boolean;
+  error_entry_id?: string;
+  operation_id: string;
+  status: 'pending' | 'complete' | 'cancelled';
+  created: { entry_id: string; count: number; queue_kind: string; queue_item_ids: number[] }[];
+  remaining: { entry_id: string; count: number }[];
+  error?: string;
+}
+export interface PlanProposal {
+  previous_count?: number;
+  count?: number;
+  proposal_token: string;
+  inputs_token: string;
+  entries: WorkingEntry[];
+  previous_entries: WorkingEntry[];
+}
+export interface DraftWorkloadGroup {
+  model?: string | null;
+  line_id?: number | null;
+  known_seconds: number;
+  total_seconds: number | null;
+  unknown_prints: number;
+  prints: number;
+}
+export interface DraftPreview {
+  client_revision: string;
+  inputs_token: string;
+  forecast: OrderForecastDetail | null;
+  forecast_error: string | null;
+  totals: PlanTotals;
+  workload: DraftWorkloadGroup & { by_model: DraftWorkloadGroup[]; by_line: DraftWorkloadGroup[] };
+  coverage: { line_id: number; part_id: number; required: number; planned: number; missing: number; surplus: number }[];
+  coverage_complete: boolean;
+  issues: { entry_id: string; code: string }[];
+  order_ready_at: string | null;
+  comparison: { status: string; machine_seconds_delta?: number | null; now_seconds_delta?: number | null; after_seconds_delta?: number | null; coverage_changed?: boolean };
 }
 /** Why an estimate is not whole (WS-13 E1 OR5a / ES3): a code of the server's closed
  *  lists (`utils/estimateReasons.ts`) and its count — null where a count means nothing. */
@@ -11651,6 +11740,12 @@ export const api = {
     request<{ manual_start: boolean; item_id: number }>(`/queue/${id}/manual-start`, { method: 'PATCH' }),
   retryQueueItem: (id: number) =>
     request<PrintQueueItem>(`/queue/${id}/retry`, { method: 'POST' }),
+  bulkRetryQueueItems: (queueId: number, itemIds: number[]) =>
+    request<{
+      retried: number[];
+      left_in_place: { id: number; reason: 'missing' | 'different_queue' | 'not_failed' | 'source_unavailable' }[];
+      not_attempted: number[];
+    }>('/queue/bulk-retry', { method: 'POST', body: JSON.stringify({ queue_id: queueId, item_ids: itemIds }) }),
   // Batch operations
   groupItemsIntoBatch: (itemIds: number[]) =>
     request<{ batch_id: string; count: number }>(`/queue/batch`, {
@@ -12989,8 +13084,8 @@ export const api = {
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
   updateOrder: (id: number, data: OrderUpdate) =>
     request<Order>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  deleteOrder: (id: number) =>
-    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
+  deleteOrder: (id: number, options?: { onlyIfUnsubmitted: boolean }) =>
+    request<{ message: string }>(`/projects/${id}${options?.onlyIfUnsubmitted ? '?only_if_unsubmitted=true' : ''}`, { method: 'DELETE' }),
   duplicateOrder: (id: number, name?: string) =>
     request<Order>(`/projects/${id}/duplicate`, {
       method: 'POST',
@@ -13077,6 +13172,27 @@ export const api = {
   setOrderPrintOptions: (id: number, overrides: OrderPrintOptionsResponse['overrides']) =>
     request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
+  getWorkingPlan: (id: number) => request<WorkingPlan>(`/projects/${id}/working-plan`),
+  writeWorkingPlan: (id: number, body: { expected_revision: number; inputs_token?: string; entries: WorkingEntry[] }) =>
+    request<WorkingPlan>(`/projects/${id}/working-plan`, { method: 'PUT', body: JSON.stringify(body) }),
+  actWorkingPlan: (id: number, action: 'save' | 'discard', state: WorkingPlan) =>
+    request<WorkingPlan>(`/projects/${id}/working-plan/${action}`, { method: 'POST', body: JSON.stringify({
+      expected_revision: state.revision, expected_saved_revision: state.saved_revision,
+      expected_epoch: state.epoch, inputs_token: state.inputs_token,
+    }) }),
+  replanWorkingPlan: (id: number, body: { expected_revision: number; kind: 'remainder' | 'rebuild'; inputs_token?: string; apply?: boolean; proposal_token?: string; proposal_entries?: WorkingEntry[] }) =>
+    request<PlanProposal | WorkingPlan>(`/projects/${id}/working-plan/replan`, { method: 'POST', body: JSON.stringify(body) }),
+  registerPlanSubmission: (id: number, body: { operation_id: string; expected_revision: number; parts: { entry_id: string; count: number }[] }) =>
+    request<PlanSubmission>(`/projects/${id}/working-plan/submissions`, { method: 'POST', body: JSON.stringify(body) }),
+  getPlanSubmission: (id: number, operation: string) => request<PlanSubmission>(`/projects/${id}/working-plan/submissions/${operation}`),
+  cancelPlanSubmission: (id: number, operation: string, reason: string) =>
+    request<PlanSubmission>(`/projects/${id}/working-plan/submissions/${operation}/cancel-unpublished`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  actPlanSubmission: (id: number, operation: string, action: 'execute' | 'cancel') =>
+    request<PlanSubmission>(`/projects/${id}/working-plan/submissions/${operation}/${action}`, { method: 'POST' }),
+  previewOrderDraft: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>
+    request<DraftPreview>(`/projects/${id}/plan/forecast-preview`, { method: 'POST', body: JSON.stringify(body), signal }),
+  previewDraftFilament: (id: number, body: DraftPreviewRequest, signal?: AbortSignal) =>
+    request<OrderNeeds>(`/projects/${id}/plan/filament-preview`, { method: 'POST', body: JSON.stringify(body), signal }),
   enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
     request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
       method: 'POST',

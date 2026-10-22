@@ -225,7 +225,7 @@ describe('every order journal kind has a sentence', () => {
     'order_created', 'status_changed', 'fields_changed', 'responsible_changed', 'stage_changed',
     'line_added', 'line_changed', 'line_removed', 'line_configured',
     'prints_filed', 'prints_unfiled', 'prints_relined', 'print_trashed', 'print_restored', 'defects_recorded',
-    'queue_items_filed', 'queue_items_unfiled', 'plan_enqueued', 'line_rebalanced',
+    'queue_items_filed', 'queue_items_unfiled', 'plan_enqueued', 'plan_submission_cancelled', 'line_rebalanced',
     'surplus_banked', 'procurement_updated',
     'kits_assembled', 'goods_received', 'goods_issued', 'stock_taken', 'goods_written_off', 'goods_stocked',
     'attachment_added', 'attachment_removed', 'cover_changed',
@@ -251,7 +251,7 @@ describe('every order journal kind has a sentence', () => {
  * a missing key would render the code itself (CL5).
  */
 describe('every estimate reason has a label', () => {
-  const ORDER_REASONS = ['unknown_time', 'unroutable', 'material_mismatch', 'needs_slicing', 'no_plate', 'truncated'];
+  const ORDER_REASONS = ['unknown_time', 'unroutable', 'material_mismatch', 'needs_slicing', 'no_plate', 'unplanned_parts', 'truncated'];
   const PRODUCT_REASONS = [
     'no_plate',
     'needs_slicing',

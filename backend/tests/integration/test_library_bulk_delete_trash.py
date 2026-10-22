@@ -232,3 +232,132 @@ async def test_a_file_already_in_the_trash_is_not_counted_twice(async_client: As
     body = (await async_client.post("/api/v1/library/bulk-delete", json={"file_ids": [f.id], "folder_ids": []})).json()
 
     assert body["deleted_files"] == 0
+
+
+async def _trash_row(db_session, file_id):
+    """The row as the database holds it — never the session's mapped copy."""
+    from sqlalchemy import select
+
+    from backend.app.models.library import LibraryFile
+
+    return (
+        await db_session.execute(
+            select(LibraryFile.id, LibraryFile.deleted_at, LibraryFile.folder_id).where(LibraryFile.id == file_id)
+        )
+    ).first()
+
+
+async def _assert_restorable_to_the_root(async_client: AsyncClient, db_session, file_id):
+    listed = (await async_client.get("/api/v1/library/trash")).json()
+    assert file_id in [row["id"] for row in listed["items"]], "still in the trash"
+    restored = await async_client.post(f"/api/v1/library/trash/{file_id}/restore")
+    assert restored.status_code == 200, restored.text
+    row = await _trash_row(db_session, file_id)
+    assert row.deleted_at is None and row.folder_id is None, "back, at the library root"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_file_trashed_before_its_folder_survives_the_folder_delete(
+    async_client: AsyncClient, file_factory, folder_factory, db_session
+):
+    """The folder walk took only active files: one already in the trash stayed
+    attached, and the folder's cascade deleted its row — restore was a 404."""
+    folder = await folder_factory()
+    inside = await file_factory(folder_id=folder.id)
+    assert (await async_client.delete(f"/api/v1/library/files/{inside.id}")).status_code == 200
+    first_delete = (await _trash_row(db_session, inside.id)).deleted_at
+
+    response = await async_client.delete(f"/api/v1/library/folders/{folder.id}")
+    assert response.status_code == 200, response.text
+
+    row = await _trash_row(db_session, inside.id)
+    assert row is not None, "the folder's cascade must not take a row already in the trash"
+    assert row.folder_id is None
+    assert row.deleted_at == first_delete, "its retention runs from its own delete, not the folder's"
+    await _assert_restorable_to_the_root(async_client, db_session, inside.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_bulk_deleting_a_file_with_its_folder_keeps_the_file(
+    async_client: AsyncClient, file_factory, folder_factory, db_session
+):
+    """One request: the file pass trashed it without detaching, so the folder
+    pass no longer saw it as active and the cascade took it."""
+    folder = await folder_factory()
+    inside = await file_factory(folder_id=folder.id)
+
+    body = (
+        await async_client.post(
+            "/api/v1/library/bulk-delete", json={"file_ids": [inside.id], "folder_ids": [folder.id]}
+        )
+    ).json()
+
+    assert body["deleted_files"] == 1, "counted once, by the pass that trashed it"
+    assert body["deleted_folders"] == 1
+    row = await _trash_row(db_session, inside.id)
+    assert row is not None and row.deleted_at is not None and row.folder_id is None
+    await _assert_restorable_to_the_root(async_client, db_session, inside.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_trashed_file_deep_in_the_tree_survives_its_ancestor_delete(
+    async_client: AsyncClient, file_factory, folder_factory, db_session
+):
+    parent = await folder_factory()
+    child = await folder_factory(parent_id=parent.id)
+    deep = await file_factory(folder_id=child.id)
+    assert (await async_client.delete(f"/api/v1/library/files/{deep.id}")).status_code == 200
+    first_delete = (await _trash_row(db_session, deep.id)).deleted_at
+
+    response = await async_client.delete(f"/api/v1/library/folders/{parent.id}")
+    assert response.status_code == 200, response.text
+
+    row = await _trash_row(db_session, deep.id)
+    assert row is not None and row.folder_id is None and row.deleted_at == first_delete
+    await _assert_restorable_to_the_root(async_client, db_session, deep.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_folder_of_active_and_trashed_files_counts_only_the_new_deletes(
+    async_client: AsyncClient, file_factory, folder_factory, db_session
+):
+    folder = await folder_factory()
+    active = await file_factory(folder_id=folder.id)
+    binned = await file_factory(folder_id=folder.id)
+    assert (await async_client.delete(f"/api/v1/library/files/{binned.id}")).status_code == 200
+    first_delete = (await _trash_row(db_session, binned.id)).deleted_at
+
+    body = (
+        await async_client.post("/api/v1/library/bulk-delete", json={"file_ids": [], "folder_ids": [folder.id]})
+    ).json()
+
+    assert body["deleted_files"] == 1, "the binned file was deleted before; it is not deleted again"
+    fresh, kept = await _trash_row(db_session, active.id), await _trash_row(db_session, binned.id)
+    assert fresh.deleted_at is not None and fresh.folder_id is None
+    assert kept is not None and kept.folder_id is None and kept.deleted_at == first_delete
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_parent_and_its_child_in_one_request_keep_the_binned_file(
+    async_client: AsyncClient, file_factory, folder_factory, db_session
+):
+    parent = await folder_factory()
+    child = await folder_factory(parent_id=parent.id)
+    deep = await file_factory(folder_id=child.id)
+    assert (await async_client.delete(f"/api/v1/library/files/{deep.id}")).status_code == 200
+
+    body = (
+        await async_client.post(
+            "/api/v1/library/bulk-delete", json={"file_ids": [deep.id], "folder_ids": [child.id, parent.id, child.id]}
+        )
+    ).json()
+
+    assert body["deleted_files"] == 0
+    row = await _trash_row(db_session, deep.id)
+    assert row is not None and row.folder_id is None and row.deleted_at is not None
+    await _assert_restorable_to_the_root(async_client, db_session, deep.id)

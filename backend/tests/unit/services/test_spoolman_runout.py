@@ -119,6 +119,25 @@ async def _run(tracking, client, events, pm=None, get_setting=None):
 
 class TestSpoolmanRunoutZeroPoint:
     @pytest.mark.asyncio
+    async def test_refilled_inactive_origin_is_not_consumed_or_archived(self):
+        from backend.app.models.print_usage_event import KIND_AUTOSWITCH
+
+        events = [
+            _event(1, EVENT_TRAY_CHANGE, None, 0, 0, 8),
+            _event(2, EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 6, 8),
+            _event(3, EVENT_TRAY_CHANGE, None, 1, 6, 9),
+            _event(4, EVENT_SPOOL_LOADED, None, 0, 18, 10),
+            _event(5, EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 18, 10),
+        ]
+        events[-2].slot_occupied = events[-1].slot_occupied = True
+        client = _client(remaining=1000.0)
+        await _run(_tracking(), client, events)
+        assert not any(c.args[0] == 10 for c in client.use_spool.await_args_list)
+        assert not any(c.args[0] == 10 for c in client.update_spool.await_args_list)
+        assert not any(c.args[0] == 10 for c in client.set_spool_archived.await_args_list)
+        assert any(c.args[0] == 9 for c in client.use_spool.await_args_list)
+
+    @pytest.mark.asyncio
     async def test_same_slot_refill_splits_and_zeroes(self):
         events = [
             _event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8),

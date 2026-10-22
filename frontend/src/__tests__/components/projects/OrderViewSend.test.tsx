@@ -11,7 +11,7 @@ import { Routes, Route } from 'react-router';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import { OrderPage } from '../../../pages/orders/OrderPage';
-import { makeForecast, makeOrder, mockOrderDetailApi } from '../../fixtures/orderDetail';
+import { makeForecast, makeDraftForecast, makeOrder, mockOrderDetailApi } from '../../fixtures/orderDetail';
 
 const plan = {
   lines: [
@@ -59,13 +59,13 @@ function renderPage() {
 async function sendThePlan(reread: Promise<never>) {
   const spies = mockOrderDetailApi(makeOrder());
   spies.getOrderPlan.mockResolvedValue(plan as never);
-  spies.getOrderForecast.mockResolvedValueOnce(makeForecast({ now_eta: '2026-09-26T09:37:00Z' }));
+  spies.previewOrderDraft.mockResolvedValueOnce(makeDraftForecast(makeForecast({ now_eta: '2026-09-26T09:37:00Z' })));
   vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] } as never);
   renderPage();
 
   const ready = await screen.findByTestId('order-tile-ready');
   await waitFor(() => expect(ready).toHaveTextContent(/26/));
-  spies.getOrderForecast.mockReturnValue(reread);
+  spies.previewOrderDraft.mockReturnValue(reread.then(value => makeDraftForecast(value)));
   fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
   return spies;
 }
@@ -100,11 +100,12 @@ describe('OrderView · sending the plan', () => {
     spies.getOrderPlan.mockResolvedValue(plan as never);
     let releaseFirst: (value: never) => void = () => {};
     // Both answers are set up front: the read after the send starts inside the send's own success.
-    spies.getOrderForecast
+    spies.previewOrderDraft
       .mockReturnValueOnce(new Promise((resolve) => (releaseFirst = resolve)) as never)
-      .mockReturnValueOnce(second);
+      .mockReturnValueOnce(second.then(value => makeDraftForecast(value)));
     vi.spyOn(api, 'enqueueOrderPlan').mockResolvedValue({ created: [{ line_id: 10, plate_id: 100, queue_item_ids: [7] }] } as never);
     renderPage();
+    await waitFor(() => expect(spies.previewOrderDraft).toHaveBeenCalledTimes(1), { timeout: 3000 });
     fireEvent.click(await screen.findByTestId('plan-enqueue-all'));
     await waitFor(() => expect(api.enqueueOrderPlan).toHaveBeenCalled());
     return { spies, releaseFirst };
@@ -114,13 +115,13 @@ describe('OrderView · sending the plan', () => {
     let answer: (value: never) => void = () => {};
     const { spies, releaseFirst } = await sendWhileTheFirstReadIsHeld(new Promise((resolve) => (answer = resolve)));
 
-    releaseFirst(makeForecast({ now_eta: '2026-09-26T09:37:00Z' }) as never);
+    releaseFirst(makeDraftForecast(makeForecast({ now_eta: '2026-09-26T09:37:00Z' })) as never);
     const ready = screen.getByTestId('order-tile-ready');
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(ready).not.toHaveTextContent(/26/);
     expect(ready).toHaveTextContent('…');
     expect(within(screen.getByTestId('order-forecast-panel')).queryByTestId('order-forecast-eta')).toBeNull();
-    expect(spies.getOrderForecast).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(spies.previewOrderDraft).toHaveBeenCalledTimes(2));
 
     answer(makeForecast({ now_eta: '2026-09-28T09:37:00Z' }) as never);
     await waitFor(() => expect(ready).toHaveTextContent(/28/));
@@ -130,10 +131,10 @@ describe('OrderView · sending the plan', () => {
     let fail: (e: Error) => void = () => {};
     const { spies, releaseFirst } = await sendWhileTheFirstReadIsHeld(new Promise((_, reject) => (fail = reject)));
 
-    releaseFirst(makeForecast({ now_eta: '2026-09-26T09:37:00Z' }) as never);
+    releaseFirst(makeDraftForecast(makeForecast({ now_eta: '2026-09-26T09:37:00Z' })) as never);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.getByTestId('order-tile-ready')).not.toHaveTextContent(/26/);
-    expect(spies.getOrderForecast).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(spies.previewOrderDraft).toHaveBeenCalledTimes(2));
     fail(new Error('boom'));
     const panel = screen.getByTestId('order-forecast-panel');
     expect(await within(panel).findByRole('button', { name: 'Retry' })).toBeInTheDocument();

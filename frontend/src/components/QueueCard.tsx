@@ -1,7 +1,7 @@
 import { AutoEjectBadge } from './AutoEjectBadge';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
@@ -1077,6 +1077,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
           <IssuesSection
             queueId={queue.id}
             issueCount={issueCount}
+            failedCount={issueCounts?.failed_count ?? 0}
             queueKey={['queue', queue.printer_id]}
             printerName={queue.printer_name ?? String(queue.printer_id)}
             hasPermission={hasPermission}
@@ -1542,6 +1543,7 @@ function PendingItemRow({
 interface IssuesSectionProps {
   queueId: number;
   issueCount: number;
+  failedCount: number;
   queueKey: (string | number)[];
   printerName: string;
   hasPermission: (perm: Permission) => boolean;
@@ -1554,15 +1556,14 @@ interface IssuesSectionProps {
  * skipped items with retry / unskip / remove-from-queue affordances.
  *
  * Collapsed by default — summary only.  Expands on click.  Each row
- * has its own mutation state. Per-row actions plus one bulk action —
- * Delete all — scoped to the failed + cancelled rows the section is
- * showing (spec: queue-issues-delete-all): the ids go to the server,
- * which deletes only those still failed/cancelled. Skipped rows are
- * deferred live work and are never part of it.
+ * has its own mutation state. Bulk deletion covers failed + cancelled;
+ * bulk retry covers failed only and uses the ordinary per-item Retry.
+ * Both load every page before freezing the IDs for confirmation.
  */
 function IssuesSection({
   queueId,
   issueCount,
+  failedCount,
   queueKey,
   printerName,
   hasPermission,
@@ -1572,9 +1573,14 @@ function IssuesSection({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [open, setOpen] = useState(false);
-  const [loadingAll, setLoadingAll] = useState(false);
+  const [loadingAction, setLoadingAction] = useState<'delete' | 'retry' | null>(null);
+  const loadingAll = loadingAction !== null;
   const bulkLoadRef = useRef<AbortController | null>(null);
-  useEffect(() => () => bulkLoadRef.current?.abort(), []);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; bulkLoadRef.current?.abort(); };
+  }, []);
 
   const details = useInfiniteQuery({
     ...farmQueryResumeOptions,
@@ -1632,6 +1638,31 @@ function IssuesSection({
     failed: number;
     cancelled: number;
   } | null>(null);
+  const [confirmRetryAll, setConfirmRetryAll] = useState<number[] | null>(null);
+  const retryAllInFlight = useRef(false);
+
+  // Mutation callbacks own the request/result even if a virtualized card unmounts.
+  const retryRequests = useIsMutating({ mutationKey: ['queue-bulk-retry', queueId] });
+  const retryAllMutation = useMutation({
+    mutationKey: ['queue-bulk-retry', queueId],
+    mutationFn: (ids: number[]) => api.bulkRetryQueueItems(queueId, ids),
+    onSuccess: (result, ids) => {
+      if (mounted.current) setConfirmRetryAll(null);
+      const complete = result.retried.length === ids.length;
+      const summary = t(complete ? 'queueCard.issues.retryAllDone' : 'queueCard.issues.retryAllPartial', { count: result.retried.length, total: ids.length });
+      const reasons = [...new Set(result.left_in_place.map(row => row.reason))].map(reason =>
+        t(`queueCard.issues.retryReasons.${reason}`, { count: result.left_in_place.filter(row => row.reason === reason).length }));
+      if (result.not_attempted.length) reasons.push(t('queueCard.issues.retryNotAttempted', { count: result.not_attempted.length }));
+      showToast([summary, ...reasons].join(' '), complete ? 'success' : 'warning');
+    },
+    onError: () => {
+      if (mounted.current) setConfirmRetryAll(null);
+      showToast(t('queueCard.issues.retryAllUnknown'), 'warning');
+    },
+    onSettled: () => { retryAllInFlight.current = false; invalidate(); },
+  });
+  const retryAllBusy = retryRequests > 0 || retryAllMutation.isPending || confirmRetryAll !== null;
+  const retryRowsBusy = retryAllBusy || loadingAction === 'retry';
 
   const deleteAllMutation = useMutation({
     mutationFn: (ids: number[]) => api.bulkDeleteQueueItems(ids),
@@ -1653,11 +1684,11 @@ function IssuesSection({
     },
   });
 
-  const loadAllForDelete = async () => {
+  const loadAllForAction = async (action: 'delete' | 'retry') => {
     bulkLoadRef.current?.abort();
     const controller = new AbortController();
     bulkLoadRef.current = controller;
-    setLoadingAll(true);
+    setLoadingAction(action);
     try {
       const rows: PrintQueueItem[] = [];
       let cursor: number | undefined;
@@ -1667,6 +1698,12 @@ function IssuesSection({
         cursor = page.next_cursor ?? undefined;
       } while (cursor !== undefined);
       if (controller.signal.aborted) return;
+      if (action === 'retry') {
+        const ids = [...new Set(rows.filter(item => item.status === 'failed').map(item => item.id))];
+        if (!ids.length) showToast(t('queueCard.issues.retryAllNone'), 'info');
+        else setConfirmRetryAll(ids);
+        return;
+      }
       const failed = rows.filter(item => item.status === 'failed' && canModify('queue', 'delete', item.created_by_id));
       const cancelled = rows.filter(item => item.status === 'cancelled' && canModify('queue', 'delete', item.created_by_id));
       if (failed.length + cancelled.length === 0) {
@@ -1683,7 +1720,7 @@ function IssuesSection({
     } finally {
       if (bulkLoadRef.current === controller) {
         bulkLoadRef.current = null;
-        setLoadingAll(false);
+        setLoadingAction(null);
       }
     }
   };
@@ -1691,7 +1728,7 @@ function IssuesSection({
 
   return (
     <div className="space-y-1 pt-1">
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         <button
           onClick={() => {
             if (open) bulkLoadRef.current?.abort();
@@ -1703,18 +1740,32 @@ function IssuesSection({
           <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
           <span>{t('queueCard.issues.header', { count: issueCount })}</span>
         </button>
+        {canUpdate && failedCount > 0 && <button
+          onClick={e => {
+            e.stopPropagation();
+            if (loadingAction === 'retry') bulkLoadRef.current?.abort();
+            else void loadAllForAction('retry');
+          }}
+          disabled={deleteAllMutation.isPending || retryAllBusy || !!confirmDeleteAll ||
+            retryMutation.isPending || removeMutation.isPending || unskipMutation.isPending ||
+            (loadingAll && loadingAction !== 'retry')}
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap px-1.5 py-0.5 rounded text-[11px] text-bambu-green hover:bg-bambu-green/20 disabled:opacity-50"
+        >
+          <RotateCcw className="w-3 h-3" />
+          {loadingAction === 'retry' ? t('queueCard.issues.cancelLoading') : t('queueCard.issues.retryAllStart')}
+        </button>}
         {(hasPermission('queue:delete_all') || hasPermission('queue:delete_own')) && issueCount > 0 && (
           <button
             onClick={(e) => {
               e.stopPropagation();
               if (loadingAll) bulkLoadRef.current?.abort();
-              else void loadAllForDelete();
+              else void loadAllForAction('delete');
             }}
-            disabled={deleteAllMutation.isPending}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-red-700 dark:text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+            disabled={deleteAllMutation.isPending || retryAllBusy || (loadingAll && loadingAction !== 'delete')}
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap px-1.5 py-0.5 rounded text-[11px] text-red-700 dark:text-red-400 hover:bg-red-500/20 disabled:opacity-50"
           >
             <Trash2 className="w-3 h-3" />
-            {loadingAll ? t('queueCard.issues.cancelLoading') : t('queueCard.issues.deleteAllStart')}
+            {loadingAction === 'delete' ? t('queueCard.issues.cancelLoading') : t('queueCard.issues.deleteAllStart')}
           </button>
         )}
       </div>
@@ -1745,7 +1796,7 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || !canUpdate}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={t('queueCard.actions.retry')}
                   >
@@ -1753,7 +1804,7 @@ function IssuesSection({
                   </button>
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
-                    disabled={removeMutation.isPending}
+                    disabled={removeMutation.isPending || retryRowsBusy}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queueCard.actions.remove')}
                   >
@@ -1783,7 +1834,7 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || !canUpdate}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={t('queueCard.actions.restart')}
                   >
@@ -1791,7 +1842,7 @@ function IssuesSection({
                   </button>
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
-                    disabled={removeMutation.isPending}
+                    disabled={removeMutation.isPending || retryRowsBusy}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queueCard.actions.remove')}
                   >
@@ -1818,7 +1869,7 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => unskipMutation.mutate(item.id)}
-                    disabled={unskipMutation.isPending || !canUpdate}
+                    disabled={unskipMutation.isPending || retryRowsBusy || !canUpdate}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={t('queueCard.actions.unskip')}
                   >
@@ -1826,7 +1877,7 @@ function IssuesSection({
                   </button>
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
-                    disabled={removeMutation.isPending}
+                    disabled={removeMutation.isPending || retryRowsBusy}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
                     title={t('queueCard.actions.remove')}
                   >
@@ -1843,6 +1894,19 @@ function IssuesSection({
           )}
         </div>
       )}
+      {confirmRetryAll && <ConfirmModal
+        title={t('queueCard.issues.retryAllTitle')}
+        message={t('queueCard.issues.retryAllMessage', { count: confirmRetryAll.length, printer: printerName })}
+        confirmText={t('queueCard.issues.retryAllConfirm')}
+        isLoading={retryAllMutation.isPending}
+        loadingText={t('queueCard.issues.retryAllSending')}
+        onConfirm={() => {
+          if (retryAllInFlight.current) return;
+          retryAllInFlight.current = true;
+          retryAllMutation.mutate(confirmRetryAll);
+        }}
+        onCancel={() => setConfirmRetryAll(null)}
+      />}
       {confirmDeleteAll && (
         <ConfirmModal
           title={t('queueCard.issues.deleteAllTitle')}

@@ -70,6 +70,25 @@ describe('PlanFromFilesModal', () => {
     expect(screen.getByRole('button', { name: 'Keep the order' })).toBeInTheDocument();
   });
 
+  it('keeps an order whose committed work was unknown to the dialog', async () => {
+    const close = vi.fn();
+    let guarded = false;
+    server.use(http.delete('/api/v1/projects/42', ({ request }) => {
+      guarded = new URL(request.url).searchParams.get('only_if_unsubmitted') === 'true';
+      return HttpResponse.json({ detail: { code: 'order_has_work' } }, { status: 409 });
+    }));
+    render(<PlanFromFilesModal fileIds={[5, 6]} onClose={close} />);
+    await userEvent.type(await screen.findByLabelText('flask'), '10');
+    await userEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByText(/The order already has submitted work and was kept/)).toBeInTheDocument();
+    expect(guarded).toBe(true);
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Close' }).find(button => button.textContent === 'Close')!);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('cancelling on the plan step deletes the order and never asks for it again', async () => {
     const onClose = vi.fn();
     const deleted = vi.fn();

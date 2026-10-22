@@ -369,6 +369,15 @@ class TestPolicy:
         assert await camera_light.allowed(printer.id, "layer_timelapse") is False
 
     @pytest.mark.asyncio
+    async def test_the_finish_bank_never_takes_the_light(self, db_session, printer_factory):
+        """The in-print frame banked for the finish photo runs every few layers all
+        print long; lighting it flashed the chamber light on every other layer."""
+        printer = await printer_factory(camera_light_auto="on")
+        await self._set(db_session, camera_light.FARM_SETTING, "true")
+        await self._set(db_session, camera_light.OBICO_SETTING, "true")
+        assert await camera_light.allowed(printer.id, "finish_bank") is False
+
+    @pytest.mark.asyncio
     async def test_the_plate_check_always_takes_the_light_as_it_always_did(self, db_session, printer_factory):
         """Its reference was calibrated with the light on; a check in the dark pauses prints for nothing."""
         printer = await printer_factory(camera_light_auto="off")

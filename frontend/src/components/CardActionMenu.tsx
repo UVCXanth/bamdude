@@ -228,10 +228,12 @@ export function CardActionMenuItem({
   disabled,
   title,
   role = 'menuitem',
+  className = '',
   checked,
   children,
 }: {
   onSelect: () => void;
+  className?: string;
   danger?: boolean;
   disabled?: boolean;
   /** Why the row is disabled, shown on hover — the permission or the state
@@ -252,7 +254,7 @@ export function CardActionMenuItem({
       title={title}
       className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-bambu-dark disabled:opacity-50 disabled:hover:bg-transparent ${
         danger ? 'text-red-500' : 'text-white'
-      }`}
+      } ${className}`}
     >
       {children}
     </button>

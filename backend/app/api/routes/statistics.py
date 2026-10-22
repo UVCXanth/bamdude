@@ -449,7 +449,9 @@ async def recalculate_all_costs(
             SpoolUsageHistory.archive_id,
             func.sum(SpoolUsageHistory.cost),
             func.sum(SpoolUsageHistory.weight_used),
-        ).group_by(SpoolUsageHistory.archive_id)
+        )
+        .where(SpoolUsageHistory.print_contribution_filter())
+        .group_by(SpoolUsageHistory.archive_id)
     )
     usage_costs = usage_costs_result.fetchall()
     cost_map = {
@@ -475,6 +477,7 @@ async def recalculate_all_costs(
                 select(func.sum(SpoolUsageHistory.cost)).where(
                     SpoolUsageHistory.print_name == archive.print_name,
                     SpoolUsageHistory.archive_id.is_(None),
+                    SpoolUsageHistory.print_contribution_filter(),
                 )
             )
             fallback_cost = usage_result.scalar()

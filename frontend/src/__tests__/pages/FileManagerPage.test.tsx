@@ -457,6 +457,98 @@ describe('FileManagerPage', () => {
   });
 
   describe('search and filter', () => {
+    it('keeps the active query and filters when the mobile panels are collapsed', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      const searchToggle = await screen.findByRole('button', { name: 'Search' });
+      await user.click(searchToggle);
+      const search = screen.getByPlaceholderText('Search files...');
+      expect(search).toHaveFocus();
+      await user.type(search, 'benchy');
+      await user.click(searchToggle);
+      expect(searchToggle).toHaveAttribute('aria-expanded', 'false');
+      await user.click(screen.getByRole('button', { name: 'Search: benchy' }));
+      expect(search).toHaveValue('benchy');
+
+      const filtersToggle = screen.getByRole('button', { name: 'Filters' });
+      await user.click(filtersToggle);
+      const typeFilter = screen.getByRole('option', { name: 'STL' }).closest('select')!;
+      await user.selectOptions(typeFilter, 'stl');
+      await user.click(filtersToggle);
+      expect(filtersToggle).toHaveAttribute('aria-expanded', 'false');
+      expect(filtersToggle).toHaveTextContent('1');
+      expect(typeFilter).toHaveValue('stl');
+      await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+      expect(search).toHaveValue('');
+      expect(typeFilter).toHaveValue('all');
+    });
+
+    it('keeps disabled explanations in the mobile actions menu', async () => {
+      server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({ id: 2, username: 'reader', role: 'user', is_active: true, is_admin: false, groups: [], permissions: ['library:read_all'], created_at: '2026-01-01T00:00:00Z' })));
+      const user = userEvent.setup(); render(<FileManagerPage />); await screen.findByText('Benchy');
+      const desktopFolder = screen.getByRole('button', { name: 'New Folder' });
+      await waitFor(() => expect(desktopFolder).toBeDisabled());
+      await user.click(screen.getByRole('button', { name: 'More library actions' }));
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getByRole('menuitem', { name: 'New Folder' })).toHaveAttribute('title', desktopFolder.title);
+      expect(within(menu).getByRole('menuitem', { name: 'Generate Thumbnails' })).toHaveAttribute('title', 'You do not have permission to generate thumbnails');
+    });
+
+    it('explains the external-root restriction in the mobile menu', async () => {
+      server.use(http.get('/api/v1/library/folders', () => HttpResponse.json([{ ...mockFolders[0], is_external: true }])));
+      const user = userEvent.setup(); render(<FileManagerPage />); await screen.findByText('Benchy');
+      await user.click(screen.getByText('External'));
+      const desktop = screen.getByRole('button', { name: 'New Folder' }); expect(desktop).toBeDisabled();
+      expect(desktop.title).not.toBe('');
+      await user.click(screen.getByRole('button', { name: 'More library actions' }));
+      expect(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'New Folder' })).toHaveAttribute('title', desktop.title);
+    });
+
+    it('shows the same trash count in the mobile menu', async () => {
+      server.use(http.get('/api/v1/library/trash', () => HttpResponse.json({ items: [], total: 17, page: 1, per_page: 0 })));
+      const user = userEvent.setup(); render(<FileManagerPage />); await screen.findByText('Benchy');
+      await user.click(screen.getByRole('button', { name: 'More library actions' }));
+      expect(await within(screen.getByRole('menu')).findByRole('menuitem', { name: /Trash.*17/ })).toBeInTheDocument();
+    });
+
+    it.each([false, true])('matches the rem breakpoint and restores focus after rotation (desktop=%s)', async (finishWide) => {
+      const real = window.matchMedia;
+      const listeners = new Set<() => void>(); let wide = false;
+      const mql = { get matches() { return wide; }, media: '(min-width: 40rem)', addEventListener: (_: string, fn: () => void) => listeners.add(fn), removeEventListener: (_: string, fn: () => void) => listeners.delete(fn) } as unknown as MediaQueryList;
+      const media = vi.fn((query: string) => query === '(min-width: 40rem)' ? mql : real(query));
+      vi.stubGlobal('matchMedia', media);
+      try {
+        const user = userEvent.setup(); render(<FileManagerPage />); await screen.findByText('Benchy');
+        const original = screen.getByRole('button', { name: 'More library actions' });
+        await user.click(original);
+        await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'New Folder' }));
+        await screen.findByRole('dialog');
+        wide = true; listeners.forEach(fn => fn());
+        wide = finishWide; listeners.forEach(fn => fn());
+        await waitFor(() => expect(screen.getByRole('button', { name: 'More library actions' })).not.toBe(original));
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(screen.getByRole('button', { name: finishWide ? 'New Folder' : 'More library actions' })).toHaveFocus());
+        expect(media).toHaveBeenCalledWith('(min-width: 40rem)');
+      } finally { vi.stubGlobal('matchMedia', real); }
+    });
+
+    it('offers selection through the mobile actions menu and returns focus on Escape', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      await screen.findByText('Benchy');
+      const trigger = screen.getByRole('button', { name: 'More library actions' });
+      await user.click(trigger);
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getByRole('menuitem', { name: 'New Folder' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      expect(trigger).toHaveFocus();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      await user.click(trigger);
+      await user.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Select All' }));
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(screen.getByText(/3 selected/i)).toBeInTheDocument();
+    });
+
     it('has search input', async () => {
       render(<FileManagerPage />);
 

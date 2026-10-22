@@ -14,6 +14,7 @@ export const ORDER_ESTIMATE_REASONS = [
   'material_mismatch',
   'needs_slicing',
   'no_plate',
+  'unplanned_parts',
   'truncated',
 ] as const;
 

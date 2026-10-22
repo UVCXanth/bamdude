@@ -1,6 +1,7 @@
 """Order lines and procurement facts (spec §Data model)."""
 
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,6 +25,9 @@ class ProjectLine(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # A deleted SQLite integer id may be reused. A retained plan must not
+    # silently become intent for that new line, even with identical contents.
+    plan_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, default=lambda: str(uuid4()))
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     # No ondelete: deleting a referenced product is refused with 409 in the route.
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)

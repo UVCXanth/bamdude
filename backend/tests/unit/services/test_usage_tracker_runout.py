@@ -20,6 +20,7 @@ from backend.app.models.print_usage_event import (
     EVENT_TRAY_CHANGE,
     KIND_AMBIGUOUS,
     KIND_AUTOSWITCH,
+    KIND_MANUAL,
     KIND_PAUSE,
     PrintUsageEvent,
 )
@@ -137,6 +138,50 @@ async def _history(db_session):
 
 
 class TestRunoutZeroPoint:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("new_used", [0, 1100])
+    async def test_refilling_inactive_backup_origin_never_zeroes_the_new_reel(
+        self, db_session, tmp_path, monkeypatch, new_used
+    ):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        old = await _make_spool(db_session, weight_used=950)
+        backup = await _make_spool(db_session, weight_used=0)
+        new = await _make_spool(db_session, weight_used=new_used)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_TRAY_CHANGE, None, 0, 0, old.id),
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 6, old.id),
+                (EVENT_TRAY_CHANGE, None, 1, 6, backup.id),
+                (EVENT_SPOOL_LOADED, None, 0, 18, new.id),
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 18, new.id),
+            ],
+        )
+        events = (await db_session.execute(select(PrintUsageEvent).order_by(PrintUsageEvent.id))).scalars().all()
+        events[-2].slot_occupied = events[-1].slot_occupied = True
+        await db_session.commit()
+        _active_sessions[printer.id] = _session(printer.id)
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+        with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=43), db_session, archive_id=archive.id
+            )
+        await db_session.refresh(new)
+        await db_session.refresh(old)
+        assert new.weight_used == new_used
+        assert new.archived_at is None
+        assert old.archived_at is not None
+        history = await _history(db_session)
+        assert not any(sid == new.id for sid, _, _ in history)
+        ordinary = [(sid, grams) for sid, grams, status in history if status != RUNOUT_STATUS]
+        assert {sid for sid, _ in ordinary} == {old.id, backup.id}
+        assert sum(grams for _, grams in ordinary) == pytest.approx(300, abs=0.15)
+
     @pytest.mark.asyncio
     async def test_same_slot_refill_splits_at_the_runout_layer(self, db_session, tmp_path, monkeypatch):
         monkeypatch.setattr(app_settings, "base_dir", tmp_path)
@@ -1362,3 +1407,197 @@ class TestRunoutArchivesTheSpool:
         await db_session.refresh(spool_b)
         assert spool_a.archived_at is not None and spool_b.archived_at is not None
         assert [c.args[0] for c in broadcast.await_args_list].count({"type": "inventory_changed"}) == 1
+
+
+def _pm_log(tray_change_log, total_layers):
+    pm = _pm(total_layers=total_layers)
+    pm.get_status.return_value.tray_change_log = list(tray_change_log)
+    return pm
+
+
+class TestFeedIntervalAttribution:
+    """Tray chronology × journal spool identity (vault usage-segment-attribution-spec).
+
+    A tray the print leaves and comes back to is charged once per interval it
+    fed; a return used to be skipped as "already handled" and its grams lost.
+    """
+
+    BMCU_4015 = [(1, 0), (254, 0), (1, 0), (254, 0), (1, 0), (254, 0), (1, 0), (254, 9), (1, 9)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", [KIND_MANUAL, KIND_PAUSE])
+    async def test_bmcu_refill_charges_the_new_reel_from_the_runout_layer(
+        self, db_session, tmp_path, monkeypatch, kind
+    ):
+        """Archive 4015: BMCU blips 1 → 254 → 1 on every load; a runout at layer 9,
+        a new reel in the same slot. The old reel took layers 0-9, the new one the rest."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        old = await _make_spool(db_session, weight_used=900)
+        new = await _make_spool(db_session, label_weight=3000, weight_used=0)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_TRAY_CHANGE, None, 1, 0, old.id),
+                (EVENT_TRAY_CHANGE, None, 254, 0, None),
+                (EVENT_TRAY_CHANGE, None, 1, 0, old.id),
+                (EVENT_RUNOUT, kind, 1, 9, old.id),
+                (EVENT_TRAY_CHANGE, None, 254, 9, None),
+                (EVENT_TRAY_CHANGE, None, 1, 9, old.id),
+                (EVENT_SPOOL_LOADED, None, 1, 9, new.id),
+            ],
+        )
+        _active_sessions[printer.id] = _session(printer.id, ams_mapping=[1], spool_assignments={(0, 1): old.id})
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 273.43, "type": "PETG", "color": ""}])
+        with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
+            await on_print_complete(
+                printer.id,
+                {"status": "completed"},
+                _pm_log(self.BMCU_4015, total_layers=44),
+                db_session,
+                archive_id=archive.id,
+            )
+        history = await _history(db_session)
+        ordinary = {sid: grams for sid, grams, status in history if status != RUNOUT_STATUS}
+        assert ordinary[old.id] == pytest.approx(273.43 * 9 / 44, abs=0.1)
+        assert ordinary[new.id] == pytest.approx(273.43 * 35 / 44, abs=0.1)
+        assert sum(ordinary.values()) == pytest.approx(273.43, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_a_return_to_the_same_reel_charges_every_interval(self, db_session, tmp_path, monkeypatch):
+        """A → B → A with no runout at all: A's two stretches both land on A's reel."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session)
+        spool_b = await _make_spool(db_session)
+        _active_sessions[printer.id] = _session(
+            printer.id, ams_mapping=[0], spool_assignments={(0, 0): spool_a.id, (0, 1): spool_b.id}
+        )
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+        with p1, p2:
+            await on_print_complete(
+                printer.id,
+                {"status": "completed"},
+                _pm_log([(0, 0), (1, 50), (0, 150)], total_layers=200),
+                db_session,
+                archive_id=archive.id,
+            )
+        history = await _history(db_session)
+        by_spool: dict[int, float] = {}
+        for sid, grams, _status in history:
+            by_spool[sid] = by_spool.get(sid, 0.0) + grams
+        # A: layers 0-50 + 150-200 = 100/200; B: 50-150.
+        assert by_spool[spool_a.id] == pytest.approx(150.0, abs=0.1)
+        assert by_spool[spool_b.id] == pytest.approx(150.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_a_return_to_a_refilled_tray_charges_the_reel_loaded_there(self, db_session, tmp_path, monkeypatch):
+        """A runs out → backup B → A refilled while B feeds → back to A: the new reel, not the old."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        old = await _make_spool(db_session, weight_used=990)
+        backup = await _make_spool(db_session)
+        new = await _make_spool(db_session)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, old.id),
+                (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 50, old.id),
+                (EVENT_TRAY_CHANGE, None, 1, 50, backup.id),
+                (EVENT_SPOOL_LOADED, None, 0, 90, new.id),
+                (EVENT_TRAY_CHANGE, None, 0, 150, new.id),
+            ],
+        )
+        _active_sessions[printer.id] = _session(
+            printer.id, ams_mapping=[0], spool_assignments={(0, 0): old.id, (0, 1): backup.id}
+        )
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
+        with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
+            await on_print_complete(
+                printer.id,
+                {"status": "completed"},
+                _pm_log([(0, 0), (1, 50), (0, 150)], total_layers=200),
+                db_session,
+                archive_id=archive.id,
+            )
+        history = await _history(db_session)
+        ordinary = {sid: grams for sid, grams, status in history if status != RUNOUT_STATUS}
+        assert ordinary[old.id] == pytest.approx(75.0, abs=0.1)
+        assert ordinary[backup.id] == pytest.approx(150.0, abs=0.1)
+        assert ordinary[new.id] == pytest.approx(75.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mapping", [None, [0]])
+    async def test_a_layer_zero_switch_charges_the_tray_that_fed(self, db_session, tmp_path, monkeypatch, mapping):
+        """[(A, 0), (B, 0)]: the tray left loaded at start, then the real feeder on
+        layer 0. It normalizes to B alone, and B fed the whole print — not the
+        start tray, not a stale mapping (the tray split charged B before)."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session)
+        spool_b = await _make_spool(db_session)
+        _active_sessions[printer.id] = _session(
+            printer.id,
+            ams_mapping=mapping,
+            tray_now_at_start=0,
+            spool_assignments={(0, 0): spool_a.id, (0, 1): spool_b.id},
+        )
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 100.0, "type": "PLA", "color": ""}])
+        with p1, p2:
+            await on_print_complete(
+                printer.id,
+                {"status": "completed"},
+                _pm_log([(0, 0), (1, 0)], total_layers=50),
+                db_session,
+                archive_id=archive.id,
+            )
+        charged = [(sid, grams) for sid, grams, _status in await _history(db_session)]
+        assert charged == [(spool_b.id, pytest.approx(100.0, abs=0.1))]
+
+
+@pytest.mark.asyncio
+async def test_a_journal_segment_nobody_fed_is_reported_not_recorded(db_session, tmp_path, monkeypatch):
+    """One tray, an autoswitch the journal saw no backup for: the stretch after
+    the runout is charged to nobody — and the operator hears it (audit D4),
+    as on the tray split, instead of the grams vanishing into a log line."""
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    printer = await _make_printer(db_session)
+    archive = await _make_archive(db_session, printer, tmp_path)
+    old = await _make_spool(db_session, weight_used=900)
+    await _journal(
+        db_session,
+        printer,
+        archive,
+        [
+            (EVENT_START, None, 0, 0, old.id),
+            (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 50, old.id),
+        ],
+    )
+    _active_sessions[printer.id] = _session(printer.id, ams_mapping=[0], spool_assignments={(0, 0): old.id})
+    notify = AsyncMock()
+    p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 100.0, "type": "PLA", "color": ""}])
+    with (
+        p1,
+        p2,
+        patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()),
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+    ):
+        await on_print_complete(
+            printer.id,
+            {"status": "completed"},
+            _pm_log([(0, 0)], total_layers=100),
+            db_session,
+            archive_id=archive.id,
+        )
+    ordinary = {sid: grams for sid, grams, status in await _history(db_session) if status != RUNOUT_STATUS}
+    assert ordinary == {old.id: pytest.approx(50.0, abs=0.1)}
+    notify.assert_awaited_once()
+    assert notify.await_args.args[1] == [(0, 50.0)]

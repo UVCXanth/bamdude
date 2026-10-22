@@ -39,7 +39,7 @@ EVENT_NAMES = {
     # Queue notifications
     "queue_job_added": "Queue Job Added",
     "queue_job_started": "Queue Job Started",
-    "queue_job_waiting": "Queue Job Waiting",
+    "queue_job_waiting": "AutoQueue needs attention",
     "queue_job_skipped": "Queue Job Skipped",
     "queue_job_failed": "Queue Job Failed",
     "queue_completed": "Queue Completed",

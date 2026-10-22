@@ -35,12 +35,14 @@ import json
 import logging
 from copy import deepcopy
 from datetime import datetime, timezone
+from time import monotonic
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
+from backend.app.i18n import current_language, t
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
@@ -51,10 +53,12 @@ from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance, swap_compatibility
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
+from backend.app.services.auto_queue_waiting import WaitingNotice, freeze, more_issues
 from backend.app.services.filament_intake import (
     fail_auto_source,
     item_descriptor,
     read_item_requirements,
+    routing_detail,
     snapshot_for_copy,
     swap_basis,
     swap_basis_holds,
@@ -66,6 +70,7 @@ from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.offline_feed import OfflineFeedCache, offline_shortfall
 from backend.app.services.order_print_options import override_options
 from backend.app.services.print_option_defaults import preference_options
+from backend.app.services.printer_location_service import load_tree, path_of
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import (
     PrinterOccupancyConflict,
@@ -77,6 +82,7 @@ from backend.app.services.queue_ops import lane_held_in_process, queue_claim_sco
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.model_compatibility import model_compatibility
+from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +164,11 @@ class AutoQueueScheduler:
         # — at 30s a stuck queue would otherwise write 120 identical lines an
         # hour and bury everything else in the support log.
         self._last_stall: tuple[str, float] | None = None
+        self._active_waiting_facts: set[tuple] = set()
+        self._waiting_contributors: dict[int, tuple[tuple, tuple]] = {}
+        self._notification_generation = 0
+        self._wake_cooldowns: dict[int, float] = {}
+        self._confirmed_wakes: dict[int, float] = {}
 
     async def run(self) -> None:
         """Main loop. Started from ``main.py`` lifespan via asyncio.create_task."""
@@ -173,10 +184,21 @@ class AutoQueueScheduler:
 
     def stop(self) -> None:
         self._running = False
+        self._notification_generation += 1
+        self._active_waiting_facts.clear()
+        self._waiting_contributors.clear()
+        self._confirmed_wakes.clear()
+        self._wake_cooldowns.clear()
         logger.info("Auto-queue scheduler stopped")
 
     async def tick(self) -> None:
         """Single iteration: assign pending auto items to eligible printers."""
+        notification_generation = self._notification_generation
+        from backend.app.services.printer_manager import printer_manager
+
+        for printer_id in tuple(self._confirmed_wakes):
+            if printer_manager.is_connected(printer_id):
+                self._confirmed_wakes.pop(printer_id, None)
         async with async_session() as db:
             sjf = await _get_bool_setting(db, SJF_SETTING_KEY)
             prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY, default=True)
@@ -191,6 +213,11 @@ class AutoQueueScheduler:
             pending = await self._fetch_pending(db, sjf)
             items = list(pending)
             if not items:
+                await db.commit()
+                if notification_generation == self._notification_generation:
+                    self._active_waiting_facts.clear()
+                    self._waiting_contributors.clear()
+                    self._last_stall = None
                 return
 
             logger.debug("AutoQueueScheduler: %d pending items, busy_printers=%s", len(items), busy_printers)
@@ -199,10 +226,10 @@ class AutoQueueScheduler:
             placed = 0
             changed_queue_printer_ids: set[int] = set()
             blocked: list[str] = []
-            # The first item that could not be placed, kept to name *something*
-            # concrete in the notification below — "4 jobs are waiting" is far
-            # less useful than the name of one of them plus the reason.
-            first_blocked: tuple[AutoQueueItem, str] | None = None
+            observations = {}
+            complete = True
+            exclusion_reasons: dict[int, str] = {}
+            woken_printer_ids: set[int] = set()
             # At most one printer is woken per pass — see _wake_offline_printer.
             woke_one = False
             requirements_cache = PrintRequirementsCache()
@@ -218,6 +245,7 @@ class AutoQueueScheduler:
                         db,
                         item,
                         busy_printers | swap_refused,
+                        exclusion_reasons={**exclusion_reasons, **dict.fromkeys(swap_refused, "swap_request_refused")},
                         cache=requirements_cache,
                         prefer_lowest=prefer_lowest,
                         offline_feeds=offline_feeds,
@@ -257,13 +285,16 @@ class AutoQueueScheduler:
                                 busy_printers,
                                 requirements=eligible.requirements,
                                 offline_feeds=offline_feeds,
+                                woken_printer_ids=woken_printer_ids,
                             )
+                        facts = self._waiting_facts(eligible.facts)
+                        if facts != eligible.facts:
+                            reason = " | ".join(f.message for f in facts)
                         if reason and item.waiting_reason != reason:
                             logger.info("Auto item %s not placed: %s", item.id, reason)
                             item.waiting_reason = reason
                         blocked.append(reason or "no reason reported")
-                        if first_blocked is None:
-                            first_blocked = (item, reason or "no reason reported")
+                        observations[item.id] = (self._waiting_revision(item), facts)
                         break
 
                     try:
@@ -280,6 +311,8 @@ class AutoQueueScheduler:
                         await db.refresh(item)
                         if exc.reason in SOURCE_FAILURES:
                             await fail_auto_source(db, item, exc.reason)
+                        else:
+                            observations[item.id] = (self._waiting_revision(item), ())
                         break
                     except (PrinterOccupancyConflict, AutoPlacementConflict) as exc:
                         # The candidate was lost after its snapshot. Exclude it
@@ -304,11 +337,17 @@ class AutoQueueScheduler:
                             )
                             continue
                         busy_printers.add(printer.id)
+                        exclusion_reasons[printer.id] = (
+                            exc.code
+                            if exc.code in {"incompatible_target", "compatible_fallback_disabled"}
+                            else "placement_conflict"
+                        )
                         logger.info(
                             "Auto item %s lost printer %s (%s); trying another candidate", item.id, printer.id, exc.code
                         )
                         continue
                     except Exception:
+                        complete = False
                         logger.exception("Failed to assign auto item %s to printer %s", item.id, printer.id)
                         break
 
@@ -319,44 +358,12 @@ class AutoQueueScheduler:
                         await self._mark_jumped_peers(db, item)
                     break
 
-            announce = self._log_stall(
-                [item for item in items if item.status == "pending"], placed, blocked, busy_printers
-            )
+            self._log_stall([item for item in items if item.status == "pending"], placed, blocked, busy_printers)
 
-            # Cross-model rebalancing (spec 2026-09-10), behind its setting and only
-            # when this pass left something pending. It converts and creates ROUTER
-            # rows — the next tick places them like any other; nothing starts here.
-            if placed < len(items) and await _get_bool_setting(db, REBALANCE_SETTING_KEY):
-                try:
-                    moved = await queue_rebalance.rebalance(db, busy_printers=busy_printers)
-                except Exception:
-                    logger.exception("AutoQueueScheduler: rebalancing failed")
-                    # ⚠️ The hook commits inside itself (it releases the transaction
-                    # before every file copy), so a failure that WAS a commit leaves
-                    # this session in pending-rollback — and the ``db.commit()`` below
-                    # would then raise a second, unrelated ``PendingRollbackError``
-                    # as "AutoQueueScheduler tick failed", burying the real cause in
-                    # a support bundle. The cause is already in the log line above;
-                    # this only makes the session usable again. Nothing of the
-                    # placement pass is lost: the hook's own commits made it durable.
-                    await db.rollback()
-                else:
-                    if moved.converted:
-                        logger.info(
-                            "AutoQueueScheduler: rebalanced %d item(s), created %d, %d part(s) moved",
-                            moved.converted,
-                            moved.created,
-                            moved.moved_parts,
-                        )
-
+            # Placement must be durable before an optional notification read.
+            # In particular, a PostgreSQL read error poisons only this NEW
+            # transaction, never the queue inserts of the placement pass.
             await db.commit()
-
-            # After the commit: the notification is a side effect on the outside
-            # world, and it should never be sent describing a state that then
-            # failed to persist.
-            if announce and first_blocked is not None:
-                await self._notify_stall(db, *first_blocked)
-
             # The new PrintQueueItem is durable now. Tell open Queue pages to
             # refetch the one affected printer immediately instead of waiting
             # for their independent 15/30-second polling clocks.
@@ -369,6 +376,77 @@ class AutoQueueScheduler:
                     # the fallback for a disconnected browser.
                     logger.exception("Failed to announce queue change for printer %s", printer_id)
 
+            # Cross-model rebalancing (spec 2026-09-10), behind its setting and only
+            # when this pass left something pending. It converts and creates ROUTER
+            # rows — the next tick places them like any other; nothing starts here.
+            if (
+                notification_generation == self._notification_generation
+                and placed < len(items)
+                and await _get_bool_setting(db, REBALANCE_SETTING_KEY)
+            ):
+                try:
+                    moved = await queue_rebalance.rebalance(db, busy_printers=busy_printers)
+                except Exception:
+                    complete = False
+                    logger.exception("AutoQueueScheduler: rebalancing failed")
+                    # ⚠️ The hook commits inside itself (it releases the transaction
+                    # before every file copy), so a failure that WAS a commit leaves
+                    # this session in pending-rollback — and the ``db.commit()`` below
+                    # would then raise a second, unrelated ``PendingRollbackError``
+                    # as "AutoQueueScheduler tick failed", burying the real cause in
+                    # a support bundle. The cause is already in the log line above;
+                    # this only makes the session usable again. The placement
+                    # pass was already committed before optional rebalancing.
+                    await db.rollback()
+                else:
+                    if moved.converted:
+                        logger.info(
+                            "AutoQueueScheduler: rebalanced %d item(s), created %d, %d part(s) moved",
+                            moved.converted,
+                            moved.created,
+                            moved.moved_parts,
+                        )
+
+            await db.commit()
+            if complete and notification_generation == self._notification_generation:
+                try:
+                    current = {}
+                    contributors = {}
+                    pending_now = await self._fetch_pending(db, sjf)
+                    for item in pending_now:
+                        observation = observations.get(item.id)
+                        identity = self._waiting_revision(item)
+                        if observation is None or observation[0] != identity:
+                            current = None
+                            break
+                        facts = observation[1]
+                        previous = self._waiting_contributors.get(item.id)
+                        retained = previous[1] if previous and previous[0] == identity else ()
+                        unknown_all = not facts or any(f.preserves_incident and f.printer_id is None for f in facts)
+                        uncertain_printers = {f.printer_id for f in facts if f.preserves_incident}
+                        confirmed = [f for f in facts if f.actionable]
+                        confirmed.extend(f for f in retained if unknown_all or f.printer_id in uncertain_printers)
+                        contributors[item.id] = (identity, tuple(dict.fromkeys(confirmed)))
+                        for fact in contributors[item.id][1]:
+                            key = fact.key(item.target_model, item.target_location_id)
+                            current.setdefault(key, (item, fact))
+                    notice = None
+                    if current is not None:
+                        new = set(current) - self._active_waiting_facts
+                        if new:
+                            notice = await self._waiting_notice(db, current, new)
+                    # Close the read transaction before provider I/O. No ORM
+                    # object is retained in the in-memory contributor ledger.
+                    await db.commit()
+                    if current is not None and notification_generation == self._notification_generation:
+                        self._waiting_contributors = contributors
+                        self._active_waiting_facts = set(current)
+                        if notice is not None:
+                            await self._notify_stall(db, notice)
+                except Exception as exc:
+                    await db.rollback()
+                    logger.warning("AutoQueue notification projection failed error_type=%s", type(exc).__name__)
+
     def _log_stall(self, items: list, placed: int, blocked: list[str], busy_printers: set[int]) -> bool:
         """Say once, at INFO, that a tick could place nothing — and why.
 
@@ -379,10 +457,9 @@ class AutoQueueScheduler:
         ``_stall_reminder_seconds`` so a long stall stays visible to whoever
         collects the log later.
 
-        Returns True when this tick announced a *new* cause. The caller notifies
-        on that only: the periodic reminder exists for the log file, and firing a
-        Telegram message every ten minutes for a stall the operator already knows
-        about is how people turn notifications off.
+        The return value describes only log throttling. Notification admission
+        independently compares committed structured facts; neither this reminder
+        nor a neighbouring placement resets that state.
         """
         if placed or not items:
             self._last_stall = None
@@ -407,30 +484,63 @@ class AutoQueueScheduler:
         self._last_stall = (signature, now)
         return is_new
 
-    async def _notify_stall(self, db: AsyncSession, item: AutoQueueItem, reason: str) -> None:
-        """Tell the operator that auto-queue stopped placing work, and why.
+    @staticmethod
+    def _waiting_revision(item):
+        # Only a same-pass freshness check, not incident identity. Names, row
+        # ids and revisions never enter WaitingFact.key().
+        ignored = {"waiting_reason", "position", "been_jumped", "created_at"}
+        return tuple(
+            (column.name, freeze(getattr(item, column.name)))
+            for column in AutoQueueItem.__table__.columns
+            if column.name not in ignored
+        )
 
-        ``on_queue_job_waiting`` has existed since the notification system was
-        built — a provider column defaulting to enabled, a per-chat Telegram
-        toggle, en+uk templates carrying ``{waiting_reason}`` — and nothing has
-        ever called it. The operator sees the switch on and receives nothing.
+    async def _waiting_notice(self, db, current, new):
+        ordered = sorted(new, key=repr)
+        representative = current[ordered[0]][0]
+        language = current_language()
 
-        On an unattended farm that silence *is* the failure: one print that ends
-        badly arms the plate-clear gate, auto-queue stops routing to that
-        printer, and the machine leaves the rotation with nobody told. Fires once
-        per stall cause, and can never break the tick.
-        """
+        def model_name(item):
+            return (
+                normalize_model_name(item.target_model)
+                or item.target_model
+                or t(language, "filament_routing", "autoqueue_any_model")
+            )
+
+        models = sorted({model_name(current[key][0]) for key in ordered})
+        tree = await load_tree(db) if any(current[key][0].target_location_id is not None for key in ordered[:5]) else {}
+        lines = []
+        for key in ordered[:5]:
+            item, fact = current[key]
+            context = model_name(item)
+            if item.target_location_id is not None:
+                context += " / " + (
+                    path_of(tree, item.target_location_id)
+                    if item.target_location_id in tree
+                    else t(language, "filament_routing", "autoqueue_location_unavailable")
+                )
+            # One bounded digest, not an unbounded series of provider chunks.
+            lines.append(f"{context}: {fact.message}"[:320])
+        if len(ordered) > 5:
+            lines.append(more_issues(language, len(ordered) - 5))
+        target = (
+            models[0] if len(models) == 1 else t(current_language(), "filament_routing", "autoqueue_multiple_models")
+        )
+        return WaitingNotice((await self._job_name(db, representative))[:160], target, "\n".join(lines))
+
+    async def _notify_stall(self, db: AsyncSession, notice: WaitingNotice) -> None:
+        """One committed scalar digest through existing provider/per-chat policy."""
         from backend.app.services.notification_service import notification_service
 
         try:
             await notification_service.on_queue_job_waiting(
-                job_name=await self._job_name(db, item),
-                target_model=item.target_model or "any model",
-                waiting_reason=reason,
+                job_name=notice.job_name,
+                target_model=notice.target_model,
+                waiting_reason=notice.waiting_reason,
                 db=db,
             )
         except Exception:
-            logger.exception("Failed to send the queue_job_waiting notification for auto item %s", item.id)
+            logger.exception("Failed to send the queue_job_waiting notification")
 
     async def _job_name(self, db: AsyncSession, item: AutoQueueItem) -> str:
         """Best-effort display name, resolved by id rather than by relationship.
@@ -476,16 +586,37 @@ class AutoQueueScheduler:
             )
         else:
             stmt = base.order_by(AutoQueueItem.position)
-        result = await db.execute(stmt)
+        result = await db.execute(stmt.execution_options(populate_existing=True))
         return result.scalars().all()
 
     # printer_id -> monotonic deadline before which we will not try to wake it
-    # again. See _wake_offline_printer for why one window covers both outcomes.
-    _wake_cooldowns: dict[int, float] = {}
+    # again. Attempt cooldown and confirmed boot grace are separate evidence.
     _WAKE_COOLDOWN_SECONDS = 600.0
 
+    @staticmethod
+    def _wake_now():
+        return monotonic()
+
+    def _waiting_facts(self, facts):
+        from dataclasses import replace
+
+        now = self._wake_now()
+        return tuple(
+            replace(
+                f,
+                code="printer_waking",
+                params=(),
+                message=f"{f.printer_name}: {routing_detail('printer_waking')['message']}"
+                if f.printer_name
+                else routing_detail("printer_waking")["message"],
+            )
+            if f.code == "printer_offline" and self._confirmed_wakes.get(f.printer_id, 0) > now
+            else f
+            for f in facts
+        )
+
     async def _wake_offline_printer(
-        self, db, item, busy_printers: set[int], *, requirements=None, offline_feeds=None
+        self, db, item, busy_printers: set[int], *, requirements=None, offline_feeds=None, woken_printer_ids=None
     ) -> bool:
         """Switch on one printer this item could run on, if they are all off.
 
@@ -500,13 +631,11 @@ class AutoQueueScheduler:
         once for one job. Several queued jobs bring several printers up over the
         following minutes, which is the behaviour worth having.
 
-        ⚠️ **One cooldown covers success and failure alike**, unlike upstream's,
-        because we deliberately do *not* wait for the boot. Waiting would block
-        the distributor for minutes; instead the next pass simply finds the
-        printer connected and routes to it normally. That means success is not
-        observable here, so a single window is the honest rule: having asked a
-        plug to turn on, asking again 30 seconds later achieves nothing whether
-        it worked or not.
+        ⚠️ **Attempt cooldown is not successful-wake evidence.** Both outcomes
+        prevent repeated ON attempts for one cooldown. Only every configured
+        auto-on plug acknowledging ON grants the separate bounded boot grace.
+        Repeating ON while the printer stays offline never extends that grace;
+        a positive connection retires the episode. We never wait for boot here.
 
         ⚠️ **A printer we failed to wake is NOT added to ``busy_printers``.** It
         is off, not busy — labelling it busy would misdescribe it in every later
@@ -519,8 +648,6 @@ class AutoQueueScheduler:
         channel's material or forced colour is not the printer to switch on.
         Unknown is woken — never having heard is not the same as nothing loaded.
         """
-        import time as _time
-
         from backend.app.models.smart_plug import SmartPlug
         from backend.app.services.smart_plug_manager import smart_plug_manager
 
@@ -528,7 +655,7 @@ class AutoQueueScheduler:
         if not candidates:
             return False
 
-        now = _time.monotonic()
+        now = self._wake_now()
         for printer in candidates:
             # Expire on read, so a live entry can never be overwritten by a
             # later success and a stale one costs nothing.
@@ -570,13 +697,21 @@ class AutoQueueScheduler:
                 item.target_model,
                 printer.name,
             )
-            try:
-                for plug in plugs:
+            succeeded = True
+            for plug in plugs:
+                try:
                     service = await smart_plug_manager.get_service_for_plug(plug, db)
-                    await service.turn_on(plug)
-            except Exception:
-                logger.exception("Failed to power on %s for auto item %s", printer.name, item.id)
-                return False
+                    if not await service.turn_on(plug):
+                        succeeded = False
+                except Exception:
+                    succeeded = False
+                    logger.exception("Failed to power on plug %s for auto item %s", plug.id, item.id)
+            if succeeded:
+                # Never extend the deadline while a printer remains offline.
+                # Only an observed connection retires this boot episode.
+                self._confirmed_wakes.setdefault(printer.id, now + self._WAKE_COOLDOWN_SECONDS)
+                if woken_printer_ids is not None:
+                    woken_printer_ids.add(printer.id)
             # Deliberately not touching busy_printers, and not waiting: the next
             # pass routes to it once it is up.
             return True

@@ -173,15 +173,27 @@ def test_after_places_the_order_ahead_first_and_now_does_not():
     assert f.lines[0].after_seconds == 3 * H
 
 
-def test_an_order_ahead_without_a_plan_advances_nothing():
+def test_an_order_ahead_without_a_loaded_plan_has_no_proven_after_date():
     f = _one(FarmSnapshot(printers=[_machine(1)], staged=[]), _plan(7, [(100, 1, H, "P1S", [])]), ordered=[1, 7])
-    assert f.after_seconds == H and f.ahead_count == 1
+    assert f.now_seconds == H and f.machine_seconds == H and f.ahead_count == 1
+    assert f.after_eta is None and f.after_seconds is None
+    assert "earlier_orders_incomplete" in f.assumptions
 
 
 def test_unknown_estimates_are_counted_not_defaulted():
     f = _one(FarmSnapshot(printers=[_machine(1)], staged=[]), _plan(7, [(100, 3, None, "P1S", [])]))
     assert f.unknown_prints == 3 and f.now_eta is None and f.now_seconds is None and f.machine_seconds is None
     assert f.lines[0].unknown_prints == 3
+
+
+def test_unknown_earlier_work_cannot_promise_an_after_date_or_change_nominal_hours():
+    snap = FarmSnapshot(printers=[_machine(1)], staged=[])
+    plans = {1: _plan(1, [(100, 1, None, "P1S", [])]), 7: _plan(7, [(300, 2, H, "P1S", [])])}
+    answer = forecast_orders(snap, plans, [1, 7], {7}, NOW)[7]
+    assert answer.machine_seconds == 2 * H and answer.now_seconds == 2 * H
+    assert answer.after_eta is None and answer.after_seconds is None
+    assert answer.lines[0].after_eta is None
+    assert "earlier_orders_incomplete" in answer.assumptions
 
 
 def test_a_model_with_no_printer_is_unroutable():

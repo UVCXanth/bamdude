@@ -172,8 +172,10 @@ def _without_names(body: dict) -> dict:
     for line in body["lines"]:
         for row in line["rows"]:
             row.pop("filename"), row.pop("hidden")
+            row.pop("source_token", None)
             for alt in row["alternatives"]:
                 alt.pop("filename"), alt.pop("hidden")
+                alt.pop("source_token", None)
     return body
 
 
@@ -202,6 +204,7 @@ async def test_the_plan_names_a_file_only_where_the_library_shows_it(
         shown = label in visible
         assert plate["hidden"] is (not shown), (label, plate)
         assert plate["filename"] == (files[label].filename if shown else None), (label, plate)
+        assert (len(plate["source_token"]) == 64) if shown else plate["source_token"] is None
 
     # Rights change the names, never the plan: ids, counts, models and figures
     # are the ones the administrator is answered.

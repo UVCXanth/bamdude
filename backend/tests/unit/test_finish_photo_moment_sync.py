@@ -273,7 +273,9 @@ def _bank_env(
 
     counter = {"n": 0}
 
-    async def _capture(_pid, _printer, _logger):
+    async def _capture(_pid, _printer, _logger, *, purpose="snapshot"):
+        # The bank never takes the chamber light (services/camera_light NEVER_PURPOSES).
+        assert purpose == "finish_bank"
         counter["n"] += 1
         return f"frame-{counter['n']}".encode()
 

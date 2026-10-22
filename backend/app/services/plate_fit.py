@@ -174,23 +174,36 @@ async def load(
     all_candidates = recipes.get(line.product_id, [])
     if plate_ids is None:
         plan = await plan_engine.plan_for_order(db, order_id, capacity=capacity.copy())
+        valid = {
+            p.id
+            for p, _file, recipe in all_candidates
+            if recipe.sliced and order_metrics.line_accepts_materials(line, recipe.materials)
+        }
+        # Issue rows preserve a draft for review; they are not executable
+        # recipes. Explicit zero is the operator's exclusion, including when
+        # this line has no other positive row and we explore a larger quantity.
+        excluded = {
+            row.plate_id
+            for item in plan.lines
+            if item.line_id == line_id
+            for row in item.rows
+            if row.count == 0 or row.issue
+        }
         plate_ids = list(
             dict.fromkeys(
                 plate_id
                 for item in plan.lines
                 if item.line_id == line_id
                 for row in item.rows
+                if row.count > 0 and not row.issue
                 for plate_id in [row.plate_id, *(alt.plate_id for alt in row.alternatives)]
+                if plate_id in valid and plate_id not in excluded
             )
         )
         if not plate_ids:
             # A fully covered line has no outstanding plan. Its linked, sliced
             # plates still make sense for exploring a larger order quantity.
-            plate_ids = [
-                p.id
-                for p, _f, recipe in all_candidates
-                if recipe.sliced and order_metrics.line_accepts_materials(line, recipe.materials)
-            ]
+            plate_ids = [p.id for p, _f, recipe in all_candidates if p.id in valid and p.id not in excluded]
     if len(plate_ids) > 64:
         raise FitError("plates")
     if not plate_ids or len(set(plate_ids)) != len(plate_ids):

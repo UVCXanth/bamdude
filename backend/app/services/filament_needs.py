@@ -599,7 +599,9 @@ async def names_of_hex_loader(db: AsyncSession) -> Callable[[str], set[str]]:
     return lambda h: table.get((h or "").replace("#", "").lower()[:6], set())
 
 
-async def _needs_by_order(db: AsyncSession, active: list[int]) -> dict[int, Needs]:
+async def _needs_by_order(
+    db: AsyncSession, active: list[int], *, plans_override: dict[int, OrderPlan] | None = None
+) -> dict[int, Needs]:
     """Plan + pending queue per ACTIVE order - the arithmetic alone, no shelf read.
 
     ``needs_of_orders`` lays the shelf over this; ``needs_grams_of_farm`` hands
@@ -607,7 +609,7 @@ async def _needs_by_order(db: AsyncSession, active: list[int]) -> dict[int, Need
     """
     if not active:
         return {}
-    plans = await plan_for_orders(db, active)
+    plans = dict(plans_override) if plans_override is not None else await plan_for_orders(db, active)
     plate_ids = {row.plate_id for plan in plans.values() for line in plan.lines for row in line.rows}
     lines = await line_colours_of(db, active)
     line_colours = {line_id: colour for line_id, (_, colour, _) in lines.items()}
@@ -634,7 +636,9 @@ async def needs_grams_of_farm(db: AsyncSession) -> Needs:
     return merged
 
 
-async def needs_of_orders(db: AsyncSession, project_ids: list[int]) -> dict[int, OrderNeeds]:
+async def needs_of_orders(
+    db: AsyncSession, project_ids: list[int], *, plans_override: dict[int, OrderPlan] | None = None
+) -> dict[int, OrderNeeds]:
     """Per order: the plan's need + the pending queue's need, against the shelf. An unknown id is absent."""
     if not project_ids:
         return {}
@@ -645,7 +649,11 @@ async def needs_of_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
         # spools say, and reading them would spend a Spoolman round trip — up
         # to ~16 s when it is down — to decorate nothing (final review I6).
         return {pid: OrderNeeds(pid, [], 0, False) for pid in project_ids if pid in status_of}
-    by_order = await _needs_by_order(db, active)
+    by_order = (
+        await _needs_by_order(db, active, plans_override=plans_override)
+        if plans_override is not None
+        else await _needs_by_order(db, active)
+    )
     spools, unavailable = await load_stock(db)
     names_of_hex = await names_of_hex_loader(db)
     out: dict[int, OrderNeeds] = {}

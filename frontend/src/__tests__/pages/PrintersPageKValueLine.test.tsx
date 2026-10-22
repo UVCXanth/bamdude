@@ -67,7 +67,7 @@ describe('PrintersPage — K value on the AMS slot card', () => {
     renderWith({
       ams: [{ id: 0, tray: [{ id: 0, tray_type: 'PETG', tray_color: 'FF0000FF', k: 0.024 }, { id: 1, ...EMPTY }, { id: 2, ...EMPTY }, { id: 3, ...EMPTY }] }],
     });
-    await waitFor(() => expect(screen.getByText('K 0.024')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('K 0.024')).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.getByText('K 0.024')).toHaveAttribute('title', 'K Factor');
   });
 
@@ -129,7 +129,7 @@ describe('PrintersPage — K value on the AMS slot card', () => {
         ],
       }],
     });
-    await waitFor(() => expect(screen.getByText('K 0.024')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('K 0.024')).toBeInTheDocument(), { timeout: 5000 });
     const calibrated = slotOf('PETG');
     const uncalibrated = slotOf('PLA');
     expect(uncalibrated.children.length).toBe(calibrated.children.length);

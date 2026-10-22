@@ -1574,6 +1574,19 @@ async def _trash_folder_contents(db: AsyncSession, folder_id: int) -> int:
         await library_trash_service.trash_or_purge(db, file, detach_folder=True)
         trashed += 1
 
+    # ⚠️ Files ALREADY in the trash are detached too, and nothing else: the
+    # cascade would take their rows with the folder and the trash would lose
+    # them (restore answered 404 — a file binned before its folder, or binned
+    # by the same bulk request). Their delete already happened: deleted_at
+    # stays, so their retention runs from it, and they are not counted again.
+    binned = (
+        await db.execute(
+            select(LibraryFile).where(LibraryFile.folder_id == folder_id, LibraryFile.deleted_at.is_not(None))
+        )
+    ).scalars()
+    for file in binned:
+        file.folder_id = None
+
     return trashed
 
 

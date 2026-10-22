@@ -140,9 +140,9 @@
     "body_template": "{printer}: {job_name}\nОрієнтовний час: {estimated_time}"
   },
   "queue_job_waiting": {
-    "name": "Завдання очікує",
-    "title_template": "Завдання очікує",
-    "body_template": "{job_name} очікує {target_model}\n{waiting_reason}"
+    "name": "Авточерга потребує уваги",
+    "title_template": "Частина завдань авточерги потребує уваги",
+    "body_template": "{job_name} · {target_model}\n{waiting_reason}"
   },
   "queue_job_skipped": {
     "name": "Завдання пропущено",

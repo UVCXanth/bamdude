@@ -145,8 +145,10 @@ describe('useStepThumbnailJobs', () => {
     const cb = callbacks();
     const { result } = renderHook(() => useStepThumbnailJobs(cb, { pollMs: 10, maxMs: 60 }));
     act(() => result.current.track(EPOCH, [{ receipt_id: 'r1', file_id: 7 }]));
-    await waitFor(() => expect(cb.onExpired).toHaveBeenCalledWith(7));
-    expect(result.current.activeFileIds.size).toBe(0);
+    await waitFor(() => {
+      expect(cb.onExpired).toHaveBeenCalledWith(7);
+      expect(result.current.activeFileIds.size).toBe(0);
+    });
   });
 
   it('asks at most 64 receipts per request', async () => {

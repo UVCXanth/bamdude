@@ -40,6 +40,7 @@ import {
   LayoutGrid,
   List,
   Search,
+  SlidersHorizontal,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   AlertTriangle,
@@ -81,6 +82,7 @@ import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumb
 import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
 import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
+import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
 import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { usePersistedState, parseLibraryView, type LibraryView } from '../hooks/usePersistedState';
@@ -1290,74 +1292,78 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
             {file.print_name || file.filename}
           </button>
         </h3>
-        <div className="flex items-center gap-3 mt-1 text-xs text-bambu-gray">
-          <span>{formatFileSize(file.file_size)}</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-bambu-gray">
+          <span className="shrink-0 whitespace-nowrap">{formatFileSize(file.file_size)}</span>
+          {file.sliced_for_model && (
+            <span className="flex min-w-0 max-w-full items-center gap-1" title={file.sliced_for_model}>
+              <Printer className="w-3 h-3 shrink-0" />
+              <span className="truncate">{file.sliced_for_model}</span>
+            </span>
+          )}
           {figures.print_time_seconds ? (
-            <span className="flex items-center gap-1">
+            <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
               <Clock className="w-3 h-3" />
               {formatDuration(figures.print_time_seconds)}
             </span>
           ) : null}
-          {figures.filament_used_grams != null && figures.filament_used_grams > 0 && (
-            <span className="flex items-center gap-1">
-              <Package className="w-3 h-3" />
-              {figures.filament_used_grams.toFixed(1)}g
-            </span>
-          )}
-          {/* The plate's filament types, plus-joined (spec 5): shown for a
-              single-plate file too - it never said what it prints with. */}
-          {figures.filament_types.length > 0 && (
-            <span className="truncate" title={t('fileManager.materials')} data-testid="plate-materials">
-              {formatMaterials(figures.filament_types)}
-            </span>
-          )}
-          {figures.object_count != null && figures.object_count > 0 && (
-            <span className="flex items-center gap-1">
-              {/* The count itself opens the preview — no extra icon button to
-                  crowd the card. stopPropagation is load-bearing: the card
-                  itself is a selection target. */}
+        </div>
+        {(figures.filament_types.length > 0 || (figures.filament_used_grams ?? 0) > 0 || (figures.object_count ?? 0) > 0 || file.print_count > 0) && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-bambu-gray">
+            {/* The plate's filament types, plus-joined (spec 5): shown for a
+                single-plate file too - it never said what it prints with. */}
+            {figures.filament_types.length > 0 && (
+              <span className="min-w-0 max-w-full truncate" title={t('fileManager.materials')} data-testid="plate-materials">
+                {formatMaterials(figures.filament_types)}
+              </span>
+            )}
+            {figures.filament_used_grams != null && figures.filament_used_grams > 0 && (
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+                <Package className="w-3 h-3" />
+                {figures.filament_used_grams.toFixed(1)}g
+              </span>
+            )}
+            {figures.object_count != null && figures.object_count > 0 && (
+              <span className="flex shrink-0 items-center gap-1">
+                {/* The count itself opens the preview — no extra icon button to
+                    crowd the card. stopPropagation is load-bearing: the card
+                    itself is a selection target. */}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
+                  className="flex items-center gap-1 hover:text-bambu-green transition-colors"
+                  title={t('library.plateObjects.open')}
+                >
+                  <Box className="w-3 h-3" />
+                  {figures.object_count}
+                </button>
+                {/* Icon-only: most sliced files support skipping, so a text badge
+                    on every card would be noise. Absence is the signal. */}
+                {file.skip_objects_supported && (
+                  <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
+                )}
+              </span>
+            )}
+            {/* How many times this file actually finished a print. The count
+                itself is the button, exactly like the object count beside it,
+                and it opens the same archive view the filename above already
+                opens — this is the label that affordance never had. Nothing is
+                drawn at zero: most of a library is unprinted, and a badge on
+                nearly every card would be noise. */}
+            {file.print_count > 0 && (
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setShowPlateObjects(true); }}
-                className="flex items-center gap-1 hover:text-bambu-green transition-colors"
-                title={t('library.plateObjects.open')}
+                onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
+                aria-label={t('fileManager.printedTimes', { count: file.print_count })}
+                title={t('fileManager.printedTimes', { count: file.print_count })}
+                className="flex shrink-0 items-center gap-1 hover:text-bambu-green transition-colors"
               >
-                <Box className="w-3 h-3" />
-                {figures.object_count}
+                <History className="w-3 h-3" />
+                {file.print_count}
               </button>
-              {/* Icon-only: most sliced files support skipping, so a text badge
-                  on every card would be noise. Absence is the signal. */}
-              {file.skip_objects_supported && (
-                <SkipObjectsIcon className="w-3 h-3 text-bambu-green/70" />
-              )}
-            </span>
-          )}
-          {/* How many times this file actually finished a print. The count
-              itself is the button, exactly like the object count beside it,
-              and it opens the same archive view the filename above already
-              opens — this is the label that affordance never had. Nothing is
-              drawn at zero: most of a library is unprinted, and a badge on
-              nearly every card would be noise. */}
-          {file.print_count > 0 && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
-              aria-label={t('fileManager.printedTimes', { count: file.print_count })}
-              title={t('fileManager.printedTimes', { count: file.print_count })}
-              className="flex items-center gap-1 hover:text-bambu-green transition-colors"
-            >
-              <History className="w-3 h-3" />
-              {file.print_count}
-            </button>
-          )}
-        </div>
-        {file.sliced_for_model && (
-          <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1">
-            <Printer className="w-3 h-3" />
-            {file.sliced_for_model}
+            )}
           </div>
         )}
-        <div className="mt-1 text-xs text-bambu-gray truncate">
+        <div className="mt-2 text-xs text-bambu-gray truncate">
           {formatDateTime(fileActivityAt(file), timeFormat, dateFormat)}
         </div>
         {authEnabled && file.created_by_username && (
@@ -1684,6 +1690,25 @@ export function FileManagerPage() {
   const [moveFile, setMoveFile] = useState<LibraryFileListItem | null>(null);
   const [tagsPopover, setTagsPopover] = useState<{ file: LibraryFileListItem; anchor: TagsPopoverAnchor } | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [mobileMenuEpoch, setMobileMenuEpoch] = useState(0);
+  const libraryToolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarDialogOrigin = useRef<string | null>(null);
+  const mobileSearchId = useId();
+  const mobileFiltersId = useId();
+  const mobileTagsId = useId();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (mobileSearchOpen) searchInputRef.current?.focus();
+  }, [mobileSearchOpen]);
+  useEffect(() => {
+    // Retire a portalled menu when its mobile trigger disappears on rotation.
+    const query = window.matchMedia('(min-width: 40rem)');
+    const closeMenu = () => setMobileMenuEpoch((epoch) => epoch + 1);
+    query.addEventListener('change', closeMenu);
+    return () => query.removeEventListener('change', closeMenu);
+  }, []);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isPageDragging, setIsPageDragging] = useState(false);
   const dragCounterRef = useRef(0);
@@ -1737,6 +1762,23 @@ export function FileManagerPage() {
   // bulk-tag picker. `selectedTagIds` are tag row ids, not tag strings.
   const [showTagsModal, setShowTagsModal] = useState(false);
   const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
+  useEffect(() => {
+    if (showNewFolderModal || showExternalFolderModal || showTagsModal || showPurgeModal) return;
+    const origin = toolbarDialogOrigin.current;
+    if (!origin) return;
+    toolbarDialogOrigin.current = null;
+    // Resolve after modal-stack cleanup, against the CURRENT toolbar. Rotation
+    // remounts the mobile menu, so the modal's original DOM opener may be gone.
+    queueMicrotask(() => {
+      const toolbar = libraryToolbarRef.current;
+      if (!toolbar || document.querySelector('[aria-modal="true"]')) return;
+      const desktop = window.matchMedia('(min-width: 40rem)').matches;
+      const target = toolbar.querySelector<HTMLElement>(desktop
+        ? `[data-library-action="${origin}"]` : '[data-testid="library-mobile-actions"]');
+      const button = target?.matches('button') ? target : target?.querySelector<HTMLElement>('button');
+      button?.focus();
+    });
+  }, [showNewFolderModal, showExternalFolderModal, showTagsModal, showPurgeModal]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
   const [viewMode, setViewMode] = usePersistedState<LibraryView>('library-view-mode', 'grid', parseLibraryView);
@@ -2001,6 +2043,8 @@ export function FileManagerPage() {
     unprintedOnly ||
     filterUsername.trim() !== '' ||
     selectedTagIds.length > 0;
+  const activeFilterCount = Number(filterType !== 'all') + Number(unprintedOnly)
+    + Number(filterUsername.trim() !== '') + selectedTagIds.length;
 
   /**
    * One definition of what "clear filters" means, because the button used to
@@ -2236,7 +2280,10 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
-      // The folder's files go to the trash, and their plates leave their products.
+      // The folder's files go to the trash — its list and the header badge,
+      // as for a file delete — and their plates leave their products.
+      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       invalidateProductFiles(queryClient);
       if (selectedFolderId === deleteConfirm?.id) {
         setSelectedFolderId(null);
@@ -2752,11 +2799,11 @@ export function FileManagerPage() {
   return (
     <div className="p-4 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+      <div ref={libraryToolbarRef} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-3"><FolderOpen className="w-6 h-6 text-bambu-green" />{t('fileManager.title')}</h1>
-            <p className="text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
+            <p className="hidden sm:block text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
@@ -2765,6 +2812,7 @@ export function FileManagerPage() {
             { value: 'list', icon: List, label: t('list.view.list') },
           ]} />
 
+          <div className="hidden sm:contents">
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 
           <Button
@@ -2784,6 +2832,7 @@ export function FileManagerPage() {
           <Button
             variant="outline"
             size="sm"
+            data-library-action="external"
             onClick={() => setShowExternalFolderModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder')}
@@ -2794,6 +2843,7 @@ export function FileManagerPage() {
           <Button
             variant="outline"
             size="sm"
+            data-library-action="new-folder"
             onClick={() => setShowNewFolderModal(true)}
             disabled={!hasPermission('library:upload') || atExternalRoot}
             title={
@@ -2810,12 +2860,14 @@ export function FileManagerPage() {
           <Button
             variant="outline"
             size="sm"
+            data-library-action="tags"
             onClick={() => setShowTagsModal(true)}
             title={t('fileManager.tags.manageTitle')}
           >
             <TagIcon className="w-4 h-4 mr-2" />
             {t('fileManager.tags.manage')}
           </Button>
+          </div>
           <Button
             variant="primary"
             size="sm"
@@ -2826,6 +2878,40 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
+          <div className="sm:hidden">
+            <CardActionMenu
+              key={mobileMenuEpoch}
+              testId="library-mobile-actions"
+              label={t('fileManager.mobileActions')}
+              width="max-content"
+              estimatedHeight={360}
+              triggerClassName="min-h-11 min-w-11 flex items-center justify-center rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white focus-visible:ring-2 focus-visible:ring-bambu-green"
+            >
+              {(close) => <>
+                {[
+                  { label: t('fileManager.generateThumbnails'), icon: Image, disabled: batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all'), title: !hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionGenerateThumbnail') : t('fileManager.generateThumbnailsForMissing'), action: () => batchThumbnailMutation.mutate() },
+                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('library:upload'), title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
+                  { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !hasPermission('library:upload') || atExternalRoot, title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : atExternalRoot ? t('fileManager.newFolderExternalRootHint') : undefined, dialog: 'new-folder', action: () => setShowNewFolderModal(true) },
+                  { label: t('fileManager.tags.manage'), icon: TagIcon, title: t('fileManager.tags.manageTitle'), dialog: 'tags', action: () => setShowTagsModal(true) },
+                  ...(filteredAndSortedFiles.length > 0 ? [{ label: t('fileManager.selectAll'), icon: CheckSquare, action: handleSelectAll }] : []),
+                  ...(hasAnyPermission('library:delete_own', 'library:delete_all') ? [{ label: t('libraryTrash.headerButton'), icon: Trash2, title: t('libraryTrash.headerTooltip'), count: trashCount, action: () => navigate('/files/trash') }] : []),
+                  ...(hasPermission('library:purge') ? [{ label: t('libraryPurge.headerButton'), icon: Trash2, title: t('libraryPurge.headerTooltip'), dialog: 'purge', action: () => setShowPurgeModal(true) }] : []),
+                ].map((item) => {
+                  const { label, icon: Icon, action } = item;
+                  return <CardActionMenuItem key={label} disabled={'disabled' in item && item.disabled}
+                    title={'title' in item ? item.title : undefined} className="min-h-11"
+                    onSelect={() => {
+                      toolbarDialogOrigin.current = ('dialog' in item ? item.dialog : null) ?? null;
+                      close(); action();
+                    }}>
+                    <Icon className="h-4 w-4 shrink-0" /><span>{label}</span>
+                    {'count' in item && !!item.count && <span className="ml-auto text-xs text-bambu-gray">{item.count}</span>}
+                  </CardActionMenuItem>;
+                })}
+              </>}
+            </CardActionMenu>
+          </div>
+          <div data-library-action="purge" className="hidden sm:contents">
           {hasAnyPermission('library:delete_own', 'library:delete_all') && (
             <TrashSplitButton
               trashHref="/files/trash"
@@ -2837,6 +2923,7 @@ export function FileManagerPage() {
               purgeTooltip={t('libraryPurge.headerTooltip')}
             />
           )}
+          </div>
         </div>
       </div>
 
@@ -2855,23 +2942,23 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-4 px-3 py-2 sm:py-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>
             <span className="text-white font-medium">{stats.total_files}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="hidden sm:flex items-center gap-2 text-sm">
             <FolderOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             <span className="text-bambu-gray">{t('fileManager.folders')}:</span>
             <span className="text-white font-medium">{stats.total_folders}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="hidden sm:flex items-center gap-2 text-sm">
             <HardDrive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             <span className="text-bambu-gray">{t('fileManager.size')}:</span>
             <span className="text-white font-medium">{formatFileSize(stats.total_size_bytes)}</span>
           </div>
-          <div className="flex items-center gap-2 text-sm sm:ml-auto">
+          <div className="flex items-center gap-2 text-sm ml-auto">
             <span className="text-bambu-gray">{t('fileManager.free')}:</span>
             <span className={`font-medium ${isDiskSpaceLow ? 'text-amber-500' : 'text-white'}`}>
               {formatFileSize(stats.disk_free_bytes)}
@@ -3214,12 +3301,33 @@ export function FileManagerPage() {
               otherwise hide this toolbar exactly when it's needed to clear or
               adjust the filter, so `anyFilterActive` keeps it up regardless. */}
           {files && (files.length > 0 || anyFilterActive) && (
-            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-(--app-top) z-10 lg:static">
+            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sm:sticky sm:top-(--app-top) z-10 lg:static">
+            <div className="flex sm:hidden items-center gap-2 flex-wrap">
+              <Button variant="secondary" size="sm" aria-expanded={mobileSearchOpen}
+                aria-controls={mobileSearchId} onClick={() => setMobileSearchOpen((open) => !open)}>
+                <Search className="w-4 h-4" />{t('fileManager.mobileSearch')}
+              </Button>
+              <Button variant="secondary" size="sm" aria-expanded={mobileFiltersOpen}
+                aria-controls={`${mobileFiltersId}${systemTagPills.length > 0 || userTagPills.length > 0 ? ` ${mobileTagsId}` : ''}`} onClick={() => setMobileFiltersOpen((open) => !open)}>
+                <SlidersHorizontal className="w-4 h-4" />{t('fileManager.mobileFilters')}
+                {activeFilterCount > 0 && <span className="rounded-full bg-bambu-green px-1.5 text-white">{activeFilterCount}</span>}
+              </Button>
+              {anyFilterActive && files.length > 0 && <button type="button" className="min-h-11 px-2 text-sm text-bambu-gray hover:text-white"
+                onClick={clearAllFilters}>{t('fileManager.clearFilters')}</button>}
+            </div>
+            {searchQuery.trim() && !mobileSearchOpen && (
+              <button type="button" className="sm:hidden flex min-w-0 min-h-11 items-center gap-2 text-sm text-bambu-green text-left"
+                onClick={() => setMobileSearchOpen(true)} aria-label={t('fileManager.mobileActiveSearch', { query: searchQuery })}>
+                <Search className="w-4 h-4 shrink-0" /><span className="truncate">{searchQuery}</span>
+              </button>
+            )}
             <div className="flex flex-wrap items-stretch gap-2">
+              <div id={mobileSearchId} className={`${mobileSearchOpen ? 'contents' : 'hidden'} sm:contents`}>
               {/* Search */}
               <div className="relative w-full sm:w-[28rem] h-9">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   placeholder={t('fileManager.searchFiles')}
                   value={searchQuery}
@@ -3256,10 +3364,13 @@ export function FileManagerPage() {
                   {t('fileManager.searchCurrentFolder')}
                 </button>
               )}
+              </div>
 
+              <div id={mobileFiltersId} className={`${mobileFiltersOpen ? 'contents' : 'hidden'} sm:contents`}>
               {/* Type filter */}
               <Select
                 value={filterType}
+                aria-label={t('common.type')}
                 onChange={(e) => setFilterType(e.target.value)}
                 className="min-w-[9rem]"
               >
@@ -3346,6 +3457,7 @@ export function FileManagerPage() {
                   )}
                 </button>
               </div>
+              </div>
             </div>
 
             {/* #1268: recursive-search hint — placed below the toolbar row
@@ -3366,7 +3478,7 @@ export function FileManagerPage() {
               // A row OF the filter panel, like the chip row it replaces —
               // same top border as the selection row below it. A tag filter
               // floating under the panel is a filter outside the filters.
-              <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
+              <div id={mobileTagsId} className={`${mobileFiltersOpen ? 'flex' : 'hidden'} sm:flex items-center gap-1.5 flex-wrap pt-2 border-t border-bambu-dark-tertiary max-sm:max-h-48 max-sm:overflow-y-auto`}>
                 <span className="text-xs text-bambu-gray mr-1 inline-flex items-center gap-1">
                   <TagIcon className="w-3.5 h-3.5" />
                   {t('fileManager.tags.filterLabel')}
@@ -3434,7 +3546,7 @@ export function FileManagerPage() {
 
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary">
+              <div className={`${selectedFiles.length > 0 ? 'flex' : 'hidden'} sm:flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary`}>
               {/* Select all / Deselect all */}
               {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
                 <Button
@@ -3443,7 +3555,7 @@ export function FileManagerPage() {
                   onClick={handleDeselectAll}
                 >
                   <Square className="w-4 h-4 sm:mr-1" />
-                  <span className="hidden sm:inline">{t('fileManager.deselectAll')}</span>
+                  <span className="sr-only sm:not-sr-only">{t('fileManager.deselectAll')}</span>
                 </Button>
               ) : (
                 <Button
@@ -3452,7 +3564,7 @@ export function FileManagerPage() {
                   onClick={handleSelectAll}
                 >
                   <CheckSquare className="w-4 h-4 sm:mr-1" />
-                  <span className="hidden sm:inline">{t('fileManager.selectAll')}</span>
+                  <span className="sr-only sm:not-sr-only">{t('fileManager.selectAll')}</span>
                 </Button>
               )}
 
@@ -3472,7 +3584,7 @@ export function FileManagerPage() {
                         title={!hasPermission('printers:control') ? t('fileManager.noPermissionPrint') : undefined}
                       >
                         <Play className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('common.print')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('common.print')}</span>
                       </Button>
                     )}
                     {/* Gated on > 0, unlike Print above: the Schedule dialog
@@ -3490,7 +3602,7 @@ export function FileManagerPage() {
                         title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                       >
                         <Clock className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('fileManager.schedulePrint')}</span>
                       </Button>
                     )}
                     {selectedPlannable.length > 0 && hasPermission('orders:create') && (
@@ -3500,7 +3612,7 @@ export function FileManagerPage() {
                         onClick={() => setPlanFiles(selectedPlannable.map((f) => f.id))}
                       >
                         <ClipboardList className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.computeOrder')}</span>
+                        <span className="sr-only sm:not-sr-only">{t('fileManager.computeOrder')}</span>
                       </Button>
                     )}
                     <Button
@@ -3511,7 +3623,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionMoveFiles') : undefined}
                     >
                       <MoveRight className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.move')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.move')}</span>
                     </Button>
                     <Button
                       variant="secondary"
@@ -3521,7 +3633,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
                     >
                       <TagIcon className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('fileManager.tags.tagAction')}</span>
                     </Button>
                     <Button
                       variant="danger"
@@ -3537,7 +3649,7 @@ export function FileManagerPage() {
                       title={!hasAnyPermission('library:delete_own', 'library:delete_all') ? t('fileManager.noPermissionDeleteFiles') : undefined}
                     >
                       <Trash2 className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.delete')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.delete')}</span>
                     </Button>
                     <Button
                       variant="secondary"
@@ -3545,7 +3657,7 @@ export function FileManagerPage() {
                       onClick={handleDeselectAll}
                     >
                       <X className="w-4 h-4 sm:mr-1" />
-                      <span className="hidden sm:inline">{t('common.clear')}</span>
+                      <span className="sr-only sm:not-sr-only">{t('common.clear')}</span>
                     </Button>
                   </div>
                 </>
@@ -3611,8 +3723,10 @@ export function FileManagerPage() {
               </Button>
             </div>
           ) : viewMode === 'grid' ? (
-            <div className="flex-1 lg:overflow-y-auto">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            <div className="@container flex-1 min-w-0 lg:overflow-y-auto">
+              {/* Size columns by the actual file pane, including the folder tree's footprint.
+                  Each card gets at least 15rem where space permits; wide layouts retain six columns. */}
+              <div className="grid grid-cols-1 @min-[31rem]:grid-cols-2 @min-[47rem]:grid-cols-3 @min-[63rem]:grid-cols-4 @min-[79rem]:grid-cols-5 @min-[95rem]:grid-cols-6 gap-4">
                 {filteredAndSortedFiles.map(renderFileCard)}
               </div>
             </div>

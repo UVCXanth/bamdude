@@ -16,8 +16,11 @@ async def seed():
     from backend.app.models.archive import PrintArchive
     from backend.app.models.notification import NotificationProvider
     from backend.app.models.oidc_provider import OIDCProvider
+    from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSubmission, OrderWorkingPlan
     from backend.app.models.printer import Printer
+    from backend.app.models.product import Product
     from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
 
     async with async_session() as db:
         db.add(
@@ -31,7 +34,42 @@ async def seed():
             )
         )
         db.add(Project(id=31, name="Замовлення"))
+        db.add(Product(id=21, name="Backup product"))
         await db.flush()
+        db.add(
+            ProjectLine(
+                id=11, project_id=31, product_id=21, quantity=4, plan_identity="8c05cce8-6ad9-4682-9b37-1474cbe739c9"
+            )
+        )
+        db.add(
+            OrderWorkingPlan(
+                id=31,
+                entries=[{"entry_id": "retained", "count": 2}],
+                revision=7,
+                saved_entries=[{"entry_id": "retained", "count": 4}],
+                saved_revision=2,
+                saved_facts={"workload": {"total_seconds": 7200}},
+                saved_epoch=1,
+                epoch=2,
+                active_operation="backup-operation",
+            )
+        )
+        await db.flush()
+        db.add(
+            OrderPlanSubmission(
+                id="backup-operation", plan_id=31, actor="user:1", request_digest="digest", request={"parts": []}
+            )
+        )
+        await db.flush()
+        db.add(
+            OrderPlanReceipt(
+                id="backup-operation:committed",
+                operation_id="backup-operation",
+                entry_id="committed",
+                count=2,
+                outcome={"queue_item_ids": [100, 101]},
+            )
+        )
         db.add(
             PrintArchive(
                 id=51,
@@ -89,9 +127,15 @@ async def report():
     from backend.app.models.archive import PrintArchive
     from backend.app.models.notification import NotificationProvider
     from backend.app.models.oidc_provider import OIDCProvider
+    from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSubmission, OrderWorkingPlan
+    from backend.app.models.project_line import ProjectLine
 
     async with async_session() as db:
         archive = await db.get(PrintArchive, 51)
+        line = await db.get(ProjectLine, 11)
+        plan = await db.get(OrderWorkingPlan, 31)
+        operation = await db.get(OrderPlanSubmission, "backup-operation")
+        receipt = await db.get(OrderPlanReceipt, "backup-operation:committed")
         provider = await db.get(NotificationProvider, 61)
         oidc = await db.get(OIDCProvider, 71)
         await db.refresh(oidc, ["icon_data"])
@@ -99,6 +143,19 @@ async def report():
             await db.execute(text("SELECT id, version, name, applied_at FROM _migrations ORDER BY version"))
         ).all()
         return {
+            "plan_line_identity": line.plan_identity,
+            "working_plan": [
+                plan.entries,
+                plan.revision,
+                plan.saved_entries,
+                plan.saved_revision,
+                plan.saved_facts,
+                plan.saved_epoch,
+                plan.epoch,
+                plan.active_operation,
+                operation.status,
+                receipt.outcome,
+            ],
             "archive": [archive.printer_id, archive.project_id, archive.extra_data, archive.print_name],
             "notification": [provider.printer_ids, provider.subscribed_events],
             "oidc": [oidc.icon_data.hex(), oidc.icon_content_type, oidc.client_secret],

@@ -19,6 +19,57 @@ async def preview(client, s, **kwargs):
     )
 
 
+@pytest.mark.parametrize("variant", ["stale", "deleted", "zero"])
+async def test_automatic_fit_selection_does_not_treat_working_draft_tombstones_as_candidates(
+    committing_client, db_session, shop, variant
+):
+    from backend.app.models.order_working_plan import OrderWorkingPlan
+
+    second_file = LibraryFile(
+        filename="another.gcode.3mf",
+        file_path=shop["file"].file_path,
+        file_type="gcode",
+        file_size=1,
+        file_metadata=shop["file"].file_metadata,
+    )
+    db_session.add(second_file)
+    await db_session.flush()
+    second_plate = ProductPlate(product_id=shop["a"].product_id, library_file_id=second_file.id, plate_index=1)
+    db_session.add(second_plate)
+    await db_session.commit()
+    path = f"/api/v1/projects/{shop['order']}/working-plan"
+    response = await committing_client.put(
+        path,
+        json={
+            "expected_revision": 0,
+            "entries": [
+                {
+                    "entry_id": "retained",
+                    "line_id": shop["line"],
+                    "plate_id": shop["plate"].id,
+                    "count": 0 if variant == "zero" else 1,
+                    "manual": True,
+                    "target": {"kind": "auto"},
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    before = response.json()["entries"]
+    if variant == "stale":
+        shop["file"].file_hash = "f" * 64
+    elif variant == "deleted":
+        await db_session.delete(shop["plate"])
+    await db_session.commit()
+    result = await committing_client.post(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/plate-fit", json={"around": 10}
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["plate_ids"] == [second_plate.id], result.text
+    stored = await db_session.get(OrderWorkingPlan, shop["order"], populate_existing=True)
+    assert stored.entries == before  # read-only fit never erases an operator's plan
+
+
 async def apply(client, s, response, option, ack=False):
     return await client.patch(
         f"/api/v1/projects/{s['order']}/lines/{s['line']}",

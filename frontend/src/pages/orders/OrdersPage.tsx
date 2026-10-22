@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
+import { useWorkingPlanDeparture } from '../../components/projects/workingPlanNavigation';
 import { api, ORDER_STAGES } from '../../api/client';
 import type { OrderStage, OrderViewFilters, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -70,7 +71,9 @@ export function OrdersPage() {
     defaults: { sort: ORDERS_DEFAULT_SORT[view], extra: { tab: 'active', customer: '', responsible: '', stage: '', order: '', section: '', week: '0' } },
   });
   // Another view is another default order, so the page it stood on means nothing there.
+  const confirmDeparture = useWorkingPlanDeparture();
   const setView = (next: OrdersView) => {
+    if (next !== view && !confirmDeparture()) return;
     setViewPref(next);
     setPage(1);
   };

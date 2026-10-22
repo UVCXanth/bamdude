@@ -53,6 +53,101 @@ async def _make_archive(db: AsyncSession, grams: float) -> PrintArchive:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clear_all", [False, True])
+async def test_real_runout_tail_returns_spool_weight_without_subtracting_unrelated_archive_grams(
+    async_client: AsyncClient, db_session: AsyncSession, clear_all
+):
+    from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.models.settings import Settings
+    from backend.app.services.usage_tracker import apply_runout_zero_corrections
+
+    spool = await _make_spool(db_session, weight_used=400, weight_used_baseline=390, low_stock_notified=True)
+    archive = await _make_archive(db_session, 120)
+    archive.cost = 12
+    # An ordinary row may have no print_name; names cannot classify contribution.
+    normal = await _add_usage(db_session, spool.id, 30, archive.id)
+    db_session.add(Settings(key="runout_zero_point_enabled", value="true"))
+    db_session.add(Settings(key="runout_archive_spool_enabled", value="false"))
+    await db_session.commit()
+    await apply_runout_zero_corrections(
+        db_session,
+        1,
+        [
+            PrintUsageEvent(
+                id=1,
+                printer_id=1,
+                archive_id=archive.id,
+                layer_num=10,
+                event="runout",
+                kind="autoswitch",
+                global_tray_id=0,
+                spool_id=spool.id,
+            )
+        ],
+        20,
+    )
+    tail = await db_session.scalar(select(SpoolUsageHistory).where(SpoolUsageHistory.status == "runout"))
+    assert tail is not None and tail.weight_used == 600
+    assert archive.filament_used_grams == 120
+    suffix = "" if clear_all else f"/{tail.id}"
+    response = await async_client.delete(f"/api/v1/inventory/spools/{spool.id}/usage{suffix}")
+    assert response.status_code == 200, response.text
+    await db_session.refresh(archive)
+    await db_session.refresh(spool)
+    assert archive.filament_used_grams == (90 if clear_all else 120)
+    assert archive.cost == 12
+    assert spool.weight_used == (370 if clear_all else 400)
+    assert spool.weight_used_baseline <= spool.weight_used
+    assert spool.low_stock_notified is False
+    if not clear_all:
+        # The ordinary print still contributes exactly its own share.
+        response = await async_client.delete(f"/api/v1/inventory/spools/{spool.id}/usage/{normal.id}")
+        assert response.status_code == 200, response.text
+        await db_session.refresh(archive)
+        assert archive.filament_used_grams == 90
+
+
+@pytest.mark.asyncio
+async def test_a_service_row_linked_by_import_is_still_not_print_consumption(async_client, db_session):
+    spool = await _make_spool(db_session, weight_used=200)
+    archive = await _make_archive(db_session, 120)
+    row = await _add_usage(db_session, spool.id, 150, archive.id)
+    row.status = "ams_sync"
+    row.print_name = "A name does not change its explicit correction status"
+    await db_session.commit()
+    response = await async_client.delete(f"/api/v1/inventory/spools/{spool.id}/usage/{row.id}")
+    assert response.status_code == 200, response.text
+    await db_session.refresh(archive)
+    await db_session.refresh(spool)
+    assert archive.filament_used_grams == 120 and spool.weight_used == 50
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked", [True, False])
+async def test_cost_recalculation_uses_only_print_rows_not_lifetime_corrections(async_client, db_session, linked):
+    from backend.app.models.settings import Settings
+    from backend.app.services.filament_cost import SETTING_KEY
+
+    spool = await _make_spool(db_session, weight_used=1000)
+    archive = await _make_archive(db_session, 120)
+    archive.print_name = "cost-by-name"
+    normal = await _add_usage(db_session, spool.id, 50, archive.id if linked else None)
+    normal.print_name = archive.print_name
+    normal.cost = 1.25
+    tail = await _add_usage(db_session, spool.id, 950, archive.id if linked else None)
+    tail.print_name = archive.print_name
+    tail.cost = 19
+    tail.status = "runout"
+    db_session.add(Settings(key=SETTING_KEY, value="20"))
+    await db_session.commit()
+    response = await async_client.post("/api/v1/statistics/recalculate-costs")
+    assert response.status_code == 200, response.text
+    await db_session.refresh(archive)
+    assert archive.cost == (2.65 if linked else 1.25)
+    assert archive.filament_used_grams == 120
+
+
+@pytest.mark.asyncio
 async def test_delete_usage_row_returns_weight(async_client: AsyncClient, db_session: AsyncSession):
     spool = await _make_spool(db_session, weight_used=300.0)
     row1 = await _add_usage(db_session, spool.id, 100.0)

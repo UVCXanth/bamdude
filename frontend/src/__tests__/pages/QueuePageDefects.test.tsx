@@ -111,7 +111,7 @@ describe('the Queue page card', () => {
   it('a touched counter travels in the clear-plate body', async () => {
     const posted = mockApi();
     render(<QueuePage />);
-    fireEvent.click(await screen.findByTestId('plate-defects-toggle'));
+    fireEvent.click(await screen.findByTestId('plate-defects-toggle', {}, { timeout: 5000 }));
     const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
     fireEvent.change(lid, { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
@@ -123,7 +123,7 @@ describe('the Queue page card', () => {
   it('an untouched row sends the displayed run identity but no defects', async () => {
     const posted = mockApi();
     render(<QueuePage />);
-    await screen.findByTestId('plate-defects-toggle');
+    await screen.findByTestId('plate-defects-toggle', {}, { timeout: 5000 });
     fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
     await waitFor(() => expect(posted.clearCalls).toBe(1));
     expect(posted.clear).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9' });

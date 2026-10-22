@@ -123,7 +123,10 @@ async def test_expanded_browsing_uses_fresh_copies_of_the_same_fleet_for_every_o
 
 @pytest.mark.parametrize(
     "around,stock,below,above",
-    [(1000, 0, 840, 1012), (1100, 0, 1044, 1371), (1000, 8, 848, 1020), (1100, 8, 1052, 1379)],
+    # The quantities the canonical cover makes exactly — they move with it. Under
+    # the coverage-class choice (2026-10-21) a class covers its remainder soonest,
+    # so the tail lands on other plates than the next-print key put it on.
+    [(1000, 0, 804, 1079), (1100, 0, 1079, 1131), (1000, 8, 812, 1087), (1100, 8, 1087, 1139)],
 )
 async def test_dense_eight_plate_search_with_free_kits_finds_both_sides(monkeypatch, around, stock, below, above):
     specs = [

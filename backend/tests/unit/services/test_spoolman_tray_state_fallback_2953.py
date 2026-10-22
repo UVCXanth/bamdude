@@ -97,8 +97,8 @@ class TestTheWriter:
 
     def test_report_usage_resolves_the_mapping_through_the_helper(self):
         assert (
-            "slot_to_tray, mapping_source = _completion_slot_to_tray(slot_to_tray, filament_usage, tray_changes, _state)"
-            in self._source()
+            "slot_to_tray, mapping_source = _completion_slot_to_tray( "
+            "slot_to_tray, filament_usage, tray_changes, _state, sole_tray )" in self._source()
         )
 
     def test_a_guess_does_not_restamp_the_archive(self):

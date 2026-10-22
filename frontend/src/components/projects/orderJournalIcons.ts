@@ -53,6 +53,7 @@ export const JOURNAL_ICONS: Record<(typeof ORDER_JOURNAL_KINDS)[number], LucideI
   defects_recorded: TriangleAlert,
   queue_items_filed: ListTodo,
   queue_items_unfiled: ListMinus,
+  plan_submission_cancelled: ListMinus,
   plan_enqueued: ListTodo,
   line_rebalanced: Shuffle,
   surplus_banked: PackagePlus,

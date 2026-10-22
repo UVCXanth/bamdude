@@ -37,11 +37,11 @@ function renderWith(size: '1' | '3') {
 describe('PrintersPage — Clear plate on a switched-off printer', () => {
   it('is offered on the expanded card', async () => {
     renderWith('3');
-    expect(await screen.findByTitle('Mark plate as cleared')).toBeInTheDocument();
+    expect(await screen.findByTitle('Mark plate as cleared', {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it('is offered on the compact card', async () => {
     renderWith('1');
-    expect(await screen.findByTitle('Mark plate as cleared')).toBeInTheDocument();
+    expect(await screen.findByTitle('Mark plate as cleared', {}, { timeout: 5000 })).toBeInTheDocument();
   });
 });

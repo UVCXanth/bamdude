@@ -203,7 +203,7 @@ EVENT_LABELS = {
     "stock_reorder_alert": "Stock reorder point",
     "queue_job_added": "Queue job added",
     "queue_job_started": "Queue job started",
-    "queue_job_waiting": "Queue job waiting",
+    "queue_job_waiting": "Auto Queue needs attention",
     "queue_job_skipped": "Queue job skipped",
     "queue_job_failed": "Queue job failed",
     "queue_completed": "Queue completed",

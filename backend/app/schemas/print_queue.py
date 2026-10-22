@@ -21,6 +21,11 @@ def serialize_utc_datetime(dt: datetime | None) -> str | None:
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
 
+class PrintQueueBulkRetry(BaseModel):
+    queue_id: int = Field(gt=0)
+    item_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=10000)
+
+
 class PrintQueueItemCreate(FilamentRoutingChoices, AutoEjectSelection):
     auto_eject_enabled: bool | None = None
     queue_id: int  # Required - which printer's queue to add to

@@ -28,6 +28,9 @@ was free. No new setting is added by this pass.
 
 from __future__ import annotations
 
+import heapq
+import logging
+import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -57,9 +60,29 @@ from backend.app.services.product_composition import PlateRecipe, estimate_secon
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
+logger = logging.getLogger(__name__)
+
 # A defence, not a feature: a plate whose yield somehow never shrinks the
 # outstanding map would otherwise spin forever inside a request.
 MAX_ITERATIONS = 10_000
+
+#: Simulated ``FleetCapacity.reserve`` calls the class lookahead may spend in
+#: one ``cover`` call, outside the closed form (an applicable operator calendar
+#: or fractional times). A class it cannot fully compare chooses on the
+#: established next-print key; the deadline is separate and still ends a cover.
+#: Measured 2026-10-21 (vault plan-recipe-choice-lookahead-spec): a calendar
+#: reserve costs about 7 µs, and plate-fit runs ``cover`` for every quantity it
+#: checks — 5000 took its search past its time limit, 1000 keeps it within
+#: 1.5× of before.
+LOOKAHEAD_SIM_BUDGET = 1_000
+
+#: Integers up to here add exactly in a float, so the closed form equals the
+#: float arithmetic ``reserve`` does.
+_EXACT_FLOAT_INT = 2**53
+
+#: Below this many prints past the idle prefix, the closed form pops the merged
+#: progressions instead of searching them.
+_HEAP_MERGE_LIMIT = 64
 
 Candidate = tuple[ProductPlate, LibraryFile, PlateRecipe]
 
@@ -119,16 +142,20 @@ class FleetCapacity:
             auto_eject=self.auto_eject,
         )
 
+    def eligible(self, key: str) -> list[FleetMachine]:
+        """The lanes a recipe of this model may be reserved on: its own model, or a compatible one."""
+        return [
+            m
+            for m in self.machines
+            if m.key == key or (self.allow_compatible and model_compatibility(key, m.key) == "compatible")
+        ]
+
     def preview(self, recipe: PlateRecipe) -> tuple[float, FleetMachine] | None:
         seconds = estimate_seconds(recipe)
         key = _model_key(recipe.printer_model)
         if key is None or seconds is None or seconds <= 0:
             return None
-        choices = [
-            m
-            for m in self.machines
-            if m.key == key or (self.allow_compatible and model_compatibility(key, m.key) == "compatible")
-        ]
+        choices = self.eligible(key)
         if not choices:
             return None
         machine = min(
@@ -154,6 +181,321 @@ class FleetCapacity:
             else finish + gap
         )
         return finish
+
+
+class _DeadlineExpired(Exception):
+    """A cooperative deadline passed inside the lookahead; the cover ends incomplete."""
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise _DeadlineExpired
+
+
+def _exact_int(value: float) -> int | None:
+    """``value`` as an int when it is a finite, non-negative whole number of seconds."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _lane_timings(capacity: FleetCapacity) -> dict[int, tuple[int, int, int] | None]:
+    """Each lane's ``(free, prep, gap)`` as exact ints, ``None`` where one is not."""
+    timings: dict[int, tuple[int, int, int] | None] = {}
+    for m in capacity.machines:
+        free, prep = _exact_int(m.free_at), _exact_int(m.prep_seconds)
+        gap = 0 if capacity.auto_eject else _exact_int(m.gap_seconds)
+        timings[m.printer_id] = None if free is None or prep is None or gap is None else (free, prep, gap)
+    return timings
+
+
+def _closed_form_makespan(
+    capacity: FleetCapacity,
+    recipe: PlateRecipe,
+    k: int,
+    deadline: float | None,
+    lanes_by_key: dict[str, list[FleetMachine]] | None = None,
+    timings: dict[int, tuple[int, int, int] | None] | None = None,
+) -> float | None:
+    """What ``k`` successive ``reserve`` calls finish by, without making them.
+
+    Exact inside a proven domain only — no operator calendar applies, and every
+    relevant time is a whole number of seconds that a float adds exactly — and
+    ``None`` everywhere else (a fractional ``free_at`` is real: work the
+    calendar moved keeps its origin's microseconds; rounding it changed which
+    plate won). Mirrors ``preview``: the idle lanes are taken first, one print
+    each, exact model before compatible; after that every lane is busy and each
+    print goes where it finishes soonest, so the rest finish at the k-th
+    smallest value of the lanes' arithmetic progressions.
+    """
+    seconds = estimate_seconds(recipe)
+    key = _model_key(recipe.printer_model)
+    if key is None or seconds is None or seconds <= 0 or k <= 0:
+        return None
+    if lanes_by_key is None:
+        lanes = capacity.eligible(key)
+    else:
+        lanes = lanes_by_key.get(key)
+        if lanes is None:
+            lanes = lanes_by_key[key] = capacity.eligible(key)
+    if not lanes:
+        return None
+    if capacity.operator_hours is not None and not capacity.auto_eject and any(m.requires_operator for m in lanes):
+        return None
+    secs = _exact_int(seconds)
+    if secs is None or secs <= 0:
+        return None
+    if timings is None:
+        timings = _lane_timings(capacity)
+    timing: dict[int, tuple[int, int, int]] = {}
+    for m in lanes:
+        lane = timings[m.printer_id]
+        if lane is None:
+            return None
+        timing[m.printer_id] = lane
+
+    if len(lanes) == 1:
+        # One lane: k prints back to back, the last service not counted.
+        free, prep, gap = timing[lanes[0].printer_id]
+        end = free + k * (prep + secs) + (k - 1) * gap
+        return float(end) if end <= _EXACT_FLOAT_INT else None
+
+    idle = sorted(
+        (m for m in lanes if timing[m.printer_id][0] == 0),
+        key=lambda m: (0 if m.key == key else 1, timing[m.printer_id][1] + secs, m.printer_id),
+    )
+    prefix = idle[:k]
+    prefix_end = max((timing[m.printer_id][1] + secs for m in prefix), default=0)
+    rest = k - len(prefix)
+    if rest <= 0:
+        return float(prefix_end)
+
+    taken = {m.printer_id for m in prefix}
+    progressions: list[tuple[int, int]] = []
+    for m in lanes:
+        free, prep, gap = timing[m.printer_id]
+        start = prep + secs + gap if m.printer_id in taken else free
+        progressions.append((start + prep + secs, prep + secs + gap))
+    low = min(first for first, _ in progressions)
+    high = max(first for first, _ in progressions) + (rest - 1) * max(step for _, step in progressions)
+    if high > _EXACT_FLOAT_INT:
+        return None
+    if rest <= _HEAP_MERGE_LIMIT:
+        # Few prints left: pop them off the merged progressions directly — the
+        # same k-th value the search finds, at a fraction of its sums.
+        heap = list(progressions)
+        heapq.heapify(heap)
+        last = 0
+        for _ in range(rest):
+            last, step = heapq.heappop(heap)
+            heapq.heappush(heap, (last + step, step))
+        return float(max(prefix_end, last))
+
+    def finished_by(t: int) -> int:
+        return sum((t - first) // step + 1 for first, step in progressions if t >= first)
+
+    while low < high:
+        _check_deadline(deadline)
+        mid = (low + high) // 2
+        if finished_by(mid) >= rest:
+            high = mid
+        else:
+            low = mid + 1
+    return float(max(prefix_end, low))
+
+
+def _simulated_makespan(
+    capacity: FleetCapacity,
+    recipe: PlateRecipe,
+    k: int,
+    budget: list[int] | None,
+    deadline: float | None,
+    finishes: list[float] | None = None,
+) -> float | None:
+    """``k`` real reserves on a copy; ``None`` when the budget cannot pay for all of them.
+
+    A candidate is never scored on part of its prints, so the budget is
+    charged up front and only when it covers the whole run. ``finishes``, when
+    given, receives the run's makespan after each print — what any shorter run
+    from the same ledger would finish by.
+    """
+    if k <= 0:
+        return None
+    if budget is not None:
+        if budget[0] < k:
+            return None
+        budget[0] -= k
+    ledger = capacity.copy()
+    finish = None
+    for _ in range(k):
+        _check_deadline(deadline)
+        end = ledger.reserve(recipe)
+        if end is None:
+            return None
+        finish = end if finish is None else max(finish, end)
+        if finishes is not None:
+            finishes.append(finish)
+    return finish
+
+
+def _run_state(
+    capacity: FleetCapacity, recipe: PlateRecipe, lanes_by_key: dict[str, list[FleetMachine]]
+) -> tuple | None:
+    """Everything a simulated run of ``recipe`` depends on that moves inside one ``cover``.
+
+    ``reserve`` only ever reads the recipe's model and time and its eligible
+    lanes, and only ``free_at`` changes; prep, gap, the calendar and auto-eject
+    are fixed for the call. The same state therefore gives the same run.
+    """
+    key = _model_key(recipe.printer_model)
+    if key is None:
+        return None
+    lanes = lanes_by_key.get(key)
+    if lanes is None:
+        lanes = lanes_by_key[key] = capacity.eligible(key)
+    return key, estimate_seconds(recipe), tuple((m.printer_id, m.free_at) for m in lanes)
+
+
+def _class_choice(
+    live: list[tuple],
+    remaining: dict[int, int],
+    yields: dict[int, dict[int, int]],
+    capacity: FleetCapacity,
+    budget: list[int],
+    stats: dict[str, int],
+    deadline: float | None,
+    lanes_by_key: dict[str, list[FleetMachine]],
+    runs: dict[tuple, list[float]],
+) -> tuple:
+    """The step's pick: each coverage class sends its best cover, the established key picks among them.
+
+    A class is the plates whose output covers the SAME still-needed parts, so
+    every one of them closes the same work — the whole remainder of those parts
+    — and their finishes compare directly (vault plan-recipe-choice-lookahead-spec
+    r3); its representative is the plate whose prints alone finish that work
+    soonest. Recomputed on every step from the current ledger: a stale winner is
+    no winner (a cache that kept one lost lane parallelism and picked 4+4+3 over
+    4+3+3). Between classes the established next-print key decides, unchanged.
+
+    A representative's key is never below its class's best member key, so
+    classes are taken in that order and the walk stops as soon as no remaining
+    class could beat the best representative found. With every class it
+    reaches fully compared, that is the pick a walk over every class would
+    make. ⚠️ Under a budget that cannot compare them all, the ORDER is a
+    policy, not an equivalence (owner, 2026-10-22; Codex C3-I1): the budget
+    goes to the likely winners first, and a class that gets an exact
+    comparison here may fall back under another order — r3's order by the
+    parts covered picks a different plate on the same line
+    (``test_a_limited_budget_goes_to_classes_by_their_best_key``). The order is
+    fixed by the keys (which end in the plate id), so the budget falls the
+    same way whatever order the candidates came in. A class that could not be
+    fully compared chooses on the established key among ALL its members; a
+    member scored on part of its prints never wins.
+
+    ``runs`` keeps every simulated run of this ``cover`` by the state it started
+    from (``_run_state``): a member whose lanes the step did not move asks for a
+    prefix of a run already made, and gets it without spending the budget. The
+    runs a class still needs are paid for together, before any is made — a class
+    the budget cannot cover in full spends nothing.
+    """
+    classes: dict[tuple[int, ...], list[tuple]] = {}
+    for entry in live:
+        plate = entry[1]
+        support = tuple(sorted(p for p, n in yields[plate.id].items() if n > 0 and remaining.get(p, 0) > 0))
+        classes.setdefault(support, []).append(entry)
+    ordered = sorted(
+        ((min(members, key=lambda e: e[0]), support, members) for support, members in classes.items()),
+        key=lambda c: c[0][0],
+    )
+    best: tuple | None = None
+    # The ledger does not move inside one step: read each lane's times once.
+    timings: dict[int, tuple[int, int, int] | None] | None = None
+    for least, support, members in ordered:
+        if best is not None and least[0] > best[0]:
+            break
+        if len(members) == 1:
+            representative = least
+        else:
+            if timings is None:
+                timings = _lane_timings(capacity)
+            ordered_members = sorted(members, key=lambda e: e[1].id)
+            finish_by_plate: dict[int, float] = {}
+            # Runs still to simulate, one per distinct state (members sharing it
+            # read prefixes of the longest one asked), in plate-id order.
+            to_run: dict[tuple, list[tuple[tuple, int]]] = {}
+            comparable = True
+            for entry in ordered_members:
+                _check_deadline(deadline)
+                plate, recipe = entry[1], entry[3]
+                k = max(math.ceil(remaining[p] / yields[plate.id][p]) for p in support)
+                stats["evaluations"] += 1
+                finish = _closed_form_makespan(capacity, recipe, k, deadline, lanes_by_key, timings)
+                if finish is None:
+                    state = _run_state(capacity, recipe, lanes_by_key)
+                    if state is None:
+                        comparable = False
+                        break
+                    known = runs.get(state)
+                    if known is None or len(known) < k:
+                        to_run.setdefault(state, []).append((entry, k))
+                        continue
+                    finish = known[k - 1]
+                    stats["reused"] += 1
+                finish_by_plate[plate.id] = finish
+            # The whole class is paid for before any of it runs: a class that
+            # cannot be compared in full chooses on the established key anyway,
+            # and a run spent on one of its members would buy nothing.
+            if comparable and sum(max(k for _e, k in asked) for asked in to_run.values()) > budget[0]:
+                comparable = False
+            if comparable:
+                for state, asked in to_run.items():
+                    longest = max(k for _e, k in asked)
+                    run: list[float] = []
+                    if _simulated_makespan(capacity, asked[0][0][3], longest, budget, deadline, run) is None:
+                        comparable = False
+                        break
+                    stats["simulated"] += longest
+                    runs[state] = run
+                    for entry, k in asked:
+                        finish_by_plate[entry[1].id] = run[k - 1]
+            if not comparable:
+                stats["fallback_classes"] += 1
+                representative = least
+            else:
+                representative = min(ordered_members, key=lambda e: (finish_by_plate[e[1].id], *e[0][1:]))
+        if best is None or representative[0] < best[0]:
+            best = representative
+    return best
+
+
+def _lookahead_makespan(
+    capacity: FleetCapacity,
+    recipe: PlateRecipe,
+    k: int,
+    *,
+    budget: list[int] | None = None,
+    deadline: float | None = None,
+) -> float | None:
+    """When ``k`` prints of ``recipe`` would all be finished on this ledger — the
+    MAX of their finishes, never the last ``reserve``'s return (an idle exact lane
+    with a long prep can finish after a later one). The ledger is not touched.
+    ``None``: not computable within the budget. A passed deadline raises
+    ``_DeadlineExpired`` inside ``cover`` and returns ``None`` here. The
+    closed form or the simulation, whichever applies, behind one door — the
+    tests hold both to repeated ``reserve`` through it; ``cover`` calls the two
+    directly.
+    """
+    try:
+        closed = _closed_form_makespan(capacity, recipe, k, deadline)
+        if closed is not None:
+            return closed
+        return _simulated_makespan(capacity, recipe, k, budget, deadline)
+    except _DeadlineExpired:
+        return None
 
 
 @dataclass
@@ -186,6 +528,7 @@ class PlanAlternative:
     filament_used_grams: float | None = None
     cost: float | None = None
     time_unknown: bool = False
+    source_token: str | None = None
 
 
 @dataclass
@@ -216,6 +559,14 @@ class PlanRow:
     # one excluded, sorted by ``(printer_model or "", plate_id)``. Empty is the
     # ordinary case; see :class:`PlanAlternative`.
     alternatives: list[PlanAlternative] = field(default_factory=list)
+    # An exact draft may pin this run to a machine; recommendation rows do not.
+    target_printer_id: int | None = None
+    entry_id: str | None = None
+    line_token: str | None = None
+    source_token: str | None = None
+    manual: bool = False
+    protected_count: int = 0
+    issue: str | None = None
 
 
 @dataclass
@@ -267,6 +618,10 @@ class OrderPlan:
     # :func:`cover`.
     truncated: bool = False
     auto_eject: bool = False
+    mode: str = "recommendation"
+    working_revision: int | None = None
+    inputs_token: str | None = None
+    unplanned_parts: dict[int, int] = field(default_factory=dict)
 
 
 def line_yield(recipe: PlateRecipe, counted_part_ids: set[int]) -> dict[int, int]:
@@ -502,6 +857,14 @@ def cover(
     # shows", whichever pass would have printed them.
     budget = MAX_ITERATIONS
 
+    # The class lookahead's own allowance of simulated reserves for this whole
+    # call (``LOOKAHEAD_SIM_BUDGET``), and what it did — internal diagnostics.
+    lookahead_budget = [LOOKAHEAD_SIM_BUDGET]
+    lookahead_stats = {"evaluations": 0, "simulated": 0, "reused": 0, "fallback_classes": 0}
+    # Eligibility of a model never changes inside one call; the ledger's times do.
+    lanes_by_key: dict[str, list[FleetMachine]] = {}
+    lookahead_runs: dict[tuple, list[float]] = {}
+
     def greedy(scheduled: bool) -> bool:
         """Pick prints until nothing helps; True when the budget ran out first."""
         nonlocal budget
@@ -510,6 +873,7 @@ def cover(
                 return True
             budget -= 1
             best: tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]] | None = None
+            live: list[tuple[tuple, ProductPlate, LibraryFile, PlateRecipe, dict[int, int]]] = []
             for plate, file, recipe in candidates:
                 if deadline is not None and time.monotonic() >= deadline:
                     return True
@@ -530,8 +894,31 @@ def cover(
                     if schedule is not None
                     else _pick_key(useful, waste, seconds[plate.id], plate.id)
                 )
-                if best is None or key < best[0]:
-                    best = (key, plate, file, recipe, gain)
+                live.append((key, plate, file, recipe, gain))
+            if scheduled and capacity is not None and len(live) > 1:
+                # Inside a class of plates making the same still-needed parts,
+                # the next print's finish is myopic — a small plate always ends
+                # first, so a single printer was planned 2×5 instead of 1×10.
+                # Each class sends its best COVER of the class's remaining work;
+                # between classes the established key decides, unchanged.
+                try:
+                    best = _class_choice(
+                        live,
+                        remaining,
+                        yields,
+                        capacity,
+                        lookahead_budget,
+                        lookahead_stats,
+                        deadline,
+                        lanes_by_key,
+                        lookahead_runs,
+                    )
+                except _DeadlineExpired:
+                    return True
+            else:
+                for entry in live:
+                    if best is None or entry[0] < best[0]:
+                        best = entry
             if deadline is not None and time.monotonic() >= deadline:
                 return True
             if best is None:
@@ -556,6 +943,15 @@ def cover(
         return True
 
     truncated = greedy(fleet_can_choose)
+    if lookahead_stats["evaluations"]:
+        logger.debug(
+            "plan cover lookahead: %d class evaluation(s), %d simulated reserve(s), %d reused run(s), "
+            "%d class(es) on the next-print key",
+            lookahead_stats["evaluations"],
+            lookahead_stats["simulated"],
+            lookahead_stats["reused"],
+            lookahead_stats["fallback_classes"],
+        )
     if fleet_can_choose and not truncated and any(remaining.values()):
         # ⚠️ What the scheduled pass leaves is made ONLY by recipes no lane takes
         # (an absent or parked model, a plate with no estimate) — the per-part form
@@ -664,6 +1060,8 @@ def _totals(lines: list[LinePlan], price_per_gram: float | None) -> PlanTotals:
     costed = False
     for line in lines:
         for row in line.rows:
+            if row.count <= 0:
+                continue
             totals.prints += row.count
             if row.print_time_seconds is None:
                 unknown = True
@@ -978,7 +1376,7 @@ async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[i
 
 
 async def plan_for_orders(
-    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None
+    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None, working: bool = True
 ) -> dict[int, OrderPlan]:
     """The plan of every order in ``project_ids``, in ONE round of queries.
 
@@ -1031,7 +1429,7 @@ async def plan_for_orders(
     # dialog is one caller), so every order starts from the same farm snapshot.
     # Within an order ``plan_lines`` shares its copy across every line.
     fleet = capacity if capacity is not None else await _current_fleet_capacity(db)
-    return {
+    plans = {
         ctx.project.id: plan_lines(
             ctx,
             figures_by_project[ctx.project.id],
@@ -1042,6 +1440,11 @@ async def plan_for_orders(
         )
         for ctx in contexts
     }
+    if working:
+        from backend.app.services.order_working_plan import effective_plans
+
+        await effective_plans(db, plans, contexts, recipes_by_product, queued, price_per_gram)
+    return plans
 
 
 async def plan_for_order(

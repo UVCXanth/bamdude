@@ -320,6 +320,148 @@ class TestManualReplacementIntent:
 
 class TestRunoutEpisodeRows:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("spoolman", [False, True])
+    async def test_refill_gate_uses_the_inherited_identity_when_the_live_assignment_is_gone(
+        self, db_session, printer, monkeypatch, spoolman
+    ):
+        from backend.app.services.print_usage_journal import record_runout, without_stale_refill_runouts
+
+        archive = await _make_archive(db_session, printer)
+        for event, kind, tray, spool, layer in [
+            ("runout", "autoswitch", 0, 300, 35),
+            ("tray_change", None, 1, 306, 35),
+            ("spool_loaded", None, 0, 309, 37),
+        ]:
+            db_session.add(
+                PrintUsageEvent(
+                    printer_id=printer.id,
+                    archive_id=archive.id,
+                    event=event,
+                    kind=kind,
+                    global_tray_id=tray,
+                    spool_id=None if spoolman else spool,
+                    spoolman_spool_id=spool if spoolman else None,
+                    layer_num=layer,
+                    slot_occupied=event != "runout",
+                )
+            )
+        await db_session.commit()
+        monkeypatch.setattr("backend.app.services.print_usage_journal._slot_occupied_now", lambda *_: True)
+        result = await record_runout(
+            db_session, printer_id=printer.id, archive_id=archive.id, layer_num=38, kind="autoswitch", global_tray_id=0
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert len(events) == 3, "live gate must reject the same inherited-spool row the accounting filter rejects"
+        assert without_stale_refill_runouts(events) == events
+        assert result == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_one_presence_snapshot_is_shared_by_the_gate_and_new_event(self, db_session, printer, monkeypatch):
+        from unittest.mock import Mock
+
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        presence = Mock(side_effect=[False, True])
+        monkeypatch.setattr("backend.app.services.print_usage_journal._slot_occupied_now", presence)
+        await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=38,
+            kind="autoswitch",
+            global_tray_id=0,
+            spool_id=9,
+        )
+        events = await load_events(db_session, printer.id, archive.id)
+        assert presence.call_count == 1
+        assert events[0].slot_occupied is False
+
+    @pytest.mark.asyncio
+    async def test_duplicate_fold_and_weaker_status_do_not_notify_again_but_autoswitch_upgrade_does(
+        self, db_session, printer
+    ):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+
+        async def event(kind, tray=0):
+            return await record_runout(
+                db_session,
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=38,
+                kind=kind,
+                global_tray_id=tray,
+                spool_id=9,
+            )
+
+        first = await event("pause")
+        repeated = await event("pause")
+        folded = await event("pause", None)
+        upgraded = await event("autoswitch")
+        weaker = await event("pause")
+        events = await load_events(db_session, printer.id, archive.id)
+        assert len(events) == 1 and events[0].kind == "autoswitch"
+        assert [first, repeated, folded, upgraded, weaker] == ["new", "duplicate", "duplicate", "upgraded", "duplicate"]
+        assert [r.should_notify for r in [first, repeated, folded, upgraded, weaker]] == [
+            True,
+            False,
+            False,
+            True,
+            False,
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("returned_to_source", [False, True])
+    async def test_refilled_inactive_slot_does_not_start_a_new_runout(
+        self, db_session, printer, monkeypatch, returned_to_source
+    ):
+        from backend.app.services.print_usage_journal import record_runout
+
+        archive = await _make_archive(db_session, printer)
+        for event, kind, tray, spool, layer in [
+            ("runout", "autoswitch", 0, 300, 35),
+            ("tray_change", None, 1, 306, 35),
+            ("spool_loaded", None, 0, 309, 37),
+        ]:
+            db_session.add(
+                PrintUsageEvent(
+                    printer_id=printer.id,
+                    archive_id=archive.id,
+                    layer_num=layer,
+                    event=event,
+                    kind=kind,
+                    global_tray_id=tray,
+                    spool_id=spool,
+                    slot_occupied=event != "runout",
+                )
+            )
+        await db_session.commit()
+        if returned_to_source:
+            await record_event(
+                db_session,
+                printer_id=printer.id,
+                archive_id=archive.id,
+                layer_num=38,
+                event="tray_change",
+                global_tray_id=0,
+                spool_id=309,
+            )
+        monkeypatch.setattr("backend.app.services.print_usage_journal._slot_occupied_now", lambda *_: True)
+        result = await record_runout(
+            db_session,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            layer_num=38,
+            kind="autoswitch",
+            global_tray_id=0,
+            spool_id=309,
+        )
+        assert result == ("new" if returned_to_source else "rejected")
+        assert len(await load_events(db_session, printer.id, archive.id)) == (5 if returned_to_source else 3)
+
+    @pytest.mark.asyncio
     async def test_closed_episode_gets_a_new_row(self, db_session, printer):
         from backend.app.services.print_usage_journal import record_runout
 

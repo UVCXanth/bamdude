@@ -60,8 +60,11 @@ POLL_HOLD_MARGIN_SECONDS = 20.0
 POLICY_VALUES: tuple[str, ...] = ("inherit", "on", "off")
 FARM_SETTING = "camera_light_auto"
 OBICO_SETTING = "camera_light_auto_obico"
-#: Purposes that never take the light, whatever the settings say.
-NEVER_PURPOSES = frozenset({"layer_timelapse"})
+#: Purposes that never take the light, whatever the settings say. Both are
+#: captures that repeat all print long: lighting them switched the light on
+#: and off every few layers. ``finish_bank`` is the in-print frame banked for
+#: the finish photo; the finish photo itself, when it shoots, still asks.
+NEVER_PURPOSES = frozenset({"layer_timelapse", "finish_bank"})
 #: Purposes that ALWAYS take the light, whatever the settings say. The plate
 #: check compares the camera view against a reference calibrated with the
 #: light on; a check in the dark would differ from it and pause a print for

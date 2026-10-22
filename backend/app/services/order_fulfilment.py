@@ -507,9 +507,15 @@ async def close(
     # and then no statement at all.
     await product_gate(db, {line.product_id for line in lines})
     await lock_order(db, project.id)
+    from backend.app.services.order_plan_submission import fence
+
     ordered = sorted(lines, key=lambda line: line.id)
     # Positions, lines, parts — before the first line is handled (BL0).
     await finished_stock.lock_lines_with_parts(db, ordered)
+    # Publication owns the line's FK KEY SHARE before its draft. Fencing
+    # before the stock/line set would hold the draft while waiting on that
+    # same publisher's line and create a PostgreSQL deadlock.
+    await fence(db, project.id)
     if to_stock:
         # The PATCH door read the state before these locks (final review M4): a write-off or
         # a close that committed meanwhile may have taken what the check counted.
