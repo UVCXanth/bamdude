@@ -13,6 +13,7 @@ class PlateFitRequest(BaseModel):
     plate_ids: list[PositiveId] | None = Field(default=None, max_length=64)
     steps: int = Field(default=1, ge=1, le=4, strict=True)
     replace_pending: bool = False
+    extended_search: bool = Field(default=False, strict=True)
 
 
 class PlateFitRun(BaseModel):

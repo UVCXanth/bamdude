@@ -13042,7 +13042,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  getPlateFit: (orderId: number, lineId: number, data: { around: number; plate_ids?: number[]; steps: number; replace_pending?: boolean }) =>
+  getPlateFit: (orderId: number, lineId: number, data: { around: number; plate_ids?: number[]; steps: number; replace_pending?: boolean; extended_search?: boolean }) =>
     request<PlateFitResponse>(`/projects/${orderId}/lines/${lineId}/plate-fit`, { method: 'POST', body: JSON.stringify(data) }),
   deleteOrderLine: (orderId: number, lineId: number) =>
     request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),

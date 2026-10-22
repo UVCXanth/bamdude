@@ -117,6 +117,25 @@ stock or queue write. Ordinary planner calls omit the optional deadline and keep
 their existing choices. Cancellation continues to own the worker and admission
 slot until that work exits; a timeout around a detached thread is not used.
 
+## Extended search
+
+The dialog's optional **Extended search — up to 30 seconds** checkbox sends a
+strict boolean `extended_search` on the read-only preview request. Omission means
+the existing six-second budget. The choice is local to the dialog and is not a
+printer, order or global setting; changing it invalidates the prior proposal and
+its acknowledgements. The API accepts no caller-supplied arbitrary time budget.
+
+The existing SciPy/HiGHS path is reused. Extended previews share 30 seconds
+between the current quantity and both directions under the same cooperative
+deadline and admission slot. Each integer solve receives at most 7.5 seconds and
+500,000 nodes instead of 1.5 seconds and 100,000 nodes, always capped by its
+direction's remaining time. No objective, stock-offer rule or canonical fleet
+choice changes. A solver timeout/incumbent remains incomplete, never an exact
+nearest proposal; verified options already found remain available. The UI names
+the wait without inventing a progress percentage. Cancellation continues owning
+the worker until it exits. Apply-time revalidation retains its six-second bound
+and all existing stale, stock and reviewed-queue guards.
+
 Options reconsidered for this fix: the existing [SciPy milp interface](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html)
 remains the sparse-range filter. Rebuilding it for every adjacent quantity was
 measured to waste the budget. The [native HiGHS Python interface](https://ergo-code.github.io/HiGHS/stable/interfaces/python/example-py/)

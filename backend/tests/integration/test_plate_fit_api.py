@@ -19,6 +19,35 @@ async def preview(client, s, **kwargs):
     )
 
 
+async def test_extended_search_is_forwarded_per_request_without_editing_order_or_queue(
+    committing_client, db_session, shop, monkeypatch
+):
+    from backend.app.services import plate_fit
+
+    original = plate_fit.proposals
+    modes = []
+
+    async def observed(snapshot, request):
+        modes.append(request.extended_search)
+        return await original(snapshot, request)
+
+    monkeypatch.setattr(plate_fit, "proposals", observed)
+    before = (await db_session.execute(select(func.count()).select_from(AutoQueueItem))).scalar_one()
+    for payload in ({"extended_search": True}, {}):
+        response = await preview(committing_client, shop, **payload)
+        assert response.status_code == 200 and response.json()["options"], response.text
+    assert modes == [True, False]
+    line = await db_session.get(ProjectLine, shop["line"], populate_existing=True)
+    assert line.quantity == 10
+    assert (await db_session.execute(select(func.count()).select_from(AutoQueueItem))).scalar_one() == before
+
+
+@pytest.mark.parametrize("value", [1, "true", 30, None])
+async def test_extended_search_rejects_non_boolean_mode(committing_client, shop, value):
+    response = await preview(committing_client, shop, extended_search=value)
+    assert response.status_code == 422, response.text
+
+
 async def apply(client, s, response, option, ack=False):
     return await client.patch(
         f"/api/v1/projects/{s['order']}/lines/{s['line']}",

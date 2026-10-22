@@ -1,5 +1,8 @@
 export default {
   plateFit: {
+    extendedSearch: 'Extended search — up to 30 seconds',
+    extendedSearchHint: 'For complex plans. Uses more calculation time; finding a result is not guaranteed. Applies only to this search.',
+    searching: 'Searching for whole-plate quantities — up to {{seconds}} seconds…',
     replacePending: 'Recalculate unassigned Auto Queue work for this line',
     queueWarning: '{{count}} pending Auto Queue jobs will be removed when applying. Assigned, scheduled, staged, pinned and printer-queue jobs remain fixed. The replacement is a draft: send it separately with “Whole plan to queue”, using the current print settings.',
     queueAck: 'I confirm removing these {{count}} jobs. I will send the replacement plan to the queue separately.', queueIds: 'Jobs proposed for removal',

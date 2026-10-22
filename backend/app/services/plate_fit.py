@@ -30,6 +30,7 @@ from backend.app.services.product_composition import recipes_for_products
 
 MAX_QUANTITY = 1_000_000
 MAX_SECONDS = 6.0
+EXTENDED_SECONDS = 30.0
 
 
 class FitError(Exception):
@@ -440,7 +441,7 @@ def greedy_option(
 
 
 def solve(
-    snapshot: Snapshot, lower: int, upper: int, direction: int, deadline: float
+    snapshot: Snapshot, lower: int, upper: int, direction: int, deadline: float, *, extended_search: bool = False
 ) -> tuple[PlateFitOption | None, str]:
     """HiGHS only skips impossible quantities; stock_offers + greedy cover decide.
 
@@ -556,7 +557,11 @@ def solve(
                     integrality=np.ones(size),
                     bounds=bounds,
                     constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
-                    options={"time_limit": min(1.5, seconds), "mip_rel_gap": 0.0, "node_limit": 100_000},
+                    options={
+                        "time_limit": min(7.5 if extended_search else 1.5, seconds),
+                        "mip_rel_gap": 0.0,
+                        "node_limit": 500_000 if extended_search else 100_000,
+                    },
                 )
             except (ValueError, RuntimeError):
                 return None, "limited"
@@ -617,8 +622,16 @@ def solve(
 
 async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
     def run():
-        deadline = time.monotonic() + MAX_SECONDS
-        same, same_status = solve(snapshot, request.around, request.around, 1, time.monotonic() + MAX_SECONDS / 3)
+        budget = EXTENDED_SECONDS if request.extended_search else MAX_SECONDS
+        deadline = time.monotonic() + budget
+        same, same_status = solve(
+            snapshot,
+            request.around,
+            request.around,
+            1,
+            time.monotonic() + budget / 3,
+            extended_search=request.extended_search,
+        )
         options = [same] if same is not None else []
         statuses = {"lower": "none", "upper": "none"}
         cursors = {"lower": request.around, "upper": request.around}
@@ -637,7 +650,9 @@ async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
                 )
                 now = time.monotonic()
                 turn_deadline = now + max(0, deadline - now) / (len(active) - index)
-                found, status = solve(snapshot, low, high, direction, turn_deadline)
+                found, status = solve(
+                    snapshot, low, high, direction, turn_deadline, extended_search=request.extended_search
+                )
                 if step == 0 or status == "limited":
                     statuses[key] = status
                 if found is None:

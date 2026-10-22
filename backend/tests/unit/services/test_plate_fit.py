@@ -126,7 +126,7 @@ async def test_expanded_search_gets_both_nearest_directions_before_more_neighbou
     clock = [100.0]
     turns = []
 
-    def fake_solve(_snapshot, low, high, direction, deadline):
+    def fake_solve(_snapshot, low, high, direction, deadline, **_kwargs):
         turns.append((low, high, direction, deadline))
         clock[0] += 0.1
         q = high if direction == -1 else low
@@ -145,7 +145,7 @@ async def test_lower_timeout_reserves_upper_time_and_never_claims_lower_absence(
     clock = [100.0]
     turns = []
 
-    def fake_solve(_snapshot, low, high, direction, deadline):
+    def fake_solve(_snapshot, low, high, direction, deadline, **_kwargs):
         turns.append((low, high, deadline))
         if low == high:
             return None, "none"
@@ -167,7 +167,7 @@ async def test_lower_timeout_reserves_upper_time_and_never_claims_lower_absence(
 async def test_limited_extra_search_keeps_nearest_option_and_reports_incomplete_range(monkeypatch):
     s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,))])
 
-    def fake_solve(_snapshot, low, high, direction, deadline):
+    def fake_solve(_snapshot, low, high, direction, deadline, **_kwargs):
         q = high if direction == -1 else low
         return (fit.option(s, q, [q]), "found") if 999 <= q <= 1001 else (None, "limited")
 

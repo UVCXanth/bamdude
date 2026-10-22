@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Whole-plate quantity adjustment offers an opt-in extended search of up to 30 seconds for complex plans. The usual six-second search remains the default; unfinished searches retain verified options and still report their limits.
+
 ## [0.7.1] - 2026-10-19
 
 Images: `ghcr.io/kainpl/bamdude:0.7.1` / `kainpl/bamdude:0.7.1` (`:latest` tracks this release).
