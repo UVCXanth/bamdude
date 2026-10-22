@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **A restarted BamDude no longer withholds an owed table swap because the print was recovered.** A successfully completed queue execution retains its saved change-table macro even when its in-memory dispatch binding is missing or marked as observed. Live completion and reconnect recovery use the execution-linked queue record; the macro is still claimed once before sending, never added to a self-swapping file, and never replayed after an uncertain attempt or over a newer job. Existing completed holds are not automatically replayed by this fix.
+
 - **Pause new farm starts after an unconfirmed shutdown.** An operator can inspect the farm and explicitly allow new work; there is no automatic countdown. The durable pause survives restarts and backup restore cannot import another installation's approval. This is one installation-wide decision: printer reconnects do not revoke it, and controls, completion and swap macros of an existing print retain their normal behaviour.
 
 - **Info shows a terminal queue item still held by a printing queue header.** Existing print-state diagnostics and confirmed repair actions remain available. The additional inconsistency is shown for inspection, without clearing a pending physical action automatically.

@@ -8100,6 +8100,16 @@ async def _on_print_complete_impl(
     from backend.app.services.print_run_binding import origin_is_proven
 
     _swap_run_proven = bound_run is not None and accepted_queue_item_id is not None and origin_is_proven(bound_run)
+    # Baked-file clearance still needs its origin proof. An explicit
+    # owed macro instead belongs to the durable queue execution, even when a
+    # restart lost the dispatch binding or recovered it as ``observed``.
+    from types import SimpleNamespace as _SwapExecution
+
+    from backend.app.services.print_reconciliation import _run_holds_its_printer, _swap_run
+
+    _swap_execution = None
+    _swap_queue_id = None
+    _swap_execution_owned = False
     _swap_hold: str | None = None
     _swap_hold_text: str | None = None
     _swap_fact = None
@@ -8111,8 +8121,8 @@ async def _on_print_complete_impl(
         try:
             async with async_session() as db:
                 from backend.app.models.archive import PrintArchive as _SwArchive
-                from backend.app.models.print_queue import PrintQueueItem as _SwItem
                 from backend.app.models.printer import Printer as _SwPrinter
+                from backend.app.models.printer_queue import PrinterQueue as _SwQueue
                 from backend.app.services.order_auto_eject import archive_mode as _sw_archive_mode
 
                 _sw_archive = await db.get(_SwArchive, archive_id)
@@ -8133,11 +8143,14 @@ async def _on_print_complete_impl(
                     _swap_auto_eject = _sw_archive_mode(_sw_archive)
                     _swap_cycle = swap_terminal.cycle_state(_sw_extra)
                     if "swap_mode_change_table" in swap_events:
-                        _sw_item = (
-                            await db.get(_SwItem, accepted_queue_item_id)
-                            if accepted_queue_item_id is not None
-                            else None
-                        )
+                        _swap_queue_id = await db.scalar(select(_SwQueue.id).where(_SwQueue.printer_id == printer_id))
+                        _sw_item = await _swap_run(db, archive_id, _swap_queue_id, live=True)
+                        if _sw_item is not None:
+                            # Freeze before awaits/populate_existing can refresh the ORM row.
+                            _swap_execution = _SwapExecution(id=_sw_item.id, started_at=_sw_item.started_at)
+                            _swap_execution_owned = await _run_holds_its_printer(
+                                db, printer_id, archive_id, _swap_queue_id, _swap_execution, live=True
+                            )
                         _swap_pending_fact = await swap_terminal.pending_fact(db, _sw_archive, _sw_item)
                 _sw_printer = await db.get(_SwPrinter, printer_id)
                 _swap_mode = bool(_sw_printer is not None and _sw_printer.swap_mode_enabled)
@@ -8147,7 +8160,10 @@ async def _on_print_complete_impl(
 
     if "swap_mode_change_table" in swap_events:
         _swap_hold = swap_terminal.change_table_hold(
-            _swap_pending_fact, completed=_swap_status_ok, proven=_swap_run_proven, swap_mode=_swap_mode
+            _swap_pending_fact,
+            completed=_swap_status_ok,
+            execution_owned=_swap_execution_owned,
+            swap_mode=_swap_mode,
         )
     if "swap_mode_change_table" in swap_events and _swap_hold is None:
         _sw_attempted = False
@@ -8163,10 +8179,21 @@ async def _on_print_complete_impl(
                 if not (macro and macro.gcode):
                     _swap_hold = swap_terminal.HOLD_SWAP_OFF
                 elif _owns_printer_effect():
+
+                    async def _swap_still_ours(session):
+                        return _owns_printer_effect() and await _run_holds_its_printer(
+                            session, printer_id, archive_id, _swap_queue_id, _swap_execution, live=True
+                        )
+
                     # One claim decides whether the command may leave, committed before it -- the sweep takes the
                     # same one, so a reconnect can never send this run's table swap a second time (Codex review r1).
                     _sw_claim = await swap_terminal.claim_change_table(
-                        async_session, archive_id, queue_id=None, owner="live", allow_absent=True
+                        async_session,
+                        archive_id,
+                        queue_id=_swap_queue_id,
+                        owner="live",
+                        allow_absent=True,
+                        still_ours=_swap_still_ours,
                     )
                     _sw_attempted = _sw_claim == swap_terminal.CLAIMED
                     if not _sw_attempted:

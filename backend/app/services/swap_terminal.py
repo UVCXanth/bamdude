@@ -4,7 +4,7 @@ Two decisions, both taken once per run, and both asked by the live completion an
 
 * **baked clear** -- the source's own plate-swap sequence cleared the plate: only for a run BamDude can prove
   it addressed, completed, over a declaration strictly True, and never for an order auto-eject archive;
-* **our change_table** -- the macro dispatch left owed: only for a proven, completed run on a printer still in
+* **our change_table** -- the macro dispatch left owed: for the completed execution still owning its queue on a printer in
   swap mode, over a source KNOWN not to carry its own sequence (False). Anything else HOLDS: nothing runs, the
   event stays owed, the plate is not cleared, and the queue waits with a reason.
 
@@ -120,11 +120,11 @@ def baked_clears(fact: Any, *, completed: bool, proven: bool, auto_eject: bool) 
     return completed and proven and fact is True and not auto_eject
 
 
-def change_table_hold(fact: Any, *, completed: bool, proven: bool, swap_mode: bool) -> str | None:
-    """D3: ``None`` when our owed change_table may run; otherwise why it holds."""
+def change_table_hold(fact: Any, *, completed: bool, execution_owned: bool, swap_mode: bool) -> str | None:
+    """An owed macro belongs to the persisted execution, not its recovered runtime origin."""
     if not completed:
         return HOLD_NOT_COMPLETED
-    if not proven:
+    if not execution_owned:
         return HOLD_RUN_UNPROVEN
     if fact is True:
         return HOLD_SOURCE_BAKED

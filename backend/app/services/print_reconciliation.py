@@ -1221,12 +1221,12 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
             elif stage != swap_terminal.CLAIM_OWED:
                 hold = swap_terminal.HOLD_ATTEMPT_UNKNOWN
             else:
-                proven = run is not None and not await _another_run_active(db, printer_id, archive_id)
+                execution_owned = run is not None and not await _another_run_active(db, printer_id, archive_id)
                 fact = await swap_terminal.pending_fact(db, archive, run)
                 hold = swap_terminal.change_table_hold(
                     fact,
                     completed=True,
-                    proven=proven,
+                    execution_owned=execution_owned,
                     swap_mode=bool(printer is not None and printer.swap_mode_enabled),
                 )
             macro = None
@@ -1332,8 +1332,8 @@ async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> Non
                 swap_terminal.release(archive_id)
 
 
-async def _swap_run(db, archive_id: int, queue_id: int | None) -> PrintQueueItem | None:
-    """The one job that ran this archive on this printer: completed by the close, started, on its queue."""
+async def _swap_run(db, archive_id: int, queue_id: int | None, *, live: bool = False) -> PrintQueueItem | None:
+    """The execution-linked job; live completion has not closed its printing row yet."""
     if queue_id is None:
         return None
     rows = (
@@ -1342,7 +1342,7 @@ async def _swap_run(db, archive_id: int, queue_id: int | None) -> PrintQueueItem
                 select(PrintQueueItem).where(
                     PrintQueueItem.archive_id == archive_id,
                     PrintQueueItem.queue_id == queue_id,
-                    PrintQueueItem.status == "completed",
+                    PrintQueueItem.status == ("printing" if live else "completed"),
                     PrintQueueItem.started_at.is_not(None),
                 )
             )
@@ -1373,7 +1373,9 @@ async def _another_run_active(db, printer_id: int, archive_id: int) -> bool:
     ) is not None
 
 
-async def _run_holds_its_printer(db, printer_id: int, archive_id: int, queue_id: int | None, run) -> bool:
+async def _run_holds_its_printer(
+    db, printer_id: int, archive_id: int, queue_id: int | None, run, *, live: bool = False
+) -> bool:
     """The run proof the change_table claim is taken against, under the dispatch lane's lock (Codex review r1, R2):
     the printer's queue still printing exactly this run, the row the same attempt, nothing else running."""
     from backend.app.services.printer_occupancy import claim_token_matches, read_queue_occupancy
@@ -1383,10 +1385,11 @@ async def _run_holds_its_printer(db, printer_id: int, archive_id: int, queue_id:
     queue = (await read_queue_occupancy(db, queue_id, for_update=True)).queue
     if queue.status != "printing" or queue.current_item_id != run.id:
         return False
+    started_at = run.started_at
     current = await db.get(PrintQueueItem, run.id, populate_existing=True)
-    if current is None or current.status != "completed" or current.archive_id != archive_id:
+    if current is None or current.status != ("printing" if live else "completed") or current.archive_id != archive_id:
         return False
-    if not claim_token_matches(current.started_at, run.started_at):
+    if not claim_token_matches(current.started_at, started_at):
         return False
     return not await _another_run_active(db, printer_id, archive_id)
 
