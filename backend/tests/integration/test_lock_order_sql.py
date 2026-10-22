@@ -187,7 +187,10 @@ async def test_deleting_an_order_locks_positions_then_lines(db_session):
     order, _line = await _order(db_session)
     # The order row itself goes last, behind FOR UPDATE NOWAIT on PostgreSQL (spec BL6) —
     # a lock that never waits, so it is outside the waiting order.
-    log = await _record(db_session, lambda: routes.delete_project(order.id, _request(), db_session, None))
+    log = await _record(
+        db_session,
+        lambda: routes.delete_project(project_id=order.id, request=_request(), db=db_session, current_user=None),
+    )
     assert "stock_items" in first_touches(log, exempt={("DELETE", "projects")})
     assert_class_order(log, exempt={("DELETE", "projects")})
 
@@ -285,7 +288,10 @@ async def test_deleting_a_line_takes_its_products_gate_first(db_session):
 @pytest.mark.asyncio
 async def test_deleting_an_order_takes_its_products_gates_first(db_session):
     order, _line = await _order(db_session)
-    log = await _record(db_session, lambda: routes.delete_project(order.id, _request(), db_session, None))
+    log = await _record(
+        db_session,
+        lambda: routes.delete_project(project_id=order.id, request=_request(), db=db_session, current_user=None),
+    )
     assert_gate_first(log)
     assert_class_order(log, exempt={("DELETE", "projects"), ("DELETE", "products")})
 

@@ -202,6 +202,9 @@ async def test_snapshot_task_lifecycle_idempotent_start():
     mgr.start_scheduler()  # idempotent
     assert mgr._snapshot_task is first_snapshot
     assert mgr._scheduler_task is first_scheduler
-    mgr.stop_scheduler()
+    await mgr.stop_scheduler()
     assert mgr._snapshot_task is None
     assert mgr._scheduler_task is None
+    # Awaited stop means the loops it started have really ended, not merely been asked to.
+    assert first_snapshot.done()
+    assert first_scheduler.done()

@@ -72,8 +72,10 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
         "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(is_enabled=False)
     )
     monkeypatch.setattr("backend.app.services.print_scheduler.scheduler", SimpleNamespace(stop=Mock()))
+    stop_plug_scheduler = AsyncMock()
     monkeypatch.setattr(
-        "backend.app.services.smart_plug_manager.smart_plug_manager", SimpleNamespace(stop_scheduler=Mock())
+        "backend.app.services.smart_plug_manager.smart_plug_manager",
+        SimpleNamespace(stop_scheduler=stop_plug_scheduler),
     )
     monkeypatch.setattr(
         "backend.app.services.notification_service.notification_service", SimpleNamespace(stop_digest_scheduler=Mock())
@@ -98,6 +100,8 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
         response = await route.restore_backup(file=upload(tmp_path), db=session, _=None)
         assert response.status_code == 500
     session.close.assert_awaited_once()
+    # The plug scheduler's stop is a coroutine: it must be awaited, not merely called.
+    stop_plug_scheduler.assert_awaited_once()
     assert (key.read_bytes() if key.exists() else None) == previous
     assert (live / ".install_id").read_bytes() == b"previous-identity"
     assert (live / "zigbee/zigbee.db").read_bytes() == b"previous-network"
