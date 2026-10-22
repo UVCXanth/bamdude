@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Keep AMS slots and external spool tiles readable in narrow printer cards. AMS units now use the available card width, while single-slot holders wrap at a readable size instead of shrinking labels and fill bars into narrow strips.
+
 ## [0.7.1] - 2026-10-19
 
 Images: `ghcr.io/kainpl/bamdude:0.7.1` / `kainpl/bamdude:0.7.1` (`:latest` tracks this release).
