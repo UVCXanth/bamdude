@@ -15,6 +15,7 @@ import { OrdersPage } from '../../../pages/orders/OrdersPage';
 import { SEARCH_DEBOUNCE_MS } from '../../../hooks/useSearchBox';
 import { ORDER_ROW_DEFAULTS } from '../../wireDefaults';
 import { makeOrder } from '../../fixtures/orderDetail';
+import { mockWorkingPlanApi } from '../../fixtures/workingPlan';
 
 const rowA = { ...ORDER_ROW_DEFAULTS, id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, covered_units: 1, remaining: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] };
 const rowB = { ...ORDER_ROW_DEFAULTS, id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, covered_units: 1, remaining: 0, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] };
@@ -373,7 +374,18 @@ describe('OrdersPage', () => {
       vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(pageOf([{ ...rowA, code: 'OR-0001' }, rowC]));
     });
     it('keeps the whole-plate calculator connected through the real workspace page host', async () => {
-      vi.mocked(api.getOrder).mockResolvedValue(makeOrder({ id: 1 }));
+      const order = makeOrder({ id: 1 });
+      const line = order.lines[0];
+      vi.mocked(api.getOrder).mockResolvedValue(order);
+      // The calculator is offered only beside work still to plan: a shared draft
+      // that loads, and a product line with an outstanding part.
+      mockWorkingPlanApi();
+      vi.mocked(api.getOrderPlan).mockResolvedValue({
+        lines: [{ line_id: line.id, product_id: line.product_id, product_name: line.product_name, material: null,
+          outstanding_before: [{ part_id: 1, name: 'Part A', count: 1 }], rows: [], surplus_after: [],
+          unsatisfiable: [], candidates: [], not_sliced: [] }],
+        totals: { rows: 0, prints: 0, print_time_seconds: 0, filament_used_grams: 0, cost: null }, truncated: false,
+      });
       window.history.pushState({}, '', '/projects?order=1');
       render(<OrdersPage />);
       fireEvent.click(await screen.findByRole('button', { name: 'Adjust without surplus' }));
