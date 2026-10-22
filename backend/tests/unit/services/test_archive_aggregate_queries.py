@@ -152,6 +152,25 @@ async def test_the_streak_is_zero_when_nothing_completed(db_session):
 
 
 @pytest.mark.asyncio
+async def test_a_dispatch_error_neither_fails_a_bucket_nor_breaks_the_streak(db_session):
+    """Post-rebuild D-R7: the attempt to START a print is no print outcome. A legacy failed
+    row without a reason (NULL) is still a failure — the NULL-safe predicate keeps it."""
+    when = datetime(2026, 9, 7, 12, 0)
+    await _seed(
+        db_session,
+        [
+            _archive(created_at=when, status="completed"),
+            _archive(created_at=when, status="failed", failure_reason="dispatchUploadFailed"),
+            _archive(created_at=when, status="completed"),
+            _archive(created_at=when, status="failed", failure_reason=None),
+        ],
+    )
+    out = await _collect(db_session)
+    assert out["records"]["success_streak"] == 2
+    assert sum(bucket["started"]["failed"] for bucket in out["buckets"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_materials_are_split_and_grams_divided(db_session):
     await _seed(
         db_session,

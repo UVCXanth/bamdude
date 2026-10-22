@@ -25,30 +25,23 @@ async def render_stats(target, tg_chat: TelegramChat | None = None) -> None:
             await target.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    from sqlalchemy import func, select
-
     from backend.app.core.database import async_session
-    from backend.app.models.archive import PrintArchive
+    from backend.app.services.statistics import outcomes
 
+    # The web overview's own classes and rate, over all counted prints (post-rebuild
+    # D-R7): physical failures only in «failed», stopped/cancelled/skipped and
+    # dispatch errors each on their own line, and neither in the success rate.
     async with async_session() as db:
-        total = (await db.execute(select(func.count(PrintArchive.id)))).scalar() or 0
-        completed = (
-            await db.execute(select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed"))
-        ).scalar() or 0
-        failed = (
-            await db.execute(
-                select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
-            )
-        ).scalar() or 0
-
-    success_rate = round(completed / (completed + failed) * 100) if (completed + failed) > 0 else 0
+        counts = await outcomes.outcome_counts(db)
 
     text = (
         f"\U0001f4ca *{escape_md(t(lang, NS, 'stats.title'))}*\n\n"
-        f"{escape_md(t(lang, NS, 'stats.total'))}: {total}\n"
-        f"\u2705 {escape_md(t(lang, NS, 'stats.success'))}: {completed}\n"
-        f"\u274c {escape_md(t(lang, NS, 'stats.failed'))}: {failed}\n"
-        f"\U0001f4c8 {escape_md(t(lang, NS, 'stats.success_rate'))}: {success_rate}%"
+        f"{escape_md(t(lang, NS, 'stats.total'))}: {counts.total}\n"
+        f"✅ {escape_md(t(lang, NS, 'stats.success'))}: {counts.completed}\n"
+        f"❌ {escape_md(t(lang, NS, 'stats.failed'))}: {counts.physical_failures}\n"
+        f"⏹ {escape_md(t(lang, NS, 'stats.stopped'))}: {counts.stopped}\n"
+        f"⚠️ {escape_md(t(lang, NS, 'stats.dispatch_errors'))}: {counts.dispatch_failures}\n"
+        f"\U0001f4c8 {escape_md(t(lang, NS, 'stats.success_rate'))}: {round(counts.success_rate)}%"
     )
 
     keyboard = InlineKeyboardMarkup(

@@ -55,7 +55,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.product_sync import purge_file_product_links
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
-from backend.app.utils.failure_reasons import USER_CANCELLED
+from backend.app.utils.failure_reasons import USER_CANCELLED, dispatch_reason_text
 from backend.app.utils.filename import derive_remote_filename
 
 logger = logging.getLogger(__name__)
@@ -942,7 +942,9 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
                 job_name=job.source_name,
                 printer_id=job.printer_id,
                 printer_name=job.printer_name,
-                reason=str(outcome.get("error") or "Dispatch failed"),
+                reason=dispatch_reason_text(
+                    outcome.get("failure_code"), str(outcome.get("error") or "Dispatch failed")
+                ),
                 db=db,
             )
     except Exception as exc:  # noqa: BLE001 — reporting a failure must not raise a second one

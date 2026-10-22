@@ -156,6 +156,8 @@
     "total": "Total prints",
     "success": "Successful",
     "failed": "Failed",
+    "stopped": "Stopped or cancelled",
+    "dispatch_errors": "Dispatch errors",
     "success_rate": "Success rate"
   },
   "queue": {

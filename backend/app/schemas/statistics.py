@@ -145,6 +145,9 @@ class ArchiveStats(BaseModel):
     # User/system-stopped prints (status in stopped/cancelled/skipped).
     # Defaulted so older clients that don't send this field still validate.
     cancelled_prints: int = 0
+    # «Dispatch errors»: failed attempts to START a print (a dispatch failure
+    # class), in Total Prints but never in the Success Rate (post-rebuild D-R7).
+    dispatch_failed_prints: int = 0
     total_print_time_hours: float
     total_filament_grams: float
     total_cost: float

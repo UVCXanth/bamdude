@@ -21,6 +21,7 @@ import {
   Calendar,
   ChevronDown,
   BarChart3,
+  Unplug,
 } from 'lucide-react';
 import {
   BarChart,
@@ -265,6 +266,7 @@ function SuccessRateWidget({
     successful_prints: number;
     failed_prints: number;
     cancelled_prints?: number;
+    dispatch_failed_prints?: number;
     prints_by_printer: Record<string, number>;
   } | undefined;
   printerById: Map<string, Printer>;
@@ -324,6 +326,12 @@ function SuccessRateWidget({
             <Ban className="w-4 h-4 text-status-warning flex-shrink-0" />
             <span className="text-sm text-bambu-gray">{t('stats.cancelled')}</span>
             <span className="text-sm text-white font-medium">{stats?.cancelled_prints || 0}</span>
+          </div>
+          {/* Attempts to START a print that ended — outside the rate above (D-R7). */}
+          <div className="flex items-center gap-2" title={t('stats.dispatchErrorsHint')}>
+            <Unplug className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+            <span className="text-sm text-bambu-gray">{t('stats.dispatchErrors')}</span>
+            <span className="text-sm text-white font-medium">{stats?.dispatch_failed_prints || 0}</span>
           </div>
         </div>
         {/* Show per-printer breakdown when expanded */}
@@ -903,6 +911,11 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
         <div className="text-sm text-bambu-gray mt-1">
           {t('stats.failedPrintsCount', { failed: analysis.failed_prints, total: analysis.total_prints })}
         </div>
+        {(analysis.dispatch_failed_prints ?? 0) > 0 && (
+          <div className="text-xs text-bambu-gray mt-1">
+            {t('stats.dispatchErrorsOutsideRate', { count: analysis.dispatch_failed_prints })}
+          </div>
+        )}
         {/* Trend indicator */}
         {analysis.trend && analysis.trend.length >= 2 && (
           <div className={`${size >= 2 ? 'mt-4' : 'mt-2 pt-2 border-t border-bambu-dark-tertiary'}`}>

@@ -261,7 +261,8 @@ async def test_a_direct_print_that_fails_before_its_upload_is_announced(notify, 
     await service._run_active_job(job)
 
     notify.assert_awaited_once()
-    assert notify.await_args.kwargs["reason"] == "Printer is not connected"
+    # The closed class first, then the sentence (post-rebuild D-R6).
+    assert notify.await_args.kwargs["reason"] == "Dispatch: internal error: Printer is not connected"
 
 
 @pytest.mark.asyncio

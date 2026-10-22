@@ -198,6 +198,7 @@ class ExportService:
             ["Period (days)", analysis["period_days"]],
             ["Total Prints", analysis["total_prints"]],
             ["Failed Prints", analysis["failed_prints"]],
+            ["Dispatch Errors", analysis["dispatch_failed_prints"]],
             ["Failure Rate (%)", analysis["failure_rate"]],
             [""],
             ["Failures by Reason", ""],

@@ -70,6 +70,7 @@ import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { printerLabel, comparePrinterLike } from '../utils/printerLabel';
 import { getArchiveStatusBadge } from '../utils/archiveStatus';
+import { failureText } from '../utils/failureText';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
@@ -869,7 +870,7 @@ function ArchiveCard({
             );
           }
           // Verbose diagnostic on hover for failed/cancelled archives (m019).
-          const errorTooltip = archive.error_message || archive.failure_reason || undefined;
+          const errorTooltip = failureText(t, archive.failure_reason, archive.error_message) || undefined;
           return (
             <div className={`${base} ${pulseCls}`} title={errorTooltip}>
               {isPrinting && <Loader2 className="w-3 h-3 animate-spin" />}
@@ -2227,7 +2228,7 @@ function ArchiveListRow({
                   </Link>
                 );
               }
-              const errorTooltip = archive.error_message || archive.failure_reason || undefined;
+              const errorTooltip = failureText(t, archive.failure_reason, archive.error_message) || undefined;
               return (
                 <span className={`${base} ${pulseCls}`} title={errorTooltip}>
                   {isPrinting && <Loader2 className="w-2.5 h-2.5 animate-spin" />}

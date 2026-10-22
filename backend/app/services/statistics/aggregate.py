@@ -21,12 +21,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Integer, case, cast, extract, func, select
+from sqlalchemy import Integer, and_, case, cast, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.timezones import day_bounds
 from backend.app.models.archive import PrintArchive
+from backend.app.services.statistics import outcomes
 
 BUCKET_SECONDS = 900
 HOURLY_MAX_DAYS = 7
@@ -203,7 +204,11 @@ _ENDED = func.coalesce(PrintArchive.completed_at, PrintArchive.created_at)
 # falsy and falls through to the estimate. Plain COALESCE would keep the 0.
 _SECONDS = func.coalesce(func.nullif(PrintArchive.actual_time_seconds, 0), PrintArchive.print_time_seconds, 0)
 _IS_DONE = case((PrintArchive.status == "completed", 1), else_=0)
-_IS_FAILED = case((PrintArchive.status.in_(FAILURE_STATUSES), 1), else_=0)
+# A dispatch error is not a print that failed — the attempt to START one ended —
+# so it is never a «failed» in these charts or a break in the success streak
+# (post-rebuild D-R7). ``cancelled`` stays here on purpose: these aggregates are
+# the spent time and material, not the rate.
+_IS_FAILED = case((and_(PrintArchive.status.in_(FAILURE_STATUSES), outcomes.not_dispatch_failure()), 1), else_=0)
 
 _METRIC_COLUMNS = (
     func.count().label("prints"),
@@ -384,7 +389,7 @@ async def _success_streak(db, filters: list) -> int:
             func.row_number().over(order_by=(_ENDED, PrintArchive.id)).label("rn_all"),
             func.row_number().over(partition_by=_IS_DONE, order_by=(_ENDED, PrintArchive.id)).label("rn_grp"),
         )
-        .where(*filters, PrintArchive.status.in_(TERMINAL_STATUSES))
+        .where(*filters, PrintArchive.status.in_(TERMINAL_STATUSES), outcomes.not_dispatch_failure())
         .subquery()
     )
     islands = (

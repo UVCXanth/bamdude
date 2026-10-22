@@ -7,13 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.timezones import day_bounds, server_timezone
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services.statistics import outcomes
 
 # Quality failures only — the printer detected a fault. stopped/cancelled/
 # skipped are user/queue interruptions, not failures, so they're excluded from
 # the failure rate, the by-reason/filament/printer breakdowns, and the trend
-# (#1390). Total Prints still counts them; they surface in the stats "Cancelled"
-# bucket instead.
-FAILED_STATUSES = ["failed", "aborted"]
+# (#1390); so is a dispatch error, the attempt to START a print (post-rebuild
+# D-R7). Total Prints still counts both; they surface in their own buckets.
+# ``outcomes.physical_failure()`` is the one predicate.
+FAILED_STATUSES = list(outcomes.FAILED_STATUSES)
 
 
 class FailureAnalysisService:
@@ -107,17 +109,21 @@ class FailureAnalysisService:
         successful_prints = successful_result.scalar() or 0
 
         failed_result = await self.db.execute(
-            select(func.count(PrintArchive.id)).where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
+            select(func.count(PrintArchive.id)).where(and_(*base_filter, outcomes.physical_failure()))
         )
         failed_prints = failed_result.scalar() or 0
+
+        dispatch_result = await self.db.execute(
+            select(func.count(PrintArchive.id)).where(and_(*base_filter, outcomes.dispatch_failure()))
+        )
+        dispatch_failed_prints = dispatch_result.scalar() or 0
 
         # Failure rate divides by quality-outcome prints only — a cancelled or
         # skipped print is neither a success nor a failure of the printer, so
         # including it in the denominator silently lowered the displayed rate
         # whenever the user stopped jobs (#1390). Total Prints (the absolute
         # count incl. cancelled) is still returned separately for the caption.
-        outcome_prints = successful_prints + failed_prints
-        failure_rate = (failed_prints / outcome_prints * 100) if outcome_prints > 0 else 0
+        failure_rate = outcomes.failure_rate(successful_prints, failed_prints)
 
         # Failures by reason
         reason_result = await self.db.execute(
@@ -125,7 +131,7 @@ class FailureAnalysisService:
                 PrintArchive.failure_reason,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
+            .where(and_(*base_filter, outcomes.physical_failure()))
             .group_by(PrintArchive.failure_reason)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -137,7 +143,7 @@ class FailureAnalysisService:
                 PrintArchive.filament_type,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
+            .where(and_(*base_filter, outcomes.physical_failure()))
             .group_by(PrintArchive.filament_type)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -149,7 +155,7 @@ class FailureAnalysisService:
                 PrintArchive.printer_id,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES), PrintArchive.printer_id.isnot(None)))
+            .where(and_(*base_filter, outcomes.physical_failure(), PrintArchive.printer_id.isnot(None)))
             .group_by(PrintArchive.printer_id)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -172,7 +178,7 @@ class FailureAnalysisService:
             select(PrintArchive.started_at).where(
                 and_(
                     *base_filter,
-                    PrintArchive.status.in_(FAILED_STATUSES),
+                    outcomes.physical_failure(),
                     PrintArchive.started_at.isnot(None),
                 )
             )
@@ -188,7 +194,7 @@ class FailureAnalysisService:
         # Recent failures
         recent_result = await self.db.execute(
             select(PrintArchive)
-            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
+            .where(and_(*base_filter, outcomes.physical_failure()))
             .order_by(PrintArchive.created_at.desc())
             .limit(10)
         )
@@ -222,15 +228,14 @@ class FailureAnalysisService:
                 select(func.count(PrintArchive.id)).where(and_(*week_filter, PrintArchive.status == "completed"))
             )
             week_failed = await self.db.execute(
-                select(func.count(PrintArchive.id)).where(and_(*week_filter, PrintArchive.status.in_(FAILED_STATUSES)))
+                select(func.count(PrintArchive.id)).where(and_(*week_filter, outcomes.physical_failure()))
             )
 
             total = week_total.scalar() or 0
             successful = week_successful.scalar() or 0
             failed = week_failed.scalar() or 0
             # Same quality-outcome denominator as the headline rate (#1390).
-            week_outcome = successful + failed
-            rate = (failed / week_outcome * 100) if week_outcome > 0 else 0
+            rate = outcomes.failure_rate(successful, failed)
 
             trend_data.append(
                 {
@@ -247,6 +252,8 @@ class FailureAnalysisService:
             "period_days": effective_days,
             "total_prints": total_prints,
             "failed_prints": failed_prints,
+            # «Dispatch errors»: counted in Total Prints, never in the failure rate.
+            "dispatch_failed_prints": dispatch_failed_prints,
             "failure_rate": round(failure_rate, 1),
             "failures_by_reason": failures_by_reason,
             "failures_by_filament": failures_by_filament,

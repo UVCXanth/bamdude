@@ -1825,6 +1825,9 @@ export interface ArchiveStats {
   successful_prints: number;
   failed_prints: number;
   cancelled_prints: number;
+  /** «Dispatch errors»: failed attempts to START a print. In Total Prints, never in the
+   *  Success Rate. Optional — an older backend says nothing. */
+  dispatch_failed_prints?: number;
   total_print_time_hours: number;
   total_filament_grams: number;
   total_cost: number;
@@ -1858,6 +1861,8 @@ export interface FailureAnalysis {
   period_days: number;
   total_prints: number;
   failed_prints: number;
+  /** Dispatch errors in the period, outside the failure rate (optional on older backends). */
+  dispatch_failed_prints?: number;
   failure_rate: number;
   failures_by_reason: Record<string, number>;
   failures_by_filament: Record<string, number>;

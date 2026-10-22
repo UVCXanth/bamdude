@@ -72,6 +72,7 @@ import { queueResumePayload } from '../utils/queueStatus';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { keepsOrderOnCopy } from '../utils/workshopRights';
+import { failureText } from '../utils/failureText';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { QueueSourceIndicator } from './QueueSourceIndicator';
 import { usePrinterQueueRows, useQueueSummarySnapshot } from '../hooks/FarmQueueScope';
@@ -1789,8 +1790,11 @@ function IssuesSection({
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
-                  {item.error_message && (
-                    <p className="text-[10px] text-red-700 dark:text-red-400 truncate">{item.error_message}</p>
+                  {(item.error_message || item.error_code) && (
+                    // The row's closed class beside its detail (post-rebuild D-R6).
+                    <p className="text-[10px] text-red-700 dark:text-red-400 truncate" title={failureText(t, item.error_code, item.error_message)}>
+                      {failureText(t, item.error_code, item.error_message)}
+                    </p>
                   )}
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">

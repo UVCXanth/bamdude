@@ -95,32 +95,19 @@ async def get_archive_stats(
     if date_to:
         base_conditions.append(PrintArchive.created_at < day_bounds(date_to, _tz)[1])
 
-    # Total counts
-    total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
-    total_prints = total_result.scalar() or 0
+    # The counts every rate is built from, one predicate set shared with Failure
+    # Analysis and the Telegram /stats (post-rebuild D-R7). Physical failures only
+    # in ``failed_prints``: a dispatch error — the attempt to START a print — is its
+    # own bucket, and stopped/cancelled/skipped are interruptions (#1390). Every
+    # class stays in Total Prints; the Success Rate divides by completed + failed.
+    from backend.app.services.statistics import outcomes
 
-    successful_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed", *base_conditions)
-    )
-    successful_prints = successful_result.scalar() or 0
-
-    failed_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted"]), *base_conditions)
-    )
-    failed_prints = failed_result.scalar() or 0
-
-    # User/system-stopped prints — stopped/cancelled/skipped are distinct from
-    # quality failures: the user (or the queue) interrupted them, the printer
-    # didn't detect a fault. Bucketed separately so the Success Rate gauge
-    # divides by completed + failed only (a cancelled print shouldn't drag the
-    # gauge down), while still being visible in the breakdown so they don't
-    # silently vanish from Total Prints (#1390).
-    cancelled_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(
-            PrintArchive.status.in_(["stopped", "cancelled", "skipped"]), *base_conditions
-        )
-    )
-    cancelled_prints = cancelled_result.scalar() or 0
+    counts = await outcomes.outcome_counts(db, *base_conditions)
+    total_prints = counts.total
+    successful_prints = counts.completed
+    failed_prints = counts.physical_failures
+    dispatch_failed_prints = counts.dispatch_failures
+    cancelled_prints = counts.stopped
 
     # Totals - use actual print time from timestamps (not slicer estimates)
     # For archives with both started_at and completed_at, calculate actual duration
@@ -286,6 +273,7 @@ async def get_archive_stats(
         successful_prints=successful_prints,
         failed_prints=failed_prints,
         cancelled_prints=cancelled_prints,
+        dispatch_failed_prints=dispatch_failed_prints,
         total_print_time_hours=round(total_time, 1),
         total_filament_grams=round(total_filament, 1),
         total_cost=round(total_cost, 2),
