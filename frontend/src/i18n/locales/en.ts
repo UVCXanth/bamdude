@@ -9926,7 +9926,16 @@ export default {
       printerError: 'Printer error',
       userCancelled: 'User cancelled',
       noStatusUpdate: 'No status update received',
-      other: 'Other'
+      other: 'Other',
+      dispatchSourceUnavailable: 'Dispatch: source unavailable',
+      dispatchUploadFailed: 'Dispatch: upload failed',
+      dispatchPrinterUnavailable: 'Dispatch: printer unavailable',
+      dispatchStartRefused: 'Dispatch: start refused',
+      dispatchCommandRejected: 'Dispatch: command rejected',
+      dispatchNoAcknowledgement: 'Dispatch: no acknowledgement',
+      dispatchAcceptedNotStarted: 'Dispatch: accepted, not started',
+      dispatchPreparationError: 'Dispatch: preparation error',
+      dispatchInternalError: 'Dispatch: internal error'
     },
     // Archive statuses
     statuses: {

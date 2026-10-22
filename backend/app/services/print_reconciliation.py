@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.utils.failure_reasons import NO_STATUS_UPDATE
+from backend.app.utils.failure_reasons import NO_STATUS_UPDATE, row_class
 from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
@@ -507,6 +507,7 @@ async def _reconcile_complete_archive(
             item.status = status
             item.completed_at = now
             if status == "failed":
+                item.error_code = row_class(status, archive.failure_reason)
                 await set_queue_error(db, item.queue_id, failed_item_id=item.id)
             elif status == "cancelled":
                 await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
@@ -624,6 +625,7 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
     archive.extra_data = extra
     item.status = marker["outcome"]
     item.completed_at = now
+    item.error_code = row_class(item.status, archive.failure_reason)
     await set_queue_paused(db, item.queue_id, paused_item_id=item.id, expected_item_id=item.id)
     await update_queue_counters(db, item.queue_id)
     logger.warning(
@@ -997,6 +999,7 @@ async def _repair_terminal_queue_items(
             item.status = outcome
             item.completed_at = archive.completed_at
             item.waiting_reason = None
+            item.error_code = row_class(outcome, archive.failure_reason)
             if outcome != "completed" and not item.error_message:
                 item.error_message = archive.failure_reason
         queue.current_item_id = None

@@ -1875,6 +1875,11 @@ class ArchiveService:
             archive.completed_at = completed_at
         if failure_reason:
             archive.failure_reason = failure_reason
+        elif status == "failed" and not archive.failure_reason:
+            # A new failed record always names a class: the printer gave no known cause (D-R6).
+            from backend.app.utils.failure_reasons import OTHER
+
+            archive.failure_reason = OTHER
         if error_message and not archive.error_message:
             archive.error_message = error_message
 

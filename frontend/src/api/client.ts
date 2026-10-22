@@ -6408,6 +6408,9 @@ export interface PrintQueueItem {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  // The closed class of a failed row (a ``failure_reasons`` key, m208); ``error_message`` is its
+  // detail. Absent or null on rows failed before m208.
+  error_code?: string | null;
   created_at: string;
   batch_id?: string | null;
   /** Whether this job owns a local copy of the bytes it prints (m173). */

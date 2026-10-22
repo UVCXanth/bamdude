@@ -33,6 +33,15 @@ const FAILURE_REASON_KEYS = [
   'userCancelled',
   'noStatusUpdate',
   'other',
+  'dispatchSourceUnavailable',
+  'dispatchUploadFailed',
+  'dispatchPrinterUnavailable',
+  'dispatchStartRefused',
+  'dispatchCommandRejected',
+  'dispatchNoAcknowledgement',
+  'dispatchAcceptedNotStarted',
+  'dispatchPreparationError',
+  'dispatchInternalError',
 ] as const;
 
 // Keys for archive statuses - translated at render time

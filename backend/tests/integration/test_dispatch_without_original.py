@@ -243,7 +243,7 @@ def dispatch_mocks(monkeypatch, factory, *, upload=None):
     monkeypatch.setattr(bd, "background_dispatch", service)
     monkeypatch.setattr(service, "_ensure_live_connection_before_start", AsyncMock())
     monkeypatch.setattr(service, "_run_swap_macro_if_needed", AsyncMock())
-    monkeypatch.setattr(service, "_verify_print_response", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value="accepted"))
     monkeypatch.setattr(service, "_strict_stagger_refuses", AsyncMock(return_value=False))
     monkeypatch.setattr("backend.app.services.print_scheduler.scheduler.acquire_stagger_slot", AsyncMock())
     return service

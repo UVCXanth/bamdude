@@ -1558,6 +1558,19 @@ class PrinterManager:
             )
         return False
 
+    def start_refusal_reason(self, printer_id: int) -> str:
+        """Why the last ``start_print`` for this printer published nothing — a routing refusal code.
+
+        Read right after a False from ``start_print``: the MQTT client records the refusal
+        where it decides it (busy, not connected). A printer with no client was never
+        connected; a refusal nobody recorded is the generic ``start_refused``.
+        """
+        client = self._clients.get(printer_id)
+        if client is None:
+            return "printer_not_connected"
+        reason = getattr(client, "last_start_refusal", None)
+        return reason if isinstance(reason, str) and reason else "start_refused"
+
     async def execute_macro_and_wait(
         self,
         printer_id: int,

@@ -164,7 +164,7 @@ from backend.app.services.timelapse_files import (
     remove_recording_after_attach,
 )
 from backend.app.utils.ams_humidity import ams_humidity_percent
-from backend.app.utils.failure_reasons import USER_CANCELLED
+from backend.app.utils.failure_reasons import OTHER as FAILURE_OTHER, USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.print_jobs import is_internal_printer_job
 
@@ -8434,6 +8434,12 @@ async def _on_print_complete_impl(
 
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
+                if queue_status == "failed" and not queue_item.error_code:
+                    # A physical failure keeps the printer's own cause, ``other`` when it
+                    # gave none — never a dispatch class (post-rebuild D-R6).
+                    queue_item.error_code = (
+                        derive_failure_reason(queue_status, data.get("hms_errors", [])) or FAILURE_OTHER
+                    )
                 if _swap_hold_text:
                     # After the status: changing it clears an older reason (the model's validator).
                     queue_item.waiting_reason = _swap_hold_text
@@ -8505,7 +8511,9 @@ async def _on_print_complete_impl(
                     bound_archive.status = queue_status
                     bound_archive.completed_at = terminal_at
                     if queue_status == "failed" and not bound_archive.failure_reason:
-                        bound_archive.failure_reason = derive_failure_reason(queue_status, data.get("hms_errors", []))
+                        bound_archive.failure_reason = (
+                            derive_failure_reason(queue_status, data.get("hms_errors", [])) or FAILURE_OTHER
+                        )
                     if queue_item.error_message and not bound_archive.error_message:
                         bound_archive.error_message = queue_item.error_message
                     print_user_id = _print_user_info.get("user_id") if _print_user_info else None

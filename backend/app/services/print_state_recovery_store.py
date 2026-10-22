@@ -27,6 +27,7 @@ from backend.app.services import print_state_recovery_preview as previews, queue
 from backend.app.services.archive_write_scope import load_active_archive_for_write
 from backend.app.services.print_state_recovery import RecoveryFacts, classify, plan_action, utc
 from backend.app.services.queue_ops import claim_lanes
+from backend.app.utils.failure_reasons import row_class
 
 logger = logging.getLogger(__name__)
 _observations: dict[tuple, float] = {}
@@ -517,6 +518,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 item.status = plan["item"]["status"]
                 item.completed_at = plan["item"]["completed_at"]
                 item.waiting_reason = None
+                item.error_code = row_class(item.status, archive.failure_reason if archive is not None else None)
             if plan["delete_item"]:
                 await db.delete(item)
             if plan["queue"]:

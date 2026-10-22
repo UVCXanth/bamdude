@@ -17,7 +17,7 @@ Both watchdogs are exercised:
     - `background_dispatch.BackgroundDispatchService._verify_print_response`
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -131,20 +131,37 @@ async def test_verify_reconnects_when_pre_gcode_file_omitted_default():
 # --- Scheduler-side watchdog ------------------------------------------------
 
 
+def _a_printing_row():
+    """The scheduler watchdog fails its attempt before it decides on a reconnect (D-R4)."""
+    from backend.app.services.print_scheduler import scheduler
+
+    item = MagicMock(status="printing", started_at="claim-token", archive_id=7)
+    db = AsyncMock()
+    db.get.return_value = item
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = db
+    ctx.__aexit__.return_value = False
+    return (
+        patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+        patch.object(scheduler, "_fail_attempt", AsyncMock(return_value=True)),
+        patch.object(BackgroundDispatchService, "_mark_dispatch_archive_terminal", AsyncMock()),
+    )
+
+
 @pytest.mark.asyncio
 async def test_scheduler_watchdog_skips_reconnect_when_gcode_file_changed():
-    """Same #1150 logic on the scheduler-side watchdog.
-
-    Uses ``swap_start_fired=True`` to keep the watchdog on the no-DB-revert
-    branch — we only want to exercise the discriminator at the bottom.
-    """
+    """Same #1150 logic on the scheduler-side watchdog, after its verdict failed the attempt."""
     status = _FakeStatus("FINISH", gcode_file="new.gcode")
     client = MagicMock()
     client.force_reconnect_stale_session = MagicMock()
+    session, fail, archive = _a_printing_row()
 
     with (
         patch("backend.app.services.print_scheduler.printer_manager.get_status", return_value=status),
         patch("backend.app.services.print_scheduler.printer_manager.get_client", return_value=client),
+        session,
+        fail,
+        archive,
     ):
         await PrintScheduler._watchdog_print_start(
             queue_item_id=1,
@@ -165,10 +182,14 @@ async def test_scheduler_watchdog_reconnects_when_gcode_file_unchanged():
     status = _FakeStatus("FINISH", gcode_file="same.gcode")
     client = MagicMock()
     client.force_reconnect_stale_session = MagicMock()
+    session, fail, archive = _a_printing_row()
 
     with (
         patch("backend.app.services.print_scheduler.printer_manager.get_status", return_value=status),
         patch("backend.app.services.print_scheduler.printer_manager.get_client", return_value=client),
+        session,
+        fail,
+        archive,
     ):
         await PrintScheduler._watchdog_print_start(
             queue_item_id=1,

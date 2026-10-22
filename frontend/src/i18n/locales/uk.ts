@@ -10101,7 +10101,16 @@ export default {
       printerError: 'Помилка принтера',
       userCancelled: 'Скасовано користувачем',
       noStatusUpdate: 'Не надійшло оновлення статусу',
-      other: 'Інше'
+      other: 'Інше',
+      dispatchSourceUnavailable: 'Відправка: джерело недоступне',
+      dispatchUploadFailed: 'Відправка: файл не завантажено',
+      dispatchPrinterUnavailable: 'Відправка: принтер недоступний',
+      dispatchStartRefused: 'Відправка: старт відхилено',
+      dispatchCommandRejected: 'Відправка: команду відхилено',
+      dispatchNoAcknowledgement: 'Відправка: немає підтвердження',
+      dispatchAcceptedNotStarted: 'Відправка: прийнято, але не почато',
+      dispatchPreparationError: 'Відправка: помилка підготовки',
+      dispatchInternalError: 'Відправка: внутрішня помилка'
     },
     // Archive statuses
     statuses: {

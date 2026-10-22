@@ -494,6 +494,7 @@ class TestACloneCarriesEveryPrintOption:
         "started_at",  # lifecycle — this print has not run
         "completed_at",
         "error_message",
+        "error_code",  # a failed row's class; a clone has not failed
         "waiting_reason",
         "gate_acknowledged",
         # ⚠️ The retry cap (m108) counts attempts at dispatching THIS row. A

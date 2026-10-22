@@ -19,6 +19,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -33,7 +34,7 @@ from backend.app.models.printer import Printer
 # ⚠️ Module scope on purpose: the ``finally`` below calls into this, and a
 # dispatch that dies before reaching the local import would raise NameError
 # from inside the cleanup — masking the real exception.
-from backend.app.services import preheat as preheat_service
+from backend.app.services import dispatch_phase, preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
     UploadReport,
@@ -54,6 +55,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.product_sync import purge_file_product_links
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
+from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.filename import derive_remote_filename
 
 logger = logging.getLogger(__name__)
@@ -230,6 +232,106 @@ class PrintCommandRejectedError(RuntimeError):
     ``RuntimeError`` here, so the failure is handled exactly as before — only
     the message a user reads changes.
     """
+
+
+#: What one attempt's start command did, as far as this process knows (post-rebuild D-R2): the RAM half of
+#: ``services/dispatch_phase``. Written where the runner learns it — after ``start_print`` returns with no await
+#: before the write, and after the printer was SEEN running — and read by every exit of the attempt, so a
+#: failure in what follows a publish is never mistaken for a print that did not go out.
+SEND_REFUSED = "refused"  # ``start_print`` published nothing
+SEND_SENT = "sent"  # queued for publish locally — not yet a print
+SEND_ACCEPTED = "accepted"  # the printer was seen running it
+
+#: The printer's answer to a published start (``_await_print_response``, D-R4). Only the first is a print.
+RESPONSE_ACCEPTED = "accepted"
+#: (a) no Phase A, no active state, the file name unchanged: nothing says the command arrived.
+RESPONSE_NO_ACKNOWLEDGEMENT = "no_acknowledgement"
+#: (b) the printer's file changed without Phase A: a slow parse (#1150) — it may still start.
+RESPONSE_FILE_RECEIVED = "file_received"
+#: (c) Phase A (the printer echoed our submission) and never an active state (#1678).
+RESPONSE_STALLED = "stalled_after_accept"
+
+#: Where an attempt's untyped failure happened, read by :func:`dispatch_failure_code`.
+STAGE_PREPARING = "preparing"
+
+
+class StartRefused(RoutingDeferred):
+    """``start_print`` published nothing: the printer was busy or not connected at the last moment.
+
+    A typed refusal, not a failure: it travels the deferral path every refusal before
+    publish takes, and the attempt it spent is given back when nothing physical ran.
+    """
+
+
+class DispatchNotStarted(RuntimeError):
+    """The start was published and the printer did not start it — the attempt ends here.
+
+    Carries the closed class (``utils/failure_reasons``) the watchdog verdict decided, so
+    nothing reads it back out of the sentence. Never retried by itself: the printer may
+    still pick the file up, and only the operator can know.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class UploadFailed(RuntimeError):
+    """The file did not reach the printer: a refused FTP pre-delete, upload or tunnel transfer."""
+
+
+class PrinterUnavailable(RuntimeError):
+    """No printer, no connection or no medium to dispatch to."""
+
+
+class PreparationFailed(RuntimeError):
+    """A step between the upload and the start refused: a rack pick, the swap-start macro."""
+
+
+class SourceRejected(RuntimeError):
+    """The bytes are not something the printer can print (not a sliced file)."""
+
+
+class DispatchPhaseLost(RuntimeError):
+    """The ``sending`` mark could not be committed, so nothing may be sent."""
+
+
+def dispatch_failure_code(exc: BaseException | None, *, stage: str | None = None) -> str:
+    """The closed class of an attempt that ended on ``exc`` — from its TYPE, never from its text (D-R6)."""
+    from backend.app.services.filament_deferred import SourceCaptureDeferred, SwapSourceRefused
+    from backend.app.services.queue_sources import QueueSourceError
+    from backend.app.services.source_io import SOURCE_FAILURES
+    from backend.app.utils import failure_reasons as reasons
+
+    if isinstance(exc, DispatchNotStarted):
+        return exc.code
+    if isinstance(exc, PrintCommandRejectedError):
+        return reasons.DISPATCH_COMMAND_REJECTED
+    if isinstance(exc, UploadFailed):
+        return reasons.DISPATCH_UPLOAD_FAILED
+    if isinstance(exc, PrinterUnavailable):
+        return reasons.DISPATCH_PRINTER_UNAVAILABLE
+    if isinstance(exc, (StartRefused, SwapSourceRefused)):
+        return reasons.DISPATCH_START_REFUSED
+    if isinstance(exc, (SourceCaptureDeferred, SourceUnavailable, QueueSourceError, SourceRejected)):
+        return reasons.DISPATCH_SOURCE_UNAVAILABLE
+    if isinstance(exc, RoutingDeferred):
+        return reasons.DISPATCH_SOURCE_UNAVAILABLE if exc.reason in SOURCE_FAILURES else reasons.DISPATCH_START_REFUSED
+    if isinstance(exc, DispatchPhaseLost):
+        return reasons.DISPATCH_INTERNAL_ERROR
+    if isinstance(exc, PreparationFailed) or stage == STAGE_PREPARING:
+        return reasons.DISPATCH_PREPARATION_ERROR
+    return reasons.DISPATCH_INTERNAL_ERROR
+
+
+def _published(job) -> bool:
+    """The start may have reached the printer."""
+    return job.send_fact in (SEND_SENT, SEND_ACCEPTED)
+
+
+def _ends_after_publish(exc: BaseException) -> bool:
+    """A verdict that may end an attempt whose start was published: the printer's own answer."""
+    return isinstance(exc, (DispatchNotStarted, PrintCommandRejectedError))
 
 
 def _mqtt_commands_rejected(status) -> bool:
@@ -701,6 +803,11 @@ class DispatchOutcome(TypedDict):
     cancelled: bool
     deferred: NotRequired[bool]
     reason: NotRequired[dict]
+    #: The closed class of a failed attempt (``utils/failure_reasons``).
+    failure_code: NotRequired[str]
+    #: The start may have been published and nothing decided what it became: an
+    #: exit that is neither a print nor a failure — no release, no pending, no report.
+    uncertain: NotRequired[bool]
 
 
 @dataclass(slots=True)
@@ -771,6 +878,16 @@ class PrintDispatchJob:
     #: confirmed) or ``fired``. The watchdog and the operator's texts read this, never the requested events
     #: (swap-source-lifecycle spec r4 §8): a muted or refused start did not happen.
     swap_start_effect: str = "not_called"
+    #: ``SEND_REFUSED`` / ``SEND_SENT`` / ``SEND_ACCEPTED`` once the start was tried; None before (D-R2).
+    send_fact: str | None = None
+    #: The boot stamped with ``prepared`` on the execution archive: every later phase write must match it.
+    dispatch_boot_id: str | None = None
+    #: ``STAGE_PREPARING`` from the moment the file is on the printer until the start command.
+    stage: str | None = None
+    #: Bookkeeping that failed after the start was published; logged, never the print's outcome.
+    secondary_errors: list[str] = field(default_factory=list)
+    #: The process stopped this attempt (shutdown): nothing here is a failure to report.
+    interrupted: bool = False
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -807,6 +924,10 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
         return
     outcome = job.outcome or {}
     if outcome.get("success") or outcome.get("cancelled") or outcome.get("deferred"):
+        return
+    # ⚠️ A shutdown, or a start that may have gone out with nothing deciding its fate,
+    # is not a failed print: the seed outcome would announce one that may be running.
+    if job.interrupted or outcome.get("uncertain"):
         return
     if job.failure_reported:
         return
@@ -1084,7 +1205,10 @@ class BackgroundDispatchService:
                     item.status = status
                     item.completed_at = datetime.now(timezone.utc)
                     if status == "failed":
+                        from backend.app.utils.failure_reasons import DISPATCH_INTERNAL_ERROR
+
                         item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
+                        item.error_code = (job.outcome or {}).get("failure_code") or DISPATCH_INTERNAL_ERROR
                         if queue_error:
                             await set_queue_error(db, item.queue_id, failed_item_id=item.id)
                         else:
@@ -1233,7 +1357,13 @@ class BackgroundDispatchService:
             # useless "Dispatch failed" instead of the reason we wrote. Fill it
             # in here rather than trusting the assumption.
             _record_outcome_error(job, e)
-            await self._close_execution_archive(job, e)
+            if _published(job) and not _ends_after_publish(e):
+                # The start may be on the printer: neither a failure nor a refusal.
+                job.outcome["uncertain"] = True
+                logger.error("Dispatch %s: outcome unknown after the start was sent: %s", job.id, e, exc_info=True)
+            else:
+                job.outcome.setdefault("failure_code", dispatch_failure_code(e, stage=job.stage))
+                await self._close_execution_archive(job, e)
         finally:
             async with self._lock:
                 self._active_jobs.pop(job.id, None)
@@ -1252,7 +1382,13 @@ class BackgroundDispatchService:
             await ws_manager.broadcast({"type": "background_dispatch", "data": done_payload})
 
         job.completion_event.set()
-        return {**job.outcome, "swap_start_effect": job.swap_start_effect}
+        return {
+            **job.outcome,
+            "swap_start_effect": job.swap_start_effect,
+            "send_fact": job.send_fact,
+            "claim_started_at": job.claim_started_at,
+            "execution_archive_id": job.execution_archive_id,
+        }
 
     async def dispatch_print_library_file(
         self,
@@ -1700,10 +1836,21 @@ class BackgroundDispatchService:
             # Process shutdown. Deliberately not released here — that would race
             # the shutdown's own session teardown, and
             # ``release_interrupted_dispatch_claims`` reclaims it at next start.
+            job.interrupted = True
             raise
         except Exception as e:
-            logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
             _record_outcome_error(job, e)
+            if _published(job) and not _ends_after_publish(e):
+                # The start may be running on the printer. Releasing the claim, or
+                # closing its archive, would hand the printer to the next job over it.
+                job.outcome["uncertain"] = True
+                logger.error(
+                    "Background dispatch job %s: outcome unknown after the start was sent: %s", job.id, e, exc_info=True
+                )
+                await self._mark_job_finished(job, failed=False, message=f"Start sent; its outcome is unknown: {e}")
+                return
+            logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
+            job.outcome.setdefault("failure_code", dispatch_failure_code(e, stage=job.stage))
             await self._release_direct_claim(job, status="failed")
             await self._close_execution_archive(job, e)
             await self._mark_job_finished(job, failed=True, message=str(e))
@@ -2143,7 +2290,7 @@ class BackgroundDispatchService:
             raise RoutingDeferred("dispatch_claim_changed")
 
     async def _handle_routing_deferred(self, job, exc):
-        from backend.app.services.filament_deferred import abort_execution_archive, defer_claim
+        from backend.app.services.filament_deferred import defer_claim
         from backend.app.services.print_scheduler import scheduler
 
         # Two exception types land here: ``RoutingDeferred``, which can name the
@@ -2163,11 +2310,16 @@ class BackgroundDispatchService:
             "claim_started_at": job.claim_started_at,
             "source_archive_id": job.original_archive_id,
             "source_library_file_id": job.original_library_file_id,
+            # Read by ``defer_claim`` if the refusal ends the attempt (direct, failed, a swap start that ran).
+            "failure_code": dispatch_failure_code(exc),
         }
         released = False
         async with async_session() as db:
-            await abort_execution_archive(db, job.execution_archive_id, reason)
-            if not job.awaited_by_scheduler:
+            if job.awaited_by_scheduler:
+                # The scheduler decides this attempt's row in ``defer_claim``, which also closes the
+                # archive — failed when the refusal ends the attempt, aborted when the row waits again.
+                pass
+            else:
                 released = await defer_claim(
                     db,
                     item_id=job.queue_item_id,
@@ -2179,6 +2331,10 @@ class BackgroundDispatchService:
                     source_library_file_id=job.original_library_file_id,
                     restore_source=True,
                     disposition=disposition,
+                    execution_archive_id=job.execution_archive_id,
+                    swap_start_effect=job.swap_start_effect,
+                    published=_published(job),
+                    failure_code=job.outcome["failure_code"],
                 )
             await db.commit()
         if released:
@@ -2225,8 +2381,17 @@ class BackgroundDispatchService:
         ⚠️ ``queue_error=False``: the item failed, the queue did not. See
         ``_release_direct_claim``.
         """
+        from backend.app.utils.failure_reasons import DISPATCH_START_REFUSED
+
         logger.info("Background dispatch job %s refused: %s", job.id, reason)
-        job.outcome = {"success": False, "archive_id": None, "error": reason, "cancelled": False, "deferred": False}
+        job.outcome = {
+            "success": False,
+            "archive_id": None,
+            "error": reason,
+            "cancelled": False,
+            "deferred": False,
+            "failure_code": DISPATCH_START_REFUSED,
+        }
         await self._release_direct_claim(job, status="failed", queue_error=False)
         await self._mark_job_finished(job, failed=True, message=reason)
         await report_failure_if_unwatched(job)
@@ -2255,7 +2420,7 @@ class BackgroundDispatchService:
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
-                raise RuntimeError("Printer not found")
+                raise PrinterUnavailable("Printer not found")
 
             printer_name = printer.name
             printer_ip = printer.ip_address
@@ -2270,11 +2435,11 @@ class BackgroundDispatchService:
             remote_filename = derive_remote_filename(archive_filename)
 
             if not printer_manager.is_connected(job.printer_id):
-                raise RuntimeError("Printer is not connected")
+                raise PrinterUnavailable("Printer is not connected")
 
             # re-Connect MQTT if stalled
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-                raise RuntimeError("Can`t re-connect printer MQTT")
+                raise PrinterUnavailable("Can`t re-connect printer MQTT")
 
             file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
             await require_source_file(file_path)
@@ -2396,6 +2561,8 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
                 job.execution_archive_id = archive.id
+                # The durable half of the send fact, in the transaction that inserts the row (D-R3).
+                job.dispatch_boot_id = dispatch_phase.stamp_prepared(archive)
 
                 # Queue-item dispatches: re-point the queue item at the new
                 # archive (the actual print this run will execute) and copy
@@ -2448,23 +2615,23 @@ class BackgroundDispatchService:
             # scheme are one decision, not two.
             storage, refusal = resolve_dispatch_storage(printer_model, printer_manager.get_status(job.printer_id))
             if storage is None:
-                raise RuntimeError(_dispatch_refusal_message(refusal))
+                raise PrinterUnavailable(_dispatch_refusal_message(refusal))
             transport = transport_for(printer, storage)
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
-            if storage == "external":
-                await delete_file_async(
-                    printer_ip,
-                    printer_access_code,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer_model,
-                )
-            else:
-                await delete_internal_by_name(transport, remote_filename)
+            await self._clear_remote_name(
+                transport,
+                storage,
+                printer_ip=printer_ip,
+                access_code=printer_access_code,
+                remote_path=remote_path,
+                remote_filename=remote_filename,
+                ftp_timeout=ftp_timeout,
+                printer_model=printer_model,
+            )
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
             # prints. ⚠️ External only: /cache is a directory on the card, and
@@ -2542,44 +2709,51 @@ class BackgroundDispatchService:
                 # Why the card upload failed, if it does — this operation's own
                 # record, never a shared per-printer one (upstream 70ee5346).
                 upload_report = UploadReport()
-                with printer_manager.transfer_in_progress(job.printer_id):
-                    if storage != "external":
-                        uploaded = await transport.upload(
-                            Path(upload_file_path), remote_filename, upload_progress_callback
-                        )
-                    elif ftp_retry_enabled:
-                        uploaded = await with_ftp_retry(
-                            upload_file_async,
-                            printer_ip,
-                            printer_access_code,
-                            upload_file_path,
-                            remote_path,
-                            progress_callback=upload_progress_callback,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer_model,
-                            max_retries=ftp_retry_count,
-                            retry_delay=ftp_retry_delay,
-                            operation_name=f"Upload for reprint to {printer_name}",
-                            non_retry_exceptions=(DispatchJobCancelled,),
-                            report=upload_report,
-                        )
-                    else:
-                        uploaded = await upload_file_async(
-                            printer_ip,
-                            printer_access_code,
-                            upload_file_path,
-                            remote_path,
-                            progress_callback=upload_progress_callback,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer_model,
-                            report=upload_report,
-                        )
+                try:
+                    with printer_manager.transfer_in_progress(job.printer_id):
+                        if storage != "external":
+                            uploaded = await transport.upload(
+                                Path(upload_file_path), remote_filename, upload_progress_callback
+                            )
+                        elif ftp_retry_enabled:
+                            uploaded = await with_ftp_retry(
+                                upload_file_async,
+                                printer_ip,
+                                printer_access_code,
+                                upload_file_path,
+                                remote_path,
+                                progress_callback=upload_progress_callback,
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
+                                max_retries=ftp_retry_count,
+                                retry_delay=ftp_retry_delay,
+                                operation_name=f"Upload for reprint to {printer_name}",
+                                non_retry_exceptions=(DispatchJobCancelled,),
+                                report=upload_report,
+                            )
+                        else:
+                            uploaded = await upload_file_async(
+                                printer_ip,
+                                printer_access_code,
+                                upload_file_path,
+                                remote_path,
+                                progress_callback=upload_progress_callback,
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
+                                report=upload_report,
+                            )
+                except DispatchJobCancelled:
+                    raise
+                except Exception as exc:
+                    raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
                 if not uploaded:
-                    raise RuntimeError(_upload_failure_message(storage, upload_report))
+                    raise UploadFailed(_upload_failure_message(storage, upload_report))
+                # The file is on the printer: what follows until the start is preparation.
+                job.stage = STAGE_PREPARING
 
                 # ⚠️ Both media get a real digest. The FTP path sent an empty
                 # one for as long as this code existed, reasoning that Bambu's
@@ -2734,7 +2908,8 @@ class BackgroundDispatchService:
                 from backend.app.services.order_auto_eject import dispatch_check
 
                 await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
-                started = printer_manager.start_print(
+                start_command = partial(
+                    printer_manager.start_print,
                     job.printer_id,
                     remote_filename,
                     plate_id,
@@ -2764,15 +2939,7 @@ class BackgroundDispatchService:
                     # and the other way round.
                     timelapse_storage=_timelapse_storage_for(job.printer_id, job.options.get("timelapse_storage")),
                 )
-
-                if started:
-                    # Confirmed send: the entry is now the printer's to resolve.
-                    _unconfirmed_expected_print = None
-                    # The print owns the heaters from here; preheat must not
-                    # undo its own work on the way out.
-                    preheat_service.clear_pin(job.printer_id)
-                    # The row keeps the mapping the printer was actually sent.
-                    await _record_dispatched_mapping(job)
+                started = await self._send_start(db, job, start_command)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -2781,7 +2948,19 @@ class BackgroundDispatchService:
                         remote_path,
                         printer_model,
                     )
-                    raise RuntimeError("Failed to start print")
+                    # Nothing was published: a typed refusal, which the deferral path handles.
+                    raise StartRefused(printer_manager.start_refusal_reason(job.printer_id))
+
+                # Confirmed send: the entry is now the printer's to resolve.
+                _unconfirmed_expected_print = None
+                # The print owns the heaters from here; preheat must not
+                # undo its own work on the way out.
+                preheat_service.clear_pin(job.printer_id)
+                # From here on only the printer's answer decides the attempt; every
+                # write below is bookkeeping (D-R4).
+                await self._record_phase(db, job, dispatch_phase.SENT)
+                # The row keeps the mapping the printer was actually sent.
+                await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 
                 # Wait for the printer to actually pick up the command before
                 # marking the dispatch job complete (#1042/#1134). MQTT-publish
@@ -2800,22 +2979,24 @@ class BackgroundDispatchService:
                 pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    await self._set_active_message(
-                        job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                    await self._secondary(
+                        db,
+                        job,
+                        "the dispatch panel message",
+                        lambda: self._set_active_message(
+                            job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                        ),
                     )
-                    transitioned = await self._verify_print_response(
-                        job.printer_id,
+                    # The printer's answer is the only thing that may end an attempt whose
+                    # start was published (D-R4): ``accepted``, or a typed negative verdict.
+                    await self._require_running(
+                        db,
+                        job,
                         printer_name,
                         pre_state,
                         pre_subtask_id=pre_subtask_id,
                         pre_gcode_file=pre_gcode_file,
                     )
-                    if not transitioned:
-                        raise RuntimeError(
-                            f"Printer did not acknowledge print command — state still {pre_state}. "
-                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
-                            f"SD card) and try again."
-                        )
 
                 # Register in-memory swap config for on_print_complete's fast
                 # path. Persistence to archive.extra_data (restart recovery)
@@ -2825,13 +3006,10 @@ class BackgroundDispatchService:
                 # the archive lookup for the reprint path.
                 from backend.app.main import register_macro_selection, register_swap_config
 
-                register_swap_config(
-                    job.printer_id,
-                    job.options if isinstance(job.options, dict) else {},
-                )
-                register_macro_selection(
-                    job.printer_id,
-                    job.options if isinstance(job.options, dict) else {},
+                options = job.options if isinstance(job.options, dict) else {}
+                await self._secondary(db, job, "the swap config", lambda: register_swap_config(job.printer_id, options))
+                await self._secondary(
+                    db, job, "the macro selection", lambda: register_macro_selection(job.printer_id, options)
                 )
 
                 # Register stagger slot so subsequent queue-driven
@@ -2848,16 +3026,21 @@ class BackgroundDispatchService:
                     logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
                 if job.requested_by_user_id and job.requested_by_username:
-                    printer_manager.set_current_print_user(
-                        job.printer_id,
-                        job.requested_by_user_id,
-                        job.requested_by_username,
-                        archive_id=archive.id,
+                    await self._secondary(
+                        db,
+                        job,
+                        "the print's user",
+                        lambda: printer_manager.set_current_print_user(
+                            job.printer_id,
+                            job.requested_by_user_id,
+                            job.requested_by_username,
+                            archive_id=job.execution_archive_id,
+                        ),
                     )
 
                 job.outcome = {
                     "success": True,
-                    "archive_id": archive.id,
+                    "archive_id": job.execution_archive_id,
                     "error": None,
                     "cancelled": False,
                     "deferred": False,
@@ -2872,31 +3055,29 @@ class BackgroundDispatchService:
                 }
                 raise
             except DispatchJobCancelled:
+                # Scalar ids only from here: the rollback below expires every row the session held.
+                await self._end_own_transaction(db)
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
                 # archive_print committed the row before this branch, so the
                 # outer session rollback can't undo it. Flip the zombie from
                 # "printing" → "cancelled" in a fresh session so the UI
-                # doesn't keep it spinning forever. Defensive id check in
-                # case future refactors move cancel checkpoints earlier.
-                _archive_id = getattr(archive, "id", None) if archive else None
-                if _archive_id:
-                    await self._mark_dispatch_archive_terminal(_archive_id, "cancelled", "Cancelled before start")
+                # doesn't keep it spinning forever.
+                await self._mark_dispatch_archive_terminal(
+                    job.execution_archive_id, "cancelled", "Cancelled before start", failure_reason=USER_CANCELLED
+                )
                 job.outcome = {
                     "success": False,
-                    "archive_id": _archive_id,
+                    "archive_id": job.execution_archive_id,
                     "error": "Cancelled",
                     "cancelled": True,
                     "deferred": False,
                 }
                 raise
+            except asyncio.CancelledError:
+                job.interrupted = True
+                raise
             except Exception as e:
-                job.outcome = {
-                    "success": False,
-                    "archive_id": None,
-                    "error": str(e),
-                    "cancelled": False,
-                    "deferred": False,
-                }
+                await self._end_attempt_on_error(db, job, e)
                 raise
             finally:
                 # An expected print whose command never went out must not linger.
@@ -2926,6 +3107,132 @@ class BackgroundDispatchService:
                 # event may act on the outcome immediately, and this is the one
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
+
+    async def _send_start(self, db, job: PrintDispatchJob, start: Callable[[], bool]) -> bool:
+        """Commit ``sending``, then publish — and record what the publish did before anything else runs.
+
+        ``sending`` is committed on the runner's own session, on its own execution
+        archive, after every pre-action; a commit that fails or a compare-and-set that
+        loses forbids the send (D-R3). The synchronous ``validate`` inside ``start_print``
+        stays the last check before the publish. ``send_fact`` is written with no await
+        between the call returning and the write (D-R2). A call that raised may have
+        published: it counts as sent, and the printer's answer decides — never an
+        invented refusal.
+        """
+        from backend.app.services import dispatch_phase
+
+        if not await dispatch_phase.advance(
+            db, job.execution_archive_id, dispatch_phase.SENDING, boot_id=job.dispatch_boot_id
+        ):
+            raise DispatchPhaseLost("This attempt's archive is no longer the one being started; nothing was sent.")
+        await db.commit()
+        try:
+            started = start()
+        except RoutingDeferred:
+            # The farm guard or the plan's own validate refused before any publish.
+            job.send_fact = SEND_REFUSED
+            raise
+        except Exception:
+            job.send_fact = SEND_SENT
+            logger.exception("Dispatch %s: the start call raised; treating the command as possibly sent", job.id)
+            return True
+        job.send_fact = SEND_SENT if started else SEND_REFUSED
+        return bool(started)
+
+    async def _end_attempt_on_error(self, db, job: PrintDispatchJob, exc: BaseException) -> None:
+        """The runner's own exit on an exception: a failed attempt with its class — unless the start may be out.
+
+        After a publish only the printer's own verdict (``DispatchNotStarted``, a command
+        rejection) ends the attempt. Anything else that escapes then leaves the archive
+        and the claim as the printer has them, marked ``uncertain`` for the callers.
+        """
+        message = str(exc) or exc.__class__.__name__
+        if _published(job) and not _ends_after_publish(exc):
+            logger.error("Dispatch %s: outcome unknown after the start was sent: %s", job.id, exc, exc_info=True)
+            job.outcome = {
+                "success": False,
+                "archive_id": job.execution_archive_id,
+                "error": message,
+                "cancelled": False,
+                "deferred": False,
+                "uncertain": True,
+            }
+            return
+        code = dispatch_failure_code(exc, stage=job.stage)
+        await self._end_own_transaction(db)
+        await self._mark_dispatch_archive_terminal(job.execution_archive_id, "failed", message, failure_reason=code)
+        job.outcome = {
+            "success": False,
+            "archive_id": job.execution_archive_id,
+            "error": message,
+            "cancelled": False,
+            "deferred": False,
+            "failure_code": code,
+        }
+
+    async def _secondary(self, db, job: PrintDispatchJob, label: str, action: Callable[[], Any]) -> None:
+        """Run bookkeeping that follows a published start; its failure is logged, never the print's.
+
+        After a publish only the printer's verdict may end the attempt (D-R4): a mapping
+        write, a phase write, a registration or a cleanup that fails leaves the print
+        exactly as the printer has it. The runner's own uncommitted work is rolled back
+        so its session stays usable; nothing after this reads an ORM row it held.
+        """
+        try:
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - bookkeeping after a publish never decides the print
+            job.secondary_errors.append(label)
+            logger.error(
+                "Dispatch %s on printer %s: %s failed after the start was sent: %s",
+                job.id,
+                job.printer_id,
+                label,
+                exc,
+                exc_info=True,
+            )
+            await self._end_own_transaction(db)
+
+    async def _record_phase(self, db, job: PrintDispatchJob, to: str) -> None:
+        """Persist a phase the RAM fact already holds; bookkeeping, so its failure changes nothing."""
+        from backend.app.services import dispatch_phase
+
+        async def write():
+            await dispatch_phase.advance(db, job.execution_archive_id, to, boot_id=job.dispatch_boot_id)
+            await db.commit()
+
+        await self._secondary(db, job, f"the {to} phase", write)
+
+    async def _require_running(self, db, job: PrintDispatchJob, printer_name: str, pre_state: str, **verify) -> None:
+        """The printer's answer to the published start: ``accepted`` when seen running, else the attempt ends."""
+        from backend.app.services import dispatch_phase
+        from backend.app.utils.failure_reasons import DISPATCH_ACCEPTED_NOT_STARTED, DISPATCH_NO_ACKNOWLEDGEMENT
+
+        answer = await self._await_print_response(job.printer_id, printer_name, pre_state, **verify)
+        if answer == RESPONSE_ACCEPTED:
+            job.send_fact = SEND_ACCEPTED
+            await self._record_phase(db, job, dispatch_phase.ACCEPTED)
+            return
+        if answer == RESPONSE_STALLED:
+            raise DispatchNotStarted(
+                DISPATCH_ACCEPTED_NOT_STARTED,
+                "The printer accepted the file but never started printing. Check its screen for a prompt "
+                "or an error before you retry.",
+            )
+        if answer == RESPONSE_FILE_RECEIVED:
+            raise DispatchNotStarted(
+                DISPATCH_ACCEPTED_NOT_STARTED,
+                "The printer received the file but had not started printing when the wait ended — it may "
+                "still be reading it. Check the printer before you retry.",
+            )
+        raise DispatchNotStarted(
+            DISPATCH_NO_ACKNOWLEDGEMENT,
+            f"Printer did not acknowledge print command — state still {pre_state}. Check the printer for a "
+            "pending error (HMS code, plate-clear prompt, SD card) and try again.",
+        )
 
     @staticmethod
     def _start_effect_recorder(db, archive):
@@ -2986,7 +3293,7 @@ class BackgroundDispatchService:
                 await record("possibly_fired")
         success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
         if not success:
-            raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
+            raise PreparationFailed(f"Swap macro '{macro.name}' failed: {msg}")
         if event == "swap_mode_start":
             job.swap_start_effect = "fired"
             if record is not None:
@@ -3019,6 +3326,13 @@ class BackgroundDispatchService:
             # ``_require_sliced_source`` below would otherwise reject as "not a
             # sliced file", blaming a 3MF that is perfectly good.
             library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
+            # Plain values for the transient-source cleanup after the print started: that
+            # bookkeeping may run on a session a failed write before it rolled back.
+            library_row = (
+                (lib_file.id, bool(lib_file.is_external), lib_file.file_path, lib_file.thumbnail_path)
+                if lib_file
+                else None
+            )
             submission_id = _ensure_submission_id(job)
             remote_filename = derive_remote_filename(library_filename)
 
@@ -3028,7 +3342,7 @@ class BackgroundDispatchService:
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
-                raise RuntimeError("Printer not found")
+                raise PrinterUnavailable("Printer not found")
 
             printer_name = printer.name
             printer_ip = printer.ip_address
@@ -3036,11 +3350,11 @@ class BackgroundDispatchService:
             printer_model = printer.model
 
             if not printer_manager.is_connected(job.printer_id):
-                raise RuntimeError("Printer is not connected")
+                raise PrinterUnavailable("Printer is not connected")
 
             # re-Connect MQTT if stalled
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-                raise RuntimeError("Can`t re-connect printer MQTT")
+                raise PrinterUnavailable("Can`t re-connect printer MQTT")
 
             # Unified 3MF post-processing — same single-pass pipeline as the
             # archive path above. See _maybe_inject_gcode → _build_injection_spec.
@@ -3172,6 +3486,9 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create archive")
                 job.execution_archive_id = archive.id
+                archive_file_path = archive.file_path
+                # The durable half of the send fact, in the transaction that inserts the row (D-R3).
+                job.dispatch_boot_id = dispatch_phase.stamp_prepared(archive)
 
                 # Queue-item dispatches: keep queue_item + archive aligned in the
                 # same txn so the scheduler's follow-up logic sees a consistent
@@ -3218,23 +3535,23 @@ class BackgroundDispatchService:
             # scheme are one decision, not two.
             storage, refusal = resolve_dispatch_storage(printer_model, printer_manager.get_status(job.printer_id))
             if storage is None:
-                raise RuntimeError(_dispatch_refusal_message(refusal))
+                raise PrinterUnavailable(_dispatch_refusal_message(refusal))
             transport = transport_for(printer, storage)
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
-            if storage == "external":
-                await delete_file_async(
-                    printer_ip,
-                    printer_access_code,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer_model,
-                )
-            else:
-                await delete_internal_by_name(transport, remote_filename)
+            await self._clear_remote_name(
+                transport,
+                storage,
+                printer_ip=printer_ip,
+                access_code=printer_access_code,
+                remote_path=remote_path,
+                remote_filename=remote_filename,
+                ftp_timeout=ftp_timeout,
+                printer_model=printer_model,
+            )
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
             # prints. ⚠️ External only: /cache is a directory on the card, and
@@ -3312,45 +3629,51 @@ class BackgroundDispatchService:
                 # Why the card upload failed, if it does — this operation's own
                 # record, never a shared per-printer one (upstream 70ee5346).
                 upload_report = UploadReport()
-                with printer_manager.transfer_in_progress(job.printer_id):
-                    if storage != "external":
-                        uploaded = await transport.upload(
-                            Path(upload_file_path), remote_filename, upload_progress_callback
-                        )
-                    elif ftp_retry_enabled:
-                        uploaded = await with_ftp_retry(
-                            upload_file_async,
-                            printer_ip,
-                            printer_access_code,
-                            upload_file_path,
-                            remote_path,
-                            progress_callback=upload_progress_callback,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer_model,
-                            max_retries=ftp_retry_count,
-                            retry_delay=ftp_retry_delay,
-                            operation_name=f"Upload for print to {printer_name}",
-                            non_retry_exceptions=(DispatchJobCancelled,),
-                            report=upload_report,
-                        )
-                    else:
-                        uploaded = await upload_file_async(
-                            printer_ip,
-                            printer_access_code,
-                            upload_file_path,
-                            remote_path,
-                            progress_callback=upload_progress_callback,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer_model,
-                            report=upload_report,
-                        )
+                try:
+                    with printer_manager.transfer_in_progress(job.printer_id):
+                        if storage != "external":
+                            uploaded = await transport.upload(
+                                Path(upload_file_path), remote_filename, upload_progress_callback
+                            )
+                        elif ftp_retry_enabled:
+                            uploaded = await with_ftp_retry(
+                                upload_file_async,
+                                printer_ip,
+                                printer_access_code,
+                                upload_file_path,
+                                remote_path,
+                                progress_callback=upload_progress_callback,
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
+                                max_retries=ftp_retry_count,
+                                retry_delay=ftp_retry_delay,
+                                operation_name=f"Upload for print to {printer_name}",
+                                non_retry_exceptions=(DispatchJobCancelled,),
+                                report=upload_report,
+                            )
+                        else:
+                            uploaded = await upload_file_async(
+                                printer_ip,
+                                printer_access_code,
+                                upload_file_path,
+                                remote_path,
+                                progress_callback=upload_progress_callback,
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
+                                report=upload_report,
+                            )
+                except DispatchJobCancelled:
+                    raise
+                except Exception as exc:
+                    raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
                 if not uploaded:
-                    await db.rollback()
-                    raise RuntimeError(_upload_failure_message(storage, upload_report))
+                    raise UploadFailed(_upload_failure_message(storage, upload_report))
+                # The file is on the printer: what follows until the start is preparation.
+                job.stage = STAGE_PREPARING
 
                 # ⚠️ Both media get a real digest. The FTP path sent an empty
                 # one for as long as this code existed, reasoning that Bambu's
@@ -3502,7 +3825,8 @@ class BackgroundDispatchService:
                 from backend.app.services.order_auto_eject import dispatch_check
 
                 await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
-                started = printer_manager.start_print(
+                start_command = partial(
+                    printer_manager.start_print,
                     job.printer_id,
                     remote_filename,
                     plate_id,
@@ -3532,15 +3856,7 @@ class BackgroundDispatchService:
                     # and the other way round.
                     timelapse_storage=_timelapse_storage_for(job.printer_id, job.options.get("timelapse_storage")),
                 )
-
-                if started:
-                    # Confirmed send: the entry is now the printer's to resolve.
-                    _unconfirmed_expected_print = None
-                    # The print owns the heaters from here; preheat must not
-                    # undo its own work on the way out.
-                    preheat_service.clear_pin(job.printer_id)
-                    # The row keeps the mapping the printer was actually sent.
-                    await _record_dispatched_mapping(job)
+                started = await self._send_start(db, job, start_command)
 
                 if not started:
                     await self._cleanup_sd_card_file(
@@ -3549,8 +3865,19 @@ class BackgroundDispatchService:
                         remote_path,
                         printer_model,
                     )
-                    await db.rollback()
-                    raise RuntimeError("Failed to start print")
+                    # Nothing was published: a typed refusal, which the deferral path handles.
+                    raise StartRefused(printer_manager.start_refusal_reason(job.printer_id))
+
+                # Confirmed send: the entry is now the printer's to resolve.
+                _unconfirmed_expected_print = None
+                # The print owns the heaters from here; preheat must not
+                # undo its own work on the way out.
+                preheat_service.clear_pin(job.printer_id)
+                # From here on only the printer's answer decides the attempt; every
+                # write below is bookkeeping (D-R4).
+                await self._record_phase(db, job, dispatch_phase.SENT)
+                # The row keeps the mapping the printer was actually sent.
+                await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 
                 # Register in-memory swap config for on_print_complete's fast
                 # path. Persistence to archive.extra_data (restart recovery)
@@ -3560,13 +3887,10 @@ class BackgroundDispatchService:
                 # the archive lookup for the reprint path.
                 from backend.app.main import register_macro_selection, register_swap_config
 
-                register_swap_config(
-                    job.printer_id,
-                    job.options if isinstance(job.options, dict) else {},
-                )
-                register_macro_selection(
-                    job.printer_id,
-                    job.options if isinstance(job.options, dict) else {},
+                options = job.options if isinstance(job.options, dict) else {}
+                await self._secondary(db, job, "the swap config", lambda: register_swap_config(job.printer_id, options))
+                await self._secondary(
+                    db, job, "the macro selection", lambda: register_macro_selection(job.printer_id, options)
                 )
 
                 # Register stagger slot so subsequent queue-driven
@@ -3582,33 +3906,33 @@ class BackgroundDispatchService:
                 except Exception as _e:
                     logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
-                # See _run_reprint_archive for rationale (#1042/#1134). Outer
-                # ``except Exception`` block already runs
-                # ``_mark_dispatch_archive_terminal(archive.id, "failed", ...)``
-                # so a RuntimeError raised here flips the freshly-created
-                # archive from "printing" → "failed" without leaving a
-                # phantom row for a print that never started.
+                # See _run_reprint_archive for rationale (#1042/#1134). A
+                # negative verdict raises ``DispatchNotStarted``, which the
+                # ``except Exception`` below turns into this attempt's failed
+                # archive — never a phantom row for a print that never started.
                 _post_status = printer_manager.get_status(job.printer_id)
                 pre_state = getattr(_post_status, "state", None)
                 pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    await self._set_active_message(
-                        job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                    await self._secondary(
+                        db,
+                        job,
+                        "the dispatch panel message",
+                        lambda: self._set_active_message(
+                            job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                        ),
                     )
-                    transitioned = await self._verify_print_response(
-                        job.printer_id,
+                    # The printer's answer is the only thing that may end an attempt whose
+                    # start was published (D-R4): ``accepted``, or a typed negative verdict.
+                    await self._require_running(
+                        db,
+                        job,
                         printer_name,
                         pre_state,
                         pre_subtask_id=pre_subtask_id,
                         pre_gcode_file=pre_gcode_file,
                     )
-                    if not transitioned:
-                        raise RuntimeError(
-                            f"Printer did not acknowledge print command — state still {pre_state}. "
-                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
-                            f"SD card) and try again."
-                        )
 
                 # Register the requesting user so per-user stats filter sees
                 # this print and the post-print notification has a recipient.
@@ -3616,83 +3940,93 @@ class BackgroundDispatchService:
                 # the library-print branch skipped this call even though the
                 # user was plumbed into the job object.
                 if job.requested_by_user_id and job.requested_by_username:
-                    printer_manager.set_current_print_user(
-                        job.printer_id,
-                        job.requested_by_user_id,
-                        job.requested_by_username,
-                        archive_id=archive.id,
+                    await self._secondary(
+                        db,
+                        job,
+                        "the print's user",
+                        lambda: printer_manager.set_current_print_user(
+                            job.printer_id,
+                            job.requested_by_user_id,
+                            job.requested_by_username,
+                            archive_id=job.execution_archive_id,
+                        ),
                     )
 
                 # Direct-Print flow only: archive_print copies the 3MF, so
                 # deleting the transient library row + files here leaves the
-                # archive intact. Staged in the same transaction as everything
-                # else — a mid-flight FTP / start_print failure rolls both
-                # archive creation and library deletion back cleanly. Disk
+                # archive intact. ⚠️ Bookkeeping AFTER the printer accepted: a
+                # failure here leaves the print printing, the library row in
+                # place, and says so in the log — it never fails the print. Disk
                 # deletes run AFTER commit so a rollback leaves no orphan
                 # library_file row pointing at a file we already unlinked.
                 # External library files (is_external=True) are never touched.
                 # Upstream #730 / #1682b695.
-                cleanup_disk_paths: list[Path] = []
                 # ``lib_file is None`` means the row this dispatch was started
                 # from is already gone — there is nothing left to clean up, and
                 # the print ran from its own copy regardless.
-                if job.cleanup_library_after_dispatch and lib_file is not None and not lib_file.is_external:
-                    # A transient library source is removed after success. Its
-                    # execution archive becomes the durable source for Repeat;
-                    # keep semantic rules while recording the archive revision.
-                    if job.routing_guard and job.queue_item_id:
-                        from backend.app.models.print_queue import PrintQueueItem
-                        from backend.app.services.filament_policy import serialize_policy
-                        from backend.app.services.filament_requirements import PrintRequirementsCache
+                if job.cleanup_library_after_dispatch and library_row is not None and not library_row[1]:
 
-                        archive_path = Path(archive.file_path)
-                        if not archive_path.is_absolute():
-                            archive_path = (
-                                settings.base_dir / archive_path
-                            )  # SEC-PATH-OK: archive_print generated this persisted relative path.
-                        retained = await PrintRequirementsCache().read(archive_path, job.options["plate_id"])
-                        # FTP, preheat and MQTT acknowledgement all happened
-                        # before this cleanup branch.  The initial queue-item
-                        # read is still in this session's identity map, so
-                        # force a real read before touching the row again.
-                        queued = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
-                        if queued is not None and queued.started_at == job.claim_started_at:
-                            queued.filament_routing = serialize_policy(
-                                job.routing_guard.policy,
-                                archive_id=archive.id,
-                                requirements=retained,
-                                plate_id=job.options["plate_id"],
-                                printer_id=job.printer_id,
-                                exact_model=job.routing_guard.exact_model,
-                            )
-                    cleanup_disk_paths.append(Path(settings.base_dir) / lib_file.file_path)
-                    if lib_file.thumbnail_path:
-                        thumb_path = Path(lib_file.thumbnail_path)
-                        if not thumb_path.is_absolute():
-                            thumb_path = Path(settings.base_dir) / lib_file.thumbnail_path
-                        cleanup_disk_paths.append(thumb_path)
-                    # The ORM clears ``product_files`` for us, but nothing
-                    # clears ``product_plates`` — it has no cascade from the
-                    # library file on SQLite, where FK actions never fire.
-                    await purge_file_product_links(db, [lib_file.id])
-                    await db.delete(lib_file)
+                    async def remove_transient_source():
+                        library_id, _external, library_path, library_thumbnail = library_row
+                        # A transient library source is removed after success. Its
+                        # execution archive becomes the durable source for Repeat;
+                        # keep semantic rules while recording the archive revision.
+                        if job.routing_guard and job.queue_item_id:
+                            from backend.app.models.print_queue import PrintQueueItem
+                            from backend.app.services.filament_policy import serialize_policy
+                            from backend.app.services.filament_requirements import PrintRequirementsCache
 
-                await db.commit()
+                            archive_path = Path(archive_file_path)
+                            if not archive_path.is_absolute():
+                                archive_path = (
+                                    settings.base_dir / archive_path
+                                )  # SEC-PATH-OK: archive_print generated this persisted relative path.
+                            retained = await PrintRequirementsCache().read(archive_path, job.options["plate_id"])
+                            # FTP, preheat and MQTT acknowledgement all happened
+                            # before this cleanup branch.  The initial queue-item
+                            # read is still in this session's identity map, so
+                            # force a real read before touching the row again.
+                            queued = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+                            if queued is not None and queued.started_at == job.claim_started_at:
+                                queued.filament_routing = serialize_policy(
+                                    job.routing_guard.policy,
+                                    archive_id=job.execution_archive_id,
+                                    requirements=retained,
+                                    plate_id=job.options["plate_id"],
+                                    printer_id=job.printer_id,
+                                    exact_model=job.routing_guard.exact_model,
+                                )
+                        cleanup_disk_paths = [Path(settings.base_dir) / library_path]
+                        if library_thumbnail:
+                            thumb_path = Path(library_thumbnail)
+                            if not thumb_path.is_absolute():
+                                thumb_path = Path(settings.base_dir) / library_thumbnail
+                            cleanup_disk_paths.append(thumb_path)
+                        # The ORM clears ``product_files`` for us, but nothing
+                        # clears ``product_plates`` — it has no cascade from the
+                        # library file on SQLite, where FK actions never fire.
+                        await purge_file_product_links(db, [library_id])
+                        transient = await db.get(LibraryFile, library_id)
+                        if transient is not None:
+                            await db.delete(transient)
+                        await db.commit()
 
-                for cleanup_path in cleanup_disk_paths:
-                    try:
-                        if cleanup_path.exists():
-                            cleanup_path.unlink()
-                    except OSError as cleanup_err:
-                        logger.warning(
-                            "Failed to delete transient library file %s: %s",
-                            cleanup_path,
-                            cleanup_err,
-                        )
+                        for cleanup_path in cleanup_disk_paths:
+                            try:
+                                if cleanup_path.exists():
+                                    cleanup_path.unlink()
+                            except OSError as cleanup_err:
+                                logger.warning(
+                                    "Failed to delete transient library file %s: %s",
+                                    cleanup_path,
+                                    cleanup_err,
+                                )
+
+                    await self._secondary(db, job, "the transient library cleanup", remove_transient_source)
 
                 job.outcome = {
                     "success": True,
-                    "archive_id": archive.id,
+                    "archive_id": job.execution_archive_id,
                     "error": None,
                     "cancelled": False,
                     "deferred": False,
@@ -3707,30 +4041,29 @@ class BackgroundDispatchService:
                 }
                 raise
             except DispatchJobCancelled:
-                await db.rollback()
+                # Scalar ids only from here: the rollback expires every row the session held.
+                await self._end_own_transaction(db)
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
                 # archive_print committed the row before this branch, so the
                 # outer session rollback can't undo it. Flip the zombie from
                 # "printing" → "cancelled" in a fresh session so the UI
                 # doesn't keep it spinning forever.
-                await self._mark_dispatch_archive_terminal(archive.id, "cancelled", "Cancelled before start")
+                await self._mark_dispatch_archive_terminal(
+                    job.execution_archive_id, "cancelled", "Cancelled before start", failure_reason=USER_CANCELLED
+                )
                 job.outcome = {
                     "success": False,
-                    "archive_id": archive.id,
+                    "archive_id": job.execution_archive_id,
                     "error": "Cancelled",
                     "cancelled": True,
                     "deferred": False,
                 }
                 raise
+            except asyncio.CancelledError:
+                job.interrupted = True
+                raise
             except Exception as e:
-                await self._mark_dispatch_archive_terminal(archive.id, "failed", str(e))
-                job.outcome = {
-                    "success": False,
-                    "archive_id": archive.id,
-                    "error": str(e),
-                    "cancelled": False,
-                    "deferred": False,
-                }
+                await self._end_attempt_on_error(db, job, e)
                 raise
             finally:
                 # An expected print whose command never went out must not linger.
@@ -3762,7 +4095,7 @@ class BackgroundDispatchService:
                 await report_failure_if_unwatched(job)
 
     @staticmethod
-    async def _verify_print_response(
+    async def _await_print_response(
         printer_id: int,
         printer_name: str,
         pre_state: str,
@@ -3771,8 +4104,14 @@ class BackgroundDispatchService:
         poll_interval: float = 3.0,
         pre_gcode_file: str | None = None,
         phase_b_timeout: float = 180.0,
-    ) -> bool:
-        """Wait for the printer to *actually start* a print command.
+    ) -> str:
+        """Wait for the printer to *actually start* a print command, and say how it answered.
+
+        Returns ``RESPONSE_ACCEPTED`` once an active print state is observed, else which of
+        the three negative answers it was (post-rebuild D-R4): ``RESPONSE_STALLED`` (Phase A,
+        no active state), ``RESPONSE_FILE_RECEIVED`` (the printer's file changed without
+        Phase A — a slow parse) or ``RESPONSE_NO_ACKNOWLEDGEMENT``. A negative answer is the
+        printer's, not a proof that it will not start the file later.
 
         Two-phase (#1678):
 
@@ -3786,18 +4125,18 @@ class BackgroundDispatchService:
           active print state (PREPARE/SLICING/RUNNING/PAUSE). Only then do we
           return True.
 
-        Returns True once an active print state is observed. Returns False on
-        timeout: if the command never landed (no active state, no subtask
+        On timeout: if the command never landed (no active state, no subtask
         advance) we log + force an MQTT reconnect when the ``gcode_file``
         discriminator says the publish didn't land (#1150); if it landed but
         never started (Phase A reached, Phase B timed out — printer accepted
         the file then stalled, e.g. cloud+LAN re-auth after a power cycle on
-        old firmware) we return False WITHOUT a forced reconnect (a reconnect
-        mid-parse would trigger 0500_4003, #1150). The caller raises on False
-        so the dispatch job is marked failed rather than left wrongly
-        "started" — before this, Phase A alone returned True and a printer
-        that accepted-but-stalled wedged the queue item in ``printing`` until
-        a container restart.
+        old firmware), or the file changed without Phase A (a slow parse), we
+        answer WITHOUT a forced reconnect (a reconnect mid-parse would trigger
+        0500_4003, #1150). The runner turns every negative answer into a
+        failed attempt with its class rather than leaving it wrongly
+        "started" — before #1678, Phase A alone counted as started and a
+        printer that accepted-but-stalled wedged the queue item in
+        ``printing`` until a container restart.
         """
         deadline = time.monotonic() + timeout
         last_status = None  # captured for #1150 gcode_file discriminator on timeout
@@ -3819,7 +4158,7 @@ class BackgroundDispatchService:
                 # accepting our project_file) would otherwise look like "command
                 # landed" and the dispatch job would be marked successful even
                 # though no print is running. Upstream #1370 / commit 5680f5d3.
-                return True
+                return RESPONSE_ACCEPTED
             # Checked only AFTER the active-state exit above: a stale HMS left
             # over from an earlier job must never abort a print that is visibly
             # running. An actually-refused command leaves the printer idle, so
@@ -3864,7 +4203,7 @@ class BackgroundDispatchService:
                 printer_id,
                 phase_b_timeout,
             )
-            return False
+            return RESPONSE_STALLED
         # P1P 0500_4003 discriminator (#1150): if `gcode_file` advanced from
         # what we observed pre-dispatch, the printer accepted our project_file
         # and is just slow-parsing on the SD-card MCU side. Forcing an MQTT
@@ -3883,14 +4222,40 @@ class BackgroundDispatchService:
                 current_gcode_file,
                 pre_gcode_file,
             )
-            return False
+            return RESPONSE_FILE_RECEIVED
         client = printer_manager.get_client(printer_id)
         if client and hasattr(client, "force_reconnect_stale_session"):
             client.force_reconnect_stale_session(
                 f"print command unacknowledged after {timeout:.0f}s "
                 f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
-        return False
+        return RESPONSE_NO_ACKNOWLEDGEMENT
+
+    @staticmethod
+    async def _verify_print_response(
+        printer_id: int,
+        printer_name: str,
+        pre_state: str,
+        pre_subtask_id: str | None = None,
+        timeout: float = 90.0,
+        poll_interval: float = 3.0,
+        pre_gcode_file: str | None = None,
+        phase_b_timeout: float = 180.0,
+    ) -> bool:
+        """True once the printer was seen running the command (``_await_print_response`` says how it answered)."""
+        return (
+            await BackgroundDispatchService._await_print_response(
+                printer_id,
+                printer_name,
+                pre_state,
+                pre_subtask_id=pre_subtask_id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                pre_gcode_file=pre_gcode_file,
+                phase_b_timeout=phase_b_timeout,
+            )
+            == RESPONSE_ACCEPTED
+        )
 
     @staticmethod
     async def _ensure_live_connection_before_start(printer, printer_name: str) -> None:
@@ -3966,11 +4331,43 @@ class BackgroundDispatchService:
         )
         if rack.refusal:
             await self._cleanup_sd_card_file(printer_ip, access_code, remote_path, printer_model)
-            raise RuntimeError(
+            raise PreparationFailed(
                 f"Nozzle rack pick no longer fits the printer: {rack.refusal}. "
                 "Choose another rack position and send the print again."
             )
         return rack
+
+    @staticmethod
+    async def _clear_remote_name(
+        transport,
+        storage: str,
+        *,
+        printer_ip: str,
+        access_code: str,
+        remote_path: str,
+        remote_filename: str,
+        ftp_timeout,
+        printer_model: str | None,
+    ) -> None:
+        """Remove a same-named file before the upload; a refused card delete is a typed upload failure.
+
+        Internal storage deletes by lookup and never raises (``delete_internal_by_name``).
+        """
+        if storage != "external":
+            await delete_internal_by_name(transport, remote_filename)
+            return
+        try:
+            await delete_file_async(
+                printer_ip,
+                access_code,
+                remote_path,
+                socket_timeout=ftp_timeout,
+                printer_model=printer_model,
+            )
+        except DispatchJobCancelled:
+            raise
+        except Exception as exc:
+            raise UploadFailed(f"Could not clear the previous copy on the printer before the upload: {exc}") from exc
 
     @staticmethod
     async def _cleanup_sd_card_file(
@@ -3991,35 +4388,68 @@ class BackgroundDispatchService:
         ``archive_print`` commits the row before the storage check and the
         pre-delete FTP call; a failure between them left it «printing» for a
         print that never started. Idempotent — only a still-printing row flips.
+        ⚠️ Never for a start that may be on the printer: only the printer's own
+        verdict ends an attempt whose start was published.
         """
-        if job.execution_archive_id is not None:
-            await self._mark_dispatch_archive_terminal(
-                job.execution_archive_id, "failed", str(exc) or exc.__class__.__name__
-            )
+        if job.execution_archive_id is None or (job.outcome or {}).get("uncertain"):
+            return
+        if _published(job) and not _ends_after_publish(exc):
+            return
+        await self._mark_dispatch_archive_terminal(
+            job.execution_archive_id,
+            "failed",
+            str(exc) or exc.__class__.__name__,
+            failure_reason=(job.outcome or {}).get("failure_code") or dispatch_failure_code(exc, stage=job.stage),
+        )
 
     @staticmethod
-    async def _mark_dispatch_archive_terminal(archive_id: int, status: str, error_message: str) -> None:
+    async def _end_own_transaction(db) -> None:
+        """Roll back only this runner's own uncommitted work, before a cleanup writes from another session.
+
+        A second session that writes while this one still holds SQLite's writer (or a
+        row lock on PostgreSQL) waits on its own caller for the whole busy timeout. The
+        ORM rows the rollback expires are not read again: every exit uses scalar ids.
+        """
+        try:
+            await db.rollback()
+        except Exception as exc:  # noqa: BLE001 - the cleanup that follows matters more
+            logger.debug("Dispatch runner rollback before cleanup failed: %s", exc)
+
+    @staticmethod
+    async def _mark_dispatch_archive_terminal(
+        archive_id: int | None, status: str, error_message: str, *, failure_reason: str | None = None
+    ) -> None:
         """Flip a dispatch-time archive to a terminal state on error.
 
         ``archive_print`` commits the row before the upload/start block runs,
         so a later FTP or start-print failure can leave the archive stuck in
         "printing". This writes a terminal ``status`` + ``error_message`` +
-        ``completed_at`` in a fresh session — only if the archive is still
-        in "printing", so we don't clobber an on_print_complete transition
-        that raced with us.
+        ``completed_at`` (+ the closed ``failure_reason``) in a fresh session —
+        a compare-and-set on the row still being "printing", so neither an
+        on_print_complete that raced with us nor a repeated cleanup writes twice.
+        The caller has ended its own transaction first (``_end_own_transaction``).
         """
         from datetime import datetime, timezone
 
         from backend.app.models.archive import PrintArchive
 
+        if archive_id is None:
+            return
+        values: dict[str, Any] = {
+            "status": status,
+            "error_message": error_message,
+            "completed_at": datetime.now(timezone.utc),
+        }
+        if failure_reason:
+            values["failure_reason"] = failure_reason
         try:
             async with async_session() as fdb:
-                archive = await fdb.get(PrintArchive, archive_id)
-                if archive is None or archive.status != "printing":
-                    return
-                archive.status = status
-                archive.error_message = error_message
-                archive.completed_at = datetime.now(timezone.utc)
+                await fdb.execute(
+                    update(PrintArchive)
+                    .where(PrintArchive.id == archive_id, PrintArchive.status == "printing")
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
                 await fdb.commit()
         except Exception as cleanup_err:
             logger.warning(
@@ -4065,7 +4495,7 @@ class BackgroundDispatchService:
 
         if BackgroundDispatchService._is_sliced_file(filename) or await sliced_by_content(filename, file_path):
             return
-        raise RuntimeError("Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
+        raise SourceRejected("Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
 
 
 background_dispatch = BackgroundDispatchService()

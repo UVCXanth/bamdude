@@ -241,6 +241,9 @@ class PrintQueueItemResponse(BaseModel):
     started_at: UTCDatetime
     completed_at: UTCDatetime
     error_message: str | None
+    # The closed class of a failed row (``utils/failure_reasons`` key, m208);
+    # ``error_message`` is its human detail. NULL on rows failed before m208.
+    error_code: str | None = None
     created_at: UTCDatetime
     batch_id: str | None = None
     # Whether this job owns a local copy of the bytes it prints (m173, spec §8).

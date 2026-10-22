@@ -152,6 +152,7 @@ async def test_printer_queue_marks_missing_file_failed_and_starts_next_item(
         started.append(item.id)
         item.status = "printing"
         await db.commit()
+        return True
 
     monkeypatch.setattr(scheduler, "_start_print", start)
     dispatched = await scheduler.check_queue()
@@ -159,8 +160,10 @@ async def test_printer_queue_marks_missing_file_failed_and_starts_next_item(
     await db_session.refresh(bad)
     await db_session.refresh(queue)
     assert bad.status == "failed" and bad.error_message
+    assert bad.error_code == "dispatchSourceUnavailable"
     assert bad.waiting_reason is None
     assert bad.gate_acknowledged is True
+    # Refused before any claim: no attempt was made, and the queue goes on.
     assert queue.status == "idle" and not queue.is_paused
     assert started == [good.id]
 
@@ -182,8 +185,10 @@ async def test_source_failure_after_claim_releases_only_its_attempt(db_session, 
     await db_session.refresh(item)
     await db_session.refresh(queue)
     assert item.status == "failed" and item.error_message and item.gate_acknowledged
+    assert item.error_code == "dispatchSourceUnavailable"
     assert item.waiting_reason_code is None
-    assert queue.status == "idle" and queue.current_item_id is None
+    # A claimed attempt that ended halts its printer's queue until Resume (post-rebuild D-R4).
+    assert queue.status == "error" and queue.current_item_id is None
     assert not await defer_claim(db_session, item_id=item.id, started_at=started, reason="source_timeout")
 
 
@@ -251,9 +256,11 @@ async def test_source_lost_between_scheduler_and_dispatch_does_not_leave_printin
     await db_session.refresh(item)
     await db_session.refresh(queue)
     assert item.status == "failed" and item.error_message
+    assert item.error_code == "dispatchSourceUnavailable"
     assert item.library_file_id == (None if archive else source.id)
     assert item.archive_id == (archive.id if archive else None)
-    assert queue.status == "idle" and queue.current_item_id is None
+    # The claimed attempt ended: the printer's queue waits for Resume (post-rebuild D-R4).
+    assert queue.status == "error" and queue.current_item_id is None
     mqtt._client.publish.assert_not_called()
 
 

@@ -14,8 +14,13 @@ firmware. Timeout also bumped 45 → 90 s as belt-and-braces.
 
 These tests use short `timeout=0.3` / `poll_interval=0.05` values to
 keep the suite fast while still exercising the full poll loop.
+
+A negative verdict FAILS the attempt with its closed class and halts the
+queue (post-rebuild D-R4): the start was published, so it is never put back to
+``pending`` to be sent a second time.
 """
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,11 +28,39 @@ import pytest
 from backend.app.services.print_scheduler import PrintScheduler
 
 
-def _make_status(state: str = "FINISH", subtask_id: str | None = None):
+def _make_status(state: str = "FINISH", subtask_id: str | None = None, gcode_file: str | None = None):
     status = MagicMock()
     status.state = state
     status.subtask_id = subtask_id
+    status.gcode_file = gcode_file
+    status.ams = []
     return status
+
+
+def _printing_row():
+    item = MagicMock()
+    item.status = "printing"
+    item.started_at = "claim-token"
+    item.archive_id = 77
+    db = AsyncMock()
+    db.get.return_value = item
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = db
+    ctx.__aexit__.return_value = False
+    return item, ctx
+
+
+@contextmanager
+def _verdict_spies():
+    """The two writers a negative verdict calls: the queue row's and the execution archive's."""
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+    from backend.app.services.print_scheduler import scheduler
+
+    with (
+        patch.object(scheduler, "_fail_attempt", AsyncMock(return_value=True)) as fail,
+        patch.object(BackgroundDispatchService, "_mark_dispatch_archive_terminal", AsyncMock()) as archive,
+    ):
+        yield fail, archive
 
 
 class TestWatchdogGating:
@@ -73,25 +106,16 @@ class TestWatchdogGating:
         """
         pre_state = "FINISH"
         pre_subtask = "sid-1"
-
-        mock_item = MagicMock()
-        mock_item.status = "printing"
-        mock_item.dispatch_attempts = 0
-        mock_db = AsyncMock()
-        mock_db.get.return_value = mock_item
-        mock_db.commit = AsyncMock()
-        session = MagicMock()
-        session.return_value.__aenter__.return_value = mock_db
-        session.return_value.__aexit__ = AsyncMock(return_value=None)
-
+        item, ctx = _printing_row()
         client = MagicMock()
 
         with (
             patch("backend.app.services.print_scheduler.printer_manager") as pm,
-            patch("backend.app.services.print_scheduler.async_session", session),
+            patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+            _verdict_spies() as (fail, archive),
         ):
-            # IDLE is NOT in the active-print allow-list → watchdog falls
-            # through to its revert path even though state != pre_state.
+            # IDLE is NOT in the active-print allow-list → the watchdog reaches
+            # its verdict even though state != pre_state.
             pm.get_status.return_value = _make_status(state="IDLE", subtask_id=pre_subtask)
             pm.get_client.return_value = client
 
@@ -105,9 +129,11 @@ class TestWatchdogGating:
                 poll_interval=0.05,
             )
 
-            # Revert path ran: queue item flipped back to 'pending'.
-            assert mock_item.status == "pending"
-            mock_db.commit.assert_called_once()
+            fail.assert_awaited_once()
+            assert fail.await_args.kwargs["code"] == "dispatchNoAcknowledgement"
+            assert fail.await_args.kwargs["claim_started_at"] == "claim-token"
+            archive.assert_awaited_once()
+            assert item.status == "printing"  # written by the addressed CAS, never by hand
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("active_state", ["PREPARE", "SLICING", "RUNNING", "PAUSE"])
@@ -159,29 +185,18 @@ class TestWatchdogGating:
             session.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_both_signals_unchanged_triggers_revert(self):
-        """Genuinely half-broken session (pre-fix behaviour preserved): both
-        signals unchanged across the full timeout → revert the queue item.
+    async def test_both_signals_unchanged_fails_the_attempt(self):
+        """Genuinely half-broken session: both signals unchanged across the full
+        timeout → the attempt fails as unacknowledged; nothing goes back to pending.
         """
         pre_state = "FINISH"
         pre_subtask = "sid-1"
-
-        mock_item = MagicMock()
-        mock_item.status = "printing"
-        mock_item.dispatch_attempts = 0
-
-        mock_db = AsyncMock()
-        mock_db.get.return_value = mock_item
-        mock_db.commit = AsyncMock()
-
-        # async_session() returns an async-context-manager yielding mock_db
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__.return_value = mock_db
-        mock_ctx.__aexit__.return_value = False
+        item, ctx = _printing_row()
 
         with (
             patch("backend.app.services.print_scheduler.printer_manager") as pm,
-            patch("backend.app.services.print_scheduler.async_session", return_value=mock_ctx),
+            patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+            _verdict_spies() as (fail, archive),
         ):
             pm.get_status.return_value = _make_status(state=pre_state, subtask_id=pre_subtask)
             pm.get_client.return_value = None
@@ -196,22 +211,52 @@ class TestWatchdogGating:
                 poll_interval=0.05,
             )
 
-            # The queue item was flipped back to 'pending' and started_at cleared.
-            assert mock_item.status == "pending"
-            assert mock_item.started_at is None
-            mock_db.commit.assert_called_once()
+            fail.assert_awaited_once()
+            assert fail.await_args.kwargs["code"] == "dispatchNoAcknowledgement"
+            assert archive.await_args.kwargs["failure_reason"] == "dispatchNoAcknowledgement"
+            assert archive.await_args.args[:2] == (77, "failed")
+            # The claim token is the attempt's address, not something to clear.
+            assert item.started_at == "claim-token"
 
     @pytest.mark.asyncio
-    async def test_swap_fired_never_reverts(self):
-        """swap_start_fired=True keeps item in 'printing' even on full timeout
-        — reverting would re-fire swap_mode_start on the next dispatch and cause
-        a double physical table swap. Pre-existing BamDude guard.
-        """
-        mock_db_get = AsyncMock()
+    async def test_a_changed_file_fails_as_accepted_not_started(self):
+        """The printer's file changed without Phase A (a slow parse, #1150): it may
+        still start, so the class says the file arrived."""
+        item, ctx = _printing_row()
 
         with (
             patch("backend.app.services.print_scheduler.printer_manager") as pm,
-            patch("backend.app.services.print_scheduler.async_session") as session,
+            patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+            _verdict_spies() as (fail, _archive),
+        ):
+            pm.get_status.return_value = _make_status(state="FINISH", subtask_id="sid", gcode_file="new.3mf")
+            pm.get_client.return_value = None
+
+            await PrintScheduler._watchdog_print_start(
+                queue_item_id=1,
+                printer_id=1,
+                pre_state="FINISH",
+                pre_subtask_id="sid",
+                swap_start_fired=False,
+                timeout=0.15,
+                poll_interval=0.05,
+                pre_gcode_file="old.3mf",
+            )
+
+            assert fail.await_args.kwargs["code"] == "dispatchAcceptedNotStarted"
+
+    @pytest.mark.asyncio
+    async def test_swap_fired_fails_with_a_plate_warning_and_is_never_resent(self):
+        """swap_start_fired=True: the table already moved. The attempt fails like any
+        other negative verdict — never back to pending, where a re-dispatch would fire
+        swap_mode_start a second time — and the operator is told to check the plate.
+        """
+        item, ctx = _printing_row()
+
+        with (
+            patch("backend.app.services.print_scheduler.printer_manager") as pm,
+            patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+            _verdict_spies() as (fail, _archive),
         ):
             pm.get_status.return_value = _make_status(state="FINISH", subtask_id="sid")
             pm.get_client.return_value = None
@@ -226,9 +271,9 @@ class TestWatchdogGating:
                 poll_interval=0.05,
             )
 
-            # Swap guard: must NOT open a DB session to revert.
-            session.assert_not_called()
-            mock_db_get.assert_not_called()
+            fail.assert_awaited_once()
+            assert "swap start macro ran" in fail.await_args.kwargs["message"]
+            assert item.status == "printing"
 
     @pytest.mark.asyncio
     async def test_no_subtask_id_baseline_falls_back_to_state_only(self):
@@ -236,21 +281,12 @@ class TestWatchdogGating:
         new guard must not short-circuit on a None→"any" transition. Only
         state-change should count in that case.
         """
-        mock_item = MagicMock()
-        mock_item.status = "printing"
-        mock_item.dispatch_attempts = 0
-
-        mock_db = AsyncMock()
-        mock_db.get.return_value = mock_item
-        mock_db.commit = AsyncMock()
-
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__.return_value = mock_db
-        mock_ctx.__aexit__.return_value = False
+        item, ctx = _printing_row()
 
         with (
             patch("backend.app.services.print_scheduler.printer_manager") as pm,
-            patch("backend.app.services.print_scheduler.async_session", return_value=mock_ctx),
+            patch("backend.app.services.print_scheduler.async_session", return_value=ctx),
+            _verdict_spies() as (fail, _archive),
         ):
             # state unchanged; subtask transitions None → "first-ever-id" — MUST
             # NOT be mistaken as advance since pre_subtask_id was None.
@@ -267,6 +303,6 @@ class TestWatchdogGating:
                 poll_interval=0.05,
             )
 
-            # Revert should have fired — state never changed, None pre_subtask
+            # The verdict fired — state never changed, None pre_subtask
             # disables the subtask-advance guard.
-            assert mock_item.status == "pending"
+            fail.assert_awaited_once()

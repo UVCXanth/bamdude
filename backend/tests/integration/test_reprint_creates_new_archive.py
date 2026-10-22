@@ -244,7 +244,7 @@ async def run_reprint(
             new_callable=AsyncMock,
             return_value=(False, 0, 0, 30),
         ),
-        patch.object(service, "_verify_print_response", new_callable=AsyncMock, return_value=True),
+        patch.object(service, "_await_print_response", new_callable=AsyncMock, return_value="accepted"),
         patch.object(service, "_set_active_message", new_callable=AsyncMock),
         patch.object(service, "_set_active_upload_progress", new_callable=AsyncMock),
         patch.object(service, "_run_swap_macro_if_needed", new_callable=AsyncMock),

@@ -80,6 +80,16 @@ class PrintArchive(Base):
     # print failed. Short causes still live in ``failure_reason``;
     # this is the verbose twin that operators see on hover.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How far OUR dispatch of this execution archive got (m207): ``prepared`` at
+    # its insert, ``sending`` committed immediately before the start command,
+    # ``sent`` once the command was queued for publish, ``accepted`` once the
+    # printer was seen running it. NULL is unknown — every archive from before
+    # m207, every external print, and nothing to be inferred from a name or an
+    # age. ``dispatch_boot_id`` names the process (farm startup guard boot) that
+    # wrote it, so a later process can tell an attempt whose owner has ended.
+    # Written only by ``services/dispatch_phase.py``, always by compare-and-set.
+    dispatch_phase: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    dispatch_boot_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))

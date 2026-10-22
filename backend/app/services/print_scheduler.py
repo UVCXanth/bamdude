@@ -5,13 +5,15 @@ import json
 import logging
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from backend.app.core.database import async_session
 from backend.app.core.tasks import spawn_background_task
@@ -54,6 +56,7 @@ from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
+from backend.app.utils import failure_reasons
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
@@ -71,14 +74,23 @@ logger = logging.getLogger(__name__)
 # duplicated rather than imported to avoid coupling the two services.
 _ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
 
-# Max times the start-watchdog may revert a 'printing' row back to 'pending'
-# before failing it (#2555). A printer that accepts the file but never starts
-# would otherwise re-upload + re-wait forever, and each lap also eats an upload
-# slot the rest of the farm is queueing for. 3 clears the transient causes the
-# watchdog already recovers from — a lost MQTT publish on a half-broken session
-# is fixed by the force-reconnect on the very next attempt — while bounding the
-# loop for a genuinely wedged printer.
+# Max dispatch attempts one row may spend before it fails instead of claiming
+# again (#2555). An attempt is spent in the final claim's own commit, so a
+# process that dies mid-dispatch has spent it too and a crash loop is bounded; a
+# typed refusal before anything was published gives its own one back, and an
+# operator's Retry opens a new budget (post-rebuild D-R5). The watchdog no longer
+# reverts a sent start to pending at all — its negative verdict fails the row.
 DISPATCH_MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """The final claim's answer as plain values (D-R5): never an ORM row of the claim's own session."""
+
+    claimed: bool
+    reason: str | None = None
+    started_at: datetime | None = None
+
 
 # Kept as a module-level name because ``auto_queue_eligibility`` imports it from
 # here and the two must never diverge. The table itself moved to
@@ -702,7 +714,7 @@ class PrintScheduler:
                 # silently downgraded to external-spool and prints against an
                 # empty feed).
                 try:
-                    guard = await preflight_item(db, item, printer_id, cache=requirements_cache)
+                    await preflight_item(db, item, printer_id, cache=requirements_cache)
                 except RoutingDeferred as exc:
                     if exc.reason in SOURCE_FAILURES:
                         await self._fail_source_item(db, item, exc.reason)
@@ -710,10 +722,10 @@ class PrintScheduler:
                     set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
                     await db.commit()
                     continue
-                if guard:
-                    item.ams_mapping = json.dumps(guard.plan.mapping)
-                    item.use_ams = guard.plan.use_ams
-                    item.plate_id = guard.plan.resolved_plate_id
+                # ⚠️ The plan is NOT written onto ``item`` here: this is the tick's
+                # session, and the final claim commits the plan in a session of its
+                # own (post-rebuild D-R5). ``_start_print`` asks preflight again and
+                # hands the plan to that claim as plain values.
 
                 # Print takes priority — stop a cycle WE armed, now that this
                 # item is definitely going out.
@@ -758,8 +770,7 @@ class PrintScheduler:
                 # to "printing" + the stagger slot is pre-registered. This lets
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
-                await self._start_print(db, item, requirements_cache=requirements_cache)
-                if item.status != "printing":
+                if not await self._start_print(db, item, requirements_cache=requirements_cache):
                     continue
                 dispatched = True
                 mark_busy(printer_id, "dispatched")
@@ -2380,6 +2391,7 @@ class PrintScheduler:
 
         item.status = "failed"
         item.error_message = routing_detail(reason)["message"]
+        item.error_code = failure_reasons.DISPATCH_SOURCE_UNAVAILABLE
         # No physical print failed; this must not trip require_previous_success.
         item.gate_acknowledged = True
         item.completed_at = datetime.now(timezone.utc)
@@ -2390,12 +2402,18 @@ class PrintScheduler:
         await db.commit()
         logger.warning("Queue item %s failed before dispatch: %s", item.id, reason)
 
-    async def _fail_item(self, db: AsyncSession, item: PrintQueueItem, error_message: str) -> None:
-        """Mark item as failed and set queue to error state."""
+    async def _fail_item(self, db: AsyncSession, item: PrintQueueItem, error_message: str, code: str) -> None:
+        """Mark a row that never reached a claim as failed with its closed class, and halt its queue.
+
+        Only for the refusals ``_start_print`` decides before the claim, on the tick's own
+        row. An attempt that was claimed ends through :meth:`_fail_attempt`, which is
+        addressed to that attempt's claim token.
+        """
         from backend.app.services.queue_counters import set_queue_error, update_queue_counters
 
         item.status = "failed"
         item.error_message = error_message
+        item.error_code = code
         item.completed_at = datetime.now(timezone.utc)
         await set_queue_error(db, item.queue_id, failed_item_id=item.id)
         await update_queue_counters(db, item.queue_id)
@@ -2418,43 +2436,141 @@ class PrintScheduler:
         await update_queue_counters(db, item.queue_id)
         await db.commit()
 
-    async def _defer_item_if_printer_busy(self, db: AsyncSession, item: PrintQueueItem, printer_id: int) -> bool:
-        """Busy-refusal is a deferral, not a failure (#2598).
+    async def _claim_for_dispatch(
+        self, *, item_id: int, queue_id: int, printer_id: int, plan_fields: dict[str, Any]
+    ) -> "ClaimResult":
+        """The final ``pending → printing`` claim, in a short session of its own (post-rebuild D-R5).
 
-        The target printer's state can flip from idle to active in the window
-        between check_queue's idle-gate and the actual start command (the FTP
-        upload takes seconds); ``start_print`` then refuses to publish onto the
-        now-busy printer. Failing the item would be wrong — the printer is fine,
-        it's simply occupied — so revert to ``pending`` and reset the queue so a
-        later tick re-dispatches once the printer is genuinely idle. Returns True
-        if the item was deferred (caller must then return without failing it).
+        Everything the claim depends on is read again here, under the lane's lock:
+        the HA interlock, the queue's occupancy, the farm's admission, the row still
+        being the first runnable one, and the dispatch budget. The routing plan and the
+        spent attempt are written in the SAME compare-and-set commit as the claim, so a
+        crash after it has spent the attempt and nothing can claim without the plan. A
+        refusal rolls back only this session; the tick that asked keeps every row it
+        read. The answer is plain values, never a row of another session.
         """
-        from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
+        from backend.app.services.ha_sensor_manager import ha_sensor_manager
+        from backend.app.services.queue_counters import set_queue_error, set_queue_printing, update_queue_counters
 
-        state = getattr(printer_manager.get_status(printer_id), "state", None)
-        if state not in _ACTIVE_PRINT_STATES:
+        now = datetime.now(timezone.utc)
+        async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            # Recheck at the final claim: the sensor may have alerted while
+            # archive/routing preparation was running outside the queue lock.
+            if printer_id in await ha_sensor_manager.blocked_printers(cdb):
+                logger.info("Queue item %s: HA sensor alert on printer %s", item_id, printer_id)
+                return ClaimResult(False, "ha_interlock")
+            try:
+                require_scheduler_claim(await read_queue_occupancy(cdb, queue_id, for_update=True))
+            except PrinterOccupancyConflict as exc:
+                logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
+                return ClaimResult(False, exc.code)
+            if not farm_startup_guard.allowed():
+                return ClaimResult(False, "farm_recovery_hold")
+            # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
+            cooling = self._cooling_item_ids() - {item_id}
+            first_runnable = (
+                select(PrintQueueItem.id)
+                .where(PrintQueueItem.queue_id == queue_id)
+                .where(PrintQueueItem.status == "pending")
+                .where(PrintQueueItem.manual_start.is_(False))
+                .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
+            )
+            if cooling:
+                first_runnable = first_runnable.where(PrintQueueItem.id.notin_(cooling))
+            first_runnable_id = await cdb.scalar(
+                first_runnable.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
+            )
+            if first_runnable_id != item_id:
+                logger.info("Queue item %s: no longer first runnable pending item — skipping", item_id)
+                return ClaimResult(False, "not_first_runnable")
+            spent = await cdb.scalar(select(PrintQueueItem.dispatch_attempts).where(PrintQueueItem.id == item_id))
+            if (spent or 0) >= DISPATCH_MAX_ATTEMPTS:
+                # The cap is asked BEFORE a new claim: a row whose attempts a crash
+                # loop spent fails here, visibly, instead of uploading again.
+                result = await cdb.execute(
+                    update(PrintQueueItem)
+                    .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
+                    .values(
+                        status="failed",
+                        error_code=failure_reasons.DISPATCH_INTERNAL_ERROR,
+                        error_message=(
+                            f"Dispatch budget exhausted after {spent} attempts. Check the printer, then Retry "
+                            "the job and resume the queue."
+                        ),
+                        completed_at=now,
+                        gate_acknowledged=True,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount:
+                    await set_queue_error(cdb, queue_id, failed_item_id=item_id)
+                    await update_queue_counters(cdb, queue_id)
+                    await cdb.commit()
+                logger.warning("Queue item %s: dispatch budget exhausted (%s attempts)", item_id, spent)
+                return ClaimResult(False, "budget_exhausted")
+            cas_result = await cdb.execute(
+                update(PrintQueueItem)
+                .where(PrintQueueItem.id == item_id)
+                .where(PrintQueueItem.status == "pending")
+                .values(
+                    status="printing",
+                    started_at=now,
+                    waiting_reason=None,
+                    waiting_reason_code=None,
+                    waiting_reason_checked_at=None,
+                    gate_acknowledged=False,
+                    dispatch_attempts=func.coalesce(PrintQueueItem.dispatch_attempts, 0) + 1,
+                    **plan_fields,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if cas_result.rowcount == 0:
+                logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item_id)
+                return ClaimResult(False, "not_pending")
+            await set_queue_printing(cdb, queue_id, item_id)
+            await update_queue_counters(cdb, queue_id)
+            await cdb.commit()
+        return ClaimResult(True, started_at=now)
+
+    async def _fail_attempt(self, db: AsyncSession, *, item_id: int, claim_started_at, message: str, code: str) -> bool:
+        """End THIS claimed attempt as failed with its class, and halt the printer's queue until Resume.
+
+        Addressed to the attempt's claim token: a row the operator cancelled, a later
+        attempt, or a completion that already closed it is left exactly as it is. The
+        execution archive is closed by the dispatcher; this is the queue's half.
+        """
+        from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+
+        if claim_started_at is None:
             return False
-        logger.info(
-            "Queue item %s: printer %s became busy (state=%s) before the start command landed — "
-            "deferring, reverting item to pending (#2598)",
-            item.id,
-            printer_id,
-            state,
+        result = await db.execute(
+            update(PrintQueueItem)
+            .where(
+                PrintQueueItem.id == item_id,
+                PrintQueueItem.status == "printing",
+                PrintQueueItem.started_at == claim_started_at,
+            )
+            .values(status="failed", error_message=message, error_code=code, completed_at=datetime.now(timezone.utc))
+            .execution_options(synchronize_session=False)
         )
-        item.status = "pending"
-        item.started_at = None
-        item.error_message = None
-        await set_queue_idle(db, item.queue_id)
-        await update_queue_counters(db, item.queue_id)
+        if not result.rowcount:
+            await db.rollback()
+            return False
+        queue_id = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == item_id))
+        await set_queue_error(db, queue_id, failed_item_id=item_id, expected_item_id=item_id)
+        await update_queue_counters(db, queue_id)
         await db.commit()
         return True
 
-    async def _start_print(self, db: AsyncSession, item: PrintQueueItem, *, requirements_cache=None):
+    async def _start_print(self, db: AsyncSession, item: PrintQueueItem, *, requirements_cache=None) -> bool:
         """Upload file and start print for a queue item.
 
         Supports two sources:
         - archive_id: Print from an existing archive
         - library_file_id: Print from a library file (file manager)
+
+        True once this row was claimed and its dispatch spawned; False for every
+        refusal, the claim's included — the caller never reads the row to find out.
         """
         item_id = item.id
         logger.info("Starting queue item %s", item_id)
@@ -2463,24 +2579,24 @@ class PrintScheduler:
         result = await db.execute(select(Printer).where(Printer.id == item.queue_id))
         printer = result.scalar_one_or_none()
         if not printer:
-            await self._fail_item(db, item, "Printer not found")
+            await self._fail_item(db, item, "Printer not found", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
             logger.error("Queue item %s: Printer %s not found", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
-            return
+            return False
 
         # Check printer is connected
         if not printer_manager.is_connected(item.queue_id):
-            await self._fail_item(db, item, "Printer not connected")
+            await self._fail_item(db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
-            return
+            return False
 
         # re-Connect MQTT if stalled
         if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-            await self._fail_item(db, item, "Printer not connected")
+            await self._fail_item(db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
-            return
+            return False
 
         # Determine source: the captured copy when this job has one (m173), else
         # its archive or library original. ``file_path`` is kept so we can still
@@ -2502,7 +2618,7 @@ class PrintScheduler:
             if not archive and descriptor is None:
                 await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Archive %s not found", item.id, item.archive_id)
-                return
+                return False
 
         elif item.library_file_id:
             result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
@@ -2510,13 +2626,13 @@ class PrintScheduler:
             if not library_file and descriptor is None:
                 await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
-                return
+                return False
 
         elif descriptor is None:
             # Neither a snapshot nor an archive nor a library file
             await self._fail_source_item(db, item, "source_unreadable")
             logger.error("Queue item %s: No archive_id or library_file_id specified", item.id)
-            return
+            return False
 
         file_path: Path | None = resolve_source_path(archive, library_file, descriptor=descriptor)
         if file_path is None:
@@ -2524,7 +2640,7 @@ class PrintScheduler:
             # same refusal the missing-row branches above give.
             await self._fail_source_item(db, item, "source_unreadable")
             logger.error("Queue item %s: source row carries no file", item.id)
-            return
+            return False
 
         # Check file exists on disk (fast fail before any dispatch work) — and,
         # for a job the snapshot has to name, that the snapshot can name it. Both
@@ -2541,21 +2657,29 @@ class PrintScheduler:
             else:
                 set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
                 await db.commit()
-            return
+            return False
 
         try:
             guard = await preflight_item(db, item, printer.id, cache=requirements_cache)
         except RoutingDeferred as exc:
             if exc.reason in SOURCE_FAILURES:
                 await self._fail_source_item(db, item, exc.reason)
-                return
+                return False
             set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
             await db.commit()
-            return
-        if guard:
-            item.ams_mapping = json.dumps(guard.plan.mapping)
-            item.use_ams = guard.plan.use_ams
-            item.plate_id = guard.plan.resolved_plate_id
+            return False
+        # The plan travels as plain values into the claim's own commit (D-R5): written on
+        # this tick session it would be a dirty row the claim's writer waits behind, or
+        # work a rollback of the tick throws away.
+        plan_fields: dict[str, Any] = (
+            {
+                "ams_mapping": json.dumps(guard.plan.mapping),
+                "use_ams": guard.plan.use_ams,
+                "plate_id": guard.plan.resolved_plate_id,
+            }
+            if guard
+            else {}
+        )
 
         # Nozzle-diameter mismatch guard (upstream #1899). A file sliced for one
         # nozzle size dispatched to a printer with a different nozzle installed is
@@ -2589,7 +2713,7 @@ class PrintScheduler:
             installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
             mismatch_msg = _nozzle_mismatch_message(sliced_nozzle, installed)
             if mismatch_msg:
-                await self._fail_item(db, item, mismatch_msg)
+                await self._fail_item(db, item, mismatch_msg, failure_reasons.DISPATCH_START_REFUSED)
                 logger.warning("Queue item %s: nozzle mismatch — %s", item.id, mismatch_msg)
                 await notification_service.on_queue_job_failed(
                     job_name=archive.filename.replace(".gcode.3mf", "").replace(".3mf", ""),
@@ -2599,92 +2723,30 @@ class PrintScheduler:
                     db=db,
                 )
                 await self._power_off_if_needed(db, item)
-                return
+                return False
 
         # Flip item to "printing" BEFORE dispatch starts so that a crash
-        # mid-FTP doesn't leave the item re-dispatchable. Backed by
-        # set_queue_printing to keep the printer_queues counters in lockstep.
-        from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
-
-        # Atomic pending→printing flip (compare-and-set). `item` comes from a check_queue
-        # snapshot that may be stale: a /cancel committed in another session between the
-        # snapshot and here would be silently clobbered by a blind status write, and the
-        # cancelled print would dispatch anyway (#1853). Gate the flip on the row still
-        # being 'pending'; if it moved on (cancelled / deleted / already picked up), bail
-        # before enqueuing any dispatch work.
-        #
-        # The same queue-scope lock is used by ``enqueue_position=next``. Its
-        # final check sees the current first runnable row, so an older scheduler
-        # snapshot cannot steal a start ahead of a next job that committed while
-        # its source/AMS work was in progress. Scheduled/manual rows remain
-        # deliberately ignorable here: the regular scheduler can progress past
-        # them, and this barrier must preserve that existing behavior.
-        now = datetime.now(timezone.utc)
-        async with queue_claim_scope(db, item.queue_id):
-            from backend.app.services.ha_sensor_manager import ha_sensor_manager
-
-            # Recheck at the final claim: the sensor may have alerted while
-            # archive/routing preparation was running outside the queue lock.
-            ha_interlocks = await ha_sensor_manager.blocked_printers(db)
-            if printer.id in ha_interlocks:
-                await db.rollback()
-                logger.info("Queue item %s: HA sensor alert on printer %s", item.id, printer.id)
-                return
-            try:
-                require_scheduler_claim(await read_queue_occupancy(db, item.queue_id, for_update=True))
-            except PrinterOccupancyConflict as exc:
-                await db.rollback()
-                logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
-                return
-            if not farm_startup_guard.allowed():
-                await db.rollback()
-                return
-            # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
-            cooling = self._cooling_item_ids() - {item.id}
-            first_runnable = (
-                select(PrintQueueItem.id)
-                .where(PrintQueueItem.queue_id == item.queue_id)
-                .where(PrintQueueItem.status == "pending")
-                .where(PrintQueueItem.manual_start.is_(False))
-                .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
-            )
-            if cooling:
-                first_runnable = first_runnable.where(PrintQueueItem.id.notin_(cooling))
-            first_runnable_id = await db.scalar(
-                first_runnable.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
-            )
-            if first_runnable_id != item.id:
-                await db.rollback()
-                logger.info("Queue item %s: no longer first runnable pending item — skipping", item.id)
-                return
-            cas_result = await db.execute(
-                update(PrintQueueItem)
-                .where(PrintQueueItem.id == item.id)
-                .where(PrintQueueItem.status == "pending")
-                .values(
-                    status="printing",
-                    started_at=now,
-                    waiting_reason=None,
-                    waiting_reason_code=None,
-                    waiting_reason_checked_at=None,
-                )
-            )
-            if cas_result.rowcount == 0:
-                await db.rollback()
-                logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
-                return
-            item.status = "printing"
-            item.gate_acknowledged = False
-            item.started_at = now
-            await set_queue_printing(db, item.queue_id, item.id)
-            await update_queue_counters(db, item.queue_id)
+        # mid-FTP doesn't leave the item re-dispatchable — in a short session of
+        # its own, so a refusal there expires nothing the tick still reads
+        # (post-rebuild D-R5). The tick's own pending work is committed first:
+        # a claim that took SQLite's writer behind it would wait on itself.
+        if db.in_transaction():
             await db.commit()
+        claim = await self._claim_for_dispatch(
+            item_id=item_id, queue_id=item.queue_id, printer_id=printer.id, plan_fields=plan_fields
+        )
+        if not claim.claimed:
+            return False
+        # The tick's copy follows the claim without becoming a write of its own.
+        set_committed_value(item, "status", "printing")
+        set_committed_value(item, "started_at", claim.started_at)
 
         # Parse per-item options into the shape background_dispatch expects.
         ams_mapping: list[int] | None = None
-        if item.ams_mapping:
+        raw_mapping = plan_fields.get("ams_mapping", item.ams_mapping)
+        if raw_mapping:
             try:
-                ams_mapping = json.loads(item.ams_mapping)
+                ams_mapping = json.loads(raw_mapping)
             except json.JSONDecodeError:
                 logger.warning("Queue item %s: Invalid AMS mapping JSON, ignoring", item.id)
 
@@ -2698,7 +2760,7 @@ class PrintScheduler:
         options: dict[str, Any] = {
             "mesh_mode_fast_check": item.mesh_mode_fast_check,
             "ams_mapping": ams_mapping,
-            "plate_id": item.plate_id,
+            "plate_id": plan_fields.get("plate_id", item.plate_id),
             # Tri-state calibration → mode string (off/auto/on) so an 'auto'
             # override reaches start_print. NULL *_mode derives from the legacy
             # bool, so existing items emit 'on'/'off' — byte-identical downstream
@@ -2716,7 +2778,7 @@ class PrintScheduler:
             # re-checks it against the card, which may have left the machine
             # since this item was queued.
             "timelapse_storage": item.timelapse_storage,
-            "use_ams": item.use_ams,
+            "use_ams": plan_fields.get("use_ams", item.use_ams),
             "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
             # H2C rack-swap nozzle pick (#1780) — opaque JSON string captured
             # from Bambu Studio's project_file on VP intake; the MQTT layer
@@ -2774,9 +2836,9 @@ class PrintScheduler:
             dispatch_source_name = snapshot_name
         else:
             # Should have been caught above, but belt-and-braces.
-            await self._fail_item(db, item, "No source file specified")
+            await self._fail_item(db, item, "No source file specified", failure_reasons.DISPATCH_SOURCE_UNAVAILABLE)
             await self._power_off_if_needed(db, item)
-            return
+            return False
 
         job_name_short = dispatch_source_name.replace(".gcode.3mf", "").replace(".3mf", "")
 
@@ -2810,9 +2872,11 @@ class PrintScheduler:
                 project_line_id=item.project_line_id,
                 job_name_short=job_name_short,
                 swap_events=swap_events,
+                claim_started_at=claim.started_at,
             ),
             name=f"queue-dispatch-{item.id}",
         )
+        return True
 
     async def _dispatch_and_finalize(
         self,
@@ -2830,6 +2894,7 @@ class PrintScheduler:
         project_line_id: int | None,
         job_name_short: str,
         swap_events: list[str],
+        claim_started_at=None,
     ) -> None:
         """Run the full dispatch pipeline for a queue item as a spawned task.
 
@@ -2874,14 +2939,18 @@ class PrintScheduler:
                 )
             except Exception as e:  # pragma: no cover — belt-and-braces
                 logger.exception("Queue item %s: run_from_queue_item raised: %s", queue_item_id, e)
-                item = await db.get(PrintQueueItem, queue_item_id)
-                if item:
-                    # Busy-refusal (#2598) — the printer became active mid-dispatch;
-                    # defer to pending instead of failing the item.
-                    if await self._defer_item_if_printer_busy(db, item, printer_id):
-                        return
-                    await self._fail_item(db, item, f"Dispatch error: {e}")
-                    await self._power_off_if_needed(db, item)
+                # Nothing typed came back, so nothing proves the start was refused:
+                # never a pending row on a guess. The dispatcher closed its archive.
+                if await self._fail_attempt(
+                    db,
+                    item_id=queue_item_id,
+                    claim_started_at=claim_started_at,
+                    message=f"Dispatch error: {e}",
+                    code=failure_reasons.DISPATCH_INTERNAL_ERROR,
+                ):
+                    item = await db.get(PrintQueueItem, queue_item_id)
+                    if item is not None:
+                        await self._power_off_if_needed(db, item)
                 return
 
             if outcome.get("deferred"):
@@ -2897,6 +2966,10 @@ class PrintScheduler:
                     source_library_file_id=outcome.get("source_library_file_id"),
                     restore_source=True,
                     disposition=outcome.get("disposition"),
+                    execution_archive_id=outcome.get("execution_archive_id"),
+                    swap_start_effect=outcome.get("swap_start_effect"),
+                    published=outcome.get("send_fact") in ("sent", "accepted"),
+                    failure_code=outcome.get("failure_code"),
                 )
                 await db.commit()
                 if restored:
@@ -2906,6 +2979,17 @@ class PrintScheduler:
                         # Only after THIS attempt's CAS sent the job back: a stale refusal never cools a newer one.
                         self._capture_cooldowns[queue_item_id] = time.monotonic() + CAPTURE_RETRY_COOLDOWN_SECONDS
                     await self.release_prepared_dispatch(printer_id)
+                return
+
+            if outcome.get("uncertain"):
+                # The start may be running on the printer and nothing decided what it
+                # became: no failure, no pending, no notification — the row keeps its
+                # claim for the print's own completion or the operator's recovery.
+                logger.error(
+                    "Queue item %s: dispatch outcome unknown after the start was sent (%s); leaving it printing",
+                    queue_item_id,
+                    outcome.get("error"),
+                )
                 return
 
             if not outcome.get("success"):
@@ -2919,19 +3003,25 @@ class PrintScheduler:
                         await self._power_off_if_needed(db, item)
                     return
                 err = outcome.get("error") or "Dispatch failed"
-                # Busy-refusal (#2598) — defer to pending instead of failing +
-                # firing the "queue job failed" notification.
-                if item and await self._defer_item_if_printer_busy(db, item, printer_id):
+                # ⚠️ No busy check here (#2598 moved): a refusal before publish
+                # arrives typed, through ``deferred``. A printer seen busy NOW may
+                # be busy with this very job, and pending would print it twice.
+                if not await self._fail_attempt(
+                    db,
+                    item_id=queue_item_id,
+                    claim_started_at=claim_started_at,
+                    message=err,
+                    code=outcome.get("failure_code") or failure_reasons.DISPATCH_INTERNAL_ERROR,
+                ):
                     return
-                if item:
-                    await self._fail_item(db, item, err)
                 await notification_service.on_queue_job_failed(
                     job_name=job_name_short,
                     printer_id=printer_id,
                     printer_name=printer_name,
-                    reason=err,
+                    reason=failure_reasons.dispatch_reason_text(outcome.get("failure_code"), err),
                     db=db,
                 )
+                item = await db.get(PrintQueueItem, queue_item_id)
                 if item:
                     await self._power_off_if_needed(db, item)
                 return
@@ -3016,7 +3106,7 @@ class PrintScheduler:
         poll_interval: float = 3.0,
         pre_gcode_file: str | None = None,
     ) -> None:
-        """Revert a queue item if the printer never acknowledges the start command.
+        """Fail a queue item whose printer never acknowledges the start command.
 
         Optimistically we mark the queue item as "printing" right after the MQTT
         project_file publish succeeds locally. If the printer drops/ignores the
@@ -3041,12 +3131,13 @@ class PrintScheduler:
         genuinely half-broken sessions still revert + force-reconnect as
         before, just a bit later.
 
-        ``swap_start_fired`` is the BamDude-specific guard: when a swap_mode_start
-        macro already ran successfully on the real printer before start_print,
-        a revert + re-dispatch would re-fire it and cause a double physical
-        table swap. In that case we keep the item in "printing", log a louder
-        warning telling the operator to intervene manually, and still
-        force-reconnect the MQTT session so subsequent commands land.
+        A negative verdict never puts the row back to pending (post-rebuild D-R4):
+        it fails with its closed class — ``dispatchAcceptedNotStarted`` when the
+        printer's file changed, else ``dispatchNoAcknowledgement`` — and halts the
+        queue until Resume, so a start that may still be on its way is never sent
+        twice. ``swap_start_fired`` adds the plate warning to that message: our
+        swap start already moved the table. The MQTT session is still
+        force-reconnected so subsequent commands land.
         """
         deadline = time.monotonic() + timeout
         last_status = None  # Captured for #1150 gcode_file discriminator on timeout
@@ -3094,91 +3185,76 @@ class PrintScheduler:
                 ", ".join(str(i) for i in drying_ams_ids),
             )
 
+        # ⚠️ The verdict ENDS the attempt (owner, post-rebuild D-R4): the start was
+        # published, so it is never sent again by itself — not even when nothing seems
+        # to have arrived. The row fails with its class and the queue halts until
+        # Resume; the operator checks the printer and presses Retry. No attempt is
+        # spent here: the claim already spent it.
+        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
+        file_received = current_gcode_file is not None and current_gcode_file != pre_gcode_file
+        code = (
+            failure_reasons.DISPATCH_ACCEPTED_NOT_STARTED
+            if file_received
+            else failure_reasons.DISPATCH_NO_ACKNOWLEDGEMENT
+        )
+        if drying_ams_ids:
+            # ⚠️ The generic message below sent the reporter looking at the SD card
+            # while the actual obstacle — AMS units in a drying cycle — was on screen
+            # the whole time. Name what was observed and let the operator judge it:
+            # we do not stop the cycle ourselves, because on this hardware drying can
+            # run alongside a print and stopping it may not be the fix. Both
+            # possibilities are named rather than one asserted.
+            units = ", ".join(f"AMS {i}" for i in drying_ams_ids)
+            message = (
+                f"The printer did not start the print. {units} "
+                f"{'was' if len(drying_ams_ids) == 1 else 'were'} drying throughout - some printers refuse to "
+                f"begin a print while an AMS is in a drying cycle, and an AMS drying without its "
+                f"external power supply can also leave too little power for the start-of-print calibration. "
+                f"Stop the drying, or connect the AMS power supply, then Retry the job."
+            )
+        elif file_received:
+            message = (
+                "The printer received the file but had not started printing when the wait ended — it may still "
+                "be reading it. Check the printer before you Retry the job."
+            )
+        else:
+            message = (
+                "The printer did not respond to the print command. Check its screen for a prompt or error, "
+                "confirm its SD card is readable, then Retry the job."
+            )
         if swap_start_fired:
-            logger.error(
-                "Queue item %s: printer %d did not respond to print command within "
-                "%.0fs (state still %s), BUT swap_mode_start already fired — NOT "
-                "reverting to pending to avoid double table swap. Operator intervention "
-                "required (#967 + swap-mode)",
+            message += " The swap start macro ran before the print command, so check the plate before a Retry."
+        scheduler._release_dispatch_hold(printer_id)
+        async with async_session() as db:
+            item = await db.get(PrintQueueItem, queue_item_id)
+            if not item or item.status != "printing":
+                return  # Already moved on (completed/cancelled/etc.)
+            claim_started_at, execution_archive_id = item.started_at, item.archive_id
+            failed = await scheduler._fail_attempt(
+                db, item_id=queue_item_id, claim_started_at=claim_started_at, message=message, code=code
+            )
+        if failed:
+            from backend.app.services.background_dispatch import BackgroundDispatchService
+
+            await BackgroundDispatchService._mark_dispatch_archive_terminal(
+                execution_archive_id, "failed", message, failure_reason=code
+            )
+            logger.warning(
+                "Queue item %s: printer %d did not start within %.0fs (state still %s) — failed as %s (#967/#2555)",
                 queue_item_id,
                 printer_id,
                 timeout,
                 pre_state,
+                code,
             )
-        else:
-            # No swap side-effects on the physical printer — safe to revert.
-            # Drop the in-memory dispatch hold (#1157) so the retry isn't
-            # blocked by it.
-            scheduler._release_dispatch_hold(printer_id)
-            async with async_session() as db:
-                item = await db.get(PrintQueueItem, queue_item_id)
-                if not item or item.status != "printing":
-                    return  # Already moved on (completed/cancelled/etc.)
-                item.dispatch_attempts = (item.dispatch_attempts or 0) + 1
-                item.started_at = None
-                if item.dispatch_attempts >= DISPATCH_MAX_ATTEMPTS:
-                    # Wedge cap (#2555): a genuinely stuck printer would otherwise
-                    # re-upload + re-wait forever. Fail the item after N attempts
-                    # so it stops eating an upload slot the rest of the farm needs.
-                    from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+        # Drop any swap config that was registered post-start_print so a
+        # subsequent dispatch can arm it fresh.
+        try:
+            from backend.app.main import _active_swap_config
 
-                    item.status = "failed"
-                    if drying_ams_ids:
-                        # ⚠️ The generic message below sent the reporter looking
-                        # at the SD card while the actual obstacle — AMS units in
-                        # a drying cycle — was on screen the whole time. Name
-                        # what was observed and let the operator judge it: we do
-                        # not stop the cycle ourselves, because on this hardware
-                        # drying can run alongside a print and stopping it may
-                        # not be the fix. Both possibilities are named rather
-                        # than one asserted.
-                        units = ", ".join(f"AMS {i}" for i in drying_ams_ids)
-                        item.error_message = (
-                            f"The printer accepted the file but never started printing, after "
-                            f"{item.dispatch_attempts} attempts. {units} "
-                            f"{'was' if len(drying_ams_ids) == 1 else 'were'} drying throughout - some "
-                            f"printers refuse to begin a print while an AMS is in a drying cycle, and an "
-                            f"AMS drying without its external power supply can also leave too little "
-                            f"power for the start-of-print calibration. Stop the drying, or connect the "
-                            f"AMS power supply, and start the job again."
-                        )
-                    else:
-                        item.error_message = (
-                            f"The printer accepted the file but never started printing, after "
-                            f"{item.dispatch_attempts} attempts. Check the printer's screen for a prompt "
-                            f"or error, confirm its SD card is readable, and start the job again."
-                        )
-                    item.completed_at = datetime.now(timezone.utc)
-                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
-                    await update_queue_counters(db, item.queue_id)
-                    await db.commit()
-                    logger.warning(
-                        "Queue item %s: printer %d never started after %d attempts — giving up (#2555)",
-                        queue_item_id,
-                        printer_id,
-                        item.dispatch_attempts,
-                    )
-                    return
-                item.status = "pending"
-                await db.commit()
-                logger.warning(
-                    "Queue item %s: printer %d did not respond to print command within "
-                    "%.0fs (state still %s) — reverted to 'pending' for retry %d/%d (#967/#2555)",
-                    queue_item_id,
-                    printer_id,
-                    timeout,
-                    pre_state,
-                    item.dispatch_attempts,
-                    DISPATCH_MAX_ATTEMPTS,
-                )
-            # Drop any swap config that was registered post-start_print so a
-            # subsequent dispatch can arm it fresh.
-            try:
-                from backend.app.main import _active_swap_config
-
-                _active_swap_config.pop(printer_id, None)
-            except Exception:  # pragma: no cover — import failure is non-fatal
-                pass
+            _active_swap_config.pop(printer_id, None)
+        except Exception:  # pragma: no cover — import failure is non-fatal
+            pass
 
         # Same #1150 / #887/#936 discriminator as background_dispatch: if the
         # printer's gcode_file changed since pre-dispatch, the project_file
@@ -3192,9 +3268,7 @@ class PrintScheduler:
         # still hits 0500_4003 on that retry — accepted to avoid breaking the
         # half-broken-session recovery path. Ported from upstream v0.2.4b1.
         client = printer_manager.get_client(printer_id)
-        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
-        publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
-        if publish_landed:
+        if file_received:
             logger.warning(
                 "Queue item %s: gcode_file changed to %r (was %r) — printer "
                 "received the command and is parsing slowly. Skipping forced "

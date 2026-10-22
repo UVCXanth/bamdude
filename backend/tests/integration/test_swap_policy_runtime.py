@@ -358,8 +358,10 @@ async def test_unknown_request_is_visible_and_releases_only_own_claim(
 
     row = await db_session.get(PrintQueueItem, item.id, populate_existing=True)
     assert row.status == "failed" and row.error_message
+    assert row.error_code == "dispatchStartRefused"
+    # The claimed attempt ended: its own printer's queue waits for Resume (post-rebuild D-R4).
     claim = await db_session.get(PrinterQueue, queue.id, populate_existing=True)
-    assert claim.status == "idle" and claim.current_item_id is None
+    assert claim.status == "error" and claim.current_item_id is None
     untouched = await db_session.get(PrinterQueue, other_queue.id, populate_existing=True)
     assert untouched.status == "printing"
 
@@ -391,7 +393,7 @@ async def test_unknown_failed_job_requires_retry_even_after_source_change(
     mqtt._client.publish.assert_not_called()
 
 
-async def test_policy_failure_does_not_block_following_item_or_previous_success_gate(
+async def test_policy_failure_halts_the_queue_until_resume_but_not_the_previous_success_gate(
     db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
 ):
     _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
@@ -414,6 +416,17 @@ async def test_policy_failure_does_not_block_following_item_or_previous_success_
     await drain(spawned)
 
     assert (await db_session.get(PrintQueueItem, refused.id, populate_existing=True)).gate_acknowledged is True
+    # The ended attempt halted the queue: nothing behind it starts by itself (post-rebuild D-R4).
+    assert (await db_session.get(PrintQueueItem, following.id, populate_existing=True)).status == "pending"
+
+    # The operator resumes the queue.
+    halted = await db_session.get(PrinterQueue, queue.id, populate_existing=True)
+    assert halted.status == "error"
+    halted.status = "idle"
+    await db_session.commit()
+    await scheduler.check_queue()
+    await drain(spawned)
+
     # A refusal before dispatch is no physical failure: the next job's require_previous_success lets it start.
     assert (await db_session.get(PrintQueueItem, following.id, populate_existing=True)).status == "printing"
 

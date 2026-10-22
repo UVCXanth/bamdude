@@ -291,4 +291,5 @@ async def test_a_failure_before_the_upload_closes_the_execution_archive(notify, 
 
     await service._run_active_job(job)
 
-    terminal.assert_awaited_once_with(77, "failed", "No SD card in the printer")
+    # An untyped exception before any preparation: the closed class says so (D-R6).
+    terminal.assert_awaited_once_with(77, "failed", "No SD card in the printer", failure_reason="dispatchInternalError")

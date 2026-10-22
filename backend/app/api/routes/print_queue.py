@@ -1855,7 +1855,13 @@ async def retry_failed_item(
             item.status = "pending"
             item.position = max_pos + 1
             item.error_message = None
+            item.error_code = None
             item.completed_at = None
+            # The operator's Retry is a new intent, so a new bounded budget (owner,
+            # 2026-10-23); automatic recovery never resets it. ``started_at`` stays:
+            # it is the proof this row was dispatched before (``swap_job_refresh``).
+            # A halted queue stays halted — Resume is the operator's own step.
+            item.dispatch_attempts = 0
             await update_queue_counters(db, item.queue_id)
             await db.commit()
         _end_capture_cooldowns([item.id])

@@ -425,7 +425,13 @@ async def test_dispatch_capture_error_dispositions(
         assert row.waiting_reason is None and row.waiting_reason_code is None
     assert row.library_file_id == source.id  # bytes, source and options untouched
     claim = await queue_row(db_session, queue)
-    assert claim.status == "idle" and claim.current_item_id is None
+    # A copy that will be retried later leaves the queue to the jobs behind it; one that ENDED the
+    # claimed attempt halts the printer's queue until Resume (post-rebuild D-R4).
+    assert claim.status == ("idle" if status == "pending" else "error") and claim.current_item_id is None
+    if status == "pending":
+        assert row.dispatch_attempts == 0  # a refusal before publish gives its attempt back
+    else:
+        assert row.error_code == "dispatchSourceUnavailable"
     assert (await db_session.execute(select(PrintArchive))).scalars().all() == []
     mqtt._client.publish.assert_not_called()
 
@@ -470,7 +476,7 @@ async def test_calibration_capture_busy_and_no_space_release_own_claim(
     await harness.tick()
 
     assert (await reload(db_session, item)).status == status
-    assert (await queue_row(db_session, queue)).status == "idle"
+    assert (await queue_row(db_session, queue)).status == ("idle" if status == "pending" else "error")
     assert (await queue_row(db_session, other_queue)).status == "printing"  # only its own claim
 
 
@@ -536,7 +542,8 @@ async def test_timed_out_capture_keeps_worker_slot_but_releases_printer_claim(
 
     row = await reload(db_session, item)
     assert row.status == "failed" and row.gate_acknowledged is True
-    assert (await queue_row(db_session, queue)).status == "idle"
+    # The claimed attempt ended: the printer's queue waits for Resume (post-rebuild D-R4).
+    assert (await queue_row(db_session, queue)).status == "error"
     # The hung reader is not declared finished: it keeps its slot and its staging.
     assert queue_sources.active_captures() == 1
     assert len(staged_parts()) == 1
@@ -666,8 +673,16 @@ async def test_capture_timeout_stays_failed_after_scheduler_restart_until_retry(
     assert (await reload(db_session, item)).status == "failed"
     assert len(harness.captures) == 1
 
-    # Only the operator's Retry brings it back -- and then it copies again and prints.
+    # Only the operator's Retry brings it back -- and the queue's Resume lets it go: a Retry alone
+    # leaves the halted queue halted (owner, post-rebuild D-R4).
     await retry_failed_item(item.id, db=db_session, _=None)
+    await harness.tick()
+    assert len(harness.captures) == 1
+    assert (await reload(db_session, item)).status == "pending"
+    halted = await queue_row(db_session, queue)
+    assert halted.status == "error"
+    halted.status = "idle"
+    await db_session.commit()
     await harness.tick()
     assert len(harness.captures) == 2
     assert (await reload(db_session, item)).status == "printing"

@@ -2356,6 +2356,8 @@ class BambuMQTTClient:
         # episode log at DEBUG; the first sighting (and each new episode) at
         # INFO. Cleared on a real tray change and on new-print reset.
         self._last_tail_suppressed: tuple[int, int] | None = None
+        # The routing code of the last ``start_print`` that published nothing (None after one that did).
+        self.last_start_refusal: str | None = None
         self._last_message_time: float = 0.0  # Track when we last received a message
         # Count of report-topic messages received since the last (re)connect.
         # Lets check_staleness() distinguish "printer never sent a status
@@ -8186,6 +8188,10 @@ class BambuMQTTClient:
         # item pending), not a failure.
         from backend.app.services.farm_startup_guard import farm_startup_guard
 
+        # Why a False below published nothing, recorded where it is decided
+        # (``printer_manager.start_refusal_reason``): the dispatcher's deferral
+        # names it instead of guessing from the printer's state afterwards.
+        self.last_start_refusal = None
         farm_startup_guard.require()
         if routing_guard is not None:
             routing_guard.validate(
@@ -8201,6 +8207,7 @@ class BambuMQTTClient:
                 self.state.state,
                 filename,
             )
+            self.last_start_refusal = "printer_busy_at_start"
             return False
 
         if self._client and self.state.connected:
@@ -8548,6 +8555,7 @@ class BambuMQTTClient:
                     f"[{self.serial_number}] Cannot start print: Printer not connected (client exists but disconnected). "
                     f"Connection state: {self.state.connected}, Last message: {self._last_message_time}"
                 )
+            self.last_start_refusal = "printer_not_connected"
             return False
 
     def stop_print(self) -> bool:

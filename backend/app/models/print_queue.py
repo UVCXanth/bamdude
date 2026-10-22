@@ -224,10 +224,17 @@ class PrintQueueItem(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Times the start-watchdog reverted this row from 'printing' back to
-    # 'pending' because the printer accepted the file but never started. Capped
-    # at DISPATCH_MAX_ATTEMPTS (print_scheduler) so a wedged printer isn't
-    # retried forever (#2555). Added to existing DBs by migration m108.
+    # The closed class of a failed row: a ``utils/failure_reasons`` key, decided
+    # from the typed result where the attempt ended — never parsed out of
+    # ``error_message``, which is its human detail. NULL on rows from before m208
+    # and on every row that is not failed. Added to existing DBs by m208.
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Dispatch attempts this row has spent. Taken in the same commit as the
+    # scheduler's final claim, so a crash mid-dispatch has spent it too; a
+    # typed refusal before anything was published gives its own one back, and
+    # an operator's Retry opens a new budget. Capped at DISPATCH_MAX_ATTEMPTS
+    # (print_scheduler) so a wedged printer isn't retried forever (#2555).
+    # Added to existing DBs by migration m108.
     dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Timestamps

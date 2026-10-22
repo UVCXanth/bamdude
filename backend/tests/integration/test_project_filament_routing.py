@@ -198,7 +198,7 @@ async def test_five_external_p1p_project_jobs_produce_five_safe_commands(
     monkeypatch.setattr(bd, "background_dispatch", service)
     monkeypatch.setattr(service, "_ensure_live_connection_before_start", AsyncMock())
     monkeypatch.setattr(service, "_run_swap_macro_if_needed", AsyncMock())
-    monkeypatch.setattr(service, "_verify_print_response", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value="accepted"))
     monkeypatch.setattr(ps.scheduler, "acquire_stagger_slot", AsyncMock())
     scheduler = ps.PrintScheduler()
     monkeypatch.setattr(scheduler, "_check_auto_drying", AsyncMock())

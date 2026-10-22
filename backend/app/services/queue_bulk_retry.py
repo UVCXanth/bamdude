@@ -95,7 +95,12 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash)
                 row.status = "pending"
                 row.position = position
                 row.error_message = None
+                row.error_code = None
                 row.completed_at = None
+                # The operator's Retry is a new intent, so a new bounded budget (owner,
+                # 2026-10-23). ``started_at`` stays: it is the proof this row was
+                # dispatched before, which ``swap_job_refresh`` reads.
+                row.dispatch_attempts = 0
                 retried.append(row.id)
             await update_queue_counters(db, queue_id)
             await db.commit()

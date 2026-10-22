@@ -87,5 +87,8 @@
   "autoqueue_more_issues": "And {count} more issues. Open AutoQueue for the full list.",
   "autoqueue_multiple_models": "multiple printer models",
   "autoqueue_no_eligible_printer": "No active {model} printers{location} eligible",
-  "farm_recovery_hold": "New starts are held while the farm recovers. Check the startup banner."
+  "farm_recovery_hold": "New starts are held while the farm recovers. Check the startup banner.",
+  "printer_busy_at_start": "The printer became busy just before the print would start, so it was not started.",
+  "printer_not_connected": "The printer was not connected when the print would start, so it was not started.",
+  "start_refused": "The printer did not take the start command, so the print was not started."
 }

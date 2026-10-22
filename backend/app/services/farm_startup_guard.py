@@ -213,6 +213,19 @@ class FarmStartupGuard:
             self.stopping = True
             self.ready = False
 
+    def boot_id(self) -> str | None:
+        """This process's boot, only while it holds the installation's owner lock.
+
+        A dispatch stamps it on its execution archive; a later process that holds the
+        same lock and reads another boot there knows that attempt's owner has ended.
+        None when the guard is not running or owns nothing — then nothing is proven.
+        """
+        with self._mutex:
+            if self._lock_file is None:
+                return None
+            boot = self.state.get("boot_id")
+            return boot if isinstance(boot, str) else None
+
     def allowed(self):
         with self._mutex:
             return not self.active or not (

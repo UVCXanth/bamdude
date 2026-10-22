@@ -110,7 +110,14 @@ async def test_a_direct_print_is_refused_before_it_would_wait(service, job_facto
     # Refusing after the wait would be no refusal at all.
     patches.acquire.assert_not_awaited()
     service._run_reprint_archive.assert_not_awaited()
-    assert job.outcome == {"success": False, "archive_id": None, "error": REASON, "cancelled": False, "deferred": False}
+    assert job.outcome == {
+        "success": False,
+        "archive_id": None,
+        "error": REASON,
+        "cancelled": False,
+        "deferred": False,
+        "failure_code": "dispatchStartRefused",
+    }
     # queue_error=False: the item failed, the queue did not (Ruling 13).
     service._release_direct_claim.assert_awaited_once_with(job, status="failed", queue_error=False)
     service._mark_job_finished.assert_awaited_once_with(job, failed=True, message=REASON)
