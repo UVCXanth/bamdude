@@ -86,5 +86,6 @@
   "routing_unclassified": "Routing could not determine a supported reason. Review this job in AutoQueue.",
   "autoqueue_more_issues": "And {count} more issues. Open AutoQueue for the full list.",
   "autoqueue_multiple_models": "multiple printer models",
-  "autoqueue_no_eligible_printer": "No active {model} printers{location} eligible"
+  "autoqueue_no_eligible_printer": "No active {model} printers{location} eligible",
+  "farm_recovery_hold": "New starts are held while the farm recovers. Check the startup banner."
 }

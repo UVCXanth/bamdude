@@ -795,6 +795,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
     from backend.app.core.paths import resolve_data_dir
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
+    from backend.app.services.farm_startup_guard import farm_startup_guard
 
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "Invalid backup file: must be a .zip file")
@@ -842,12 +843,16 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 from backend.app.services.zigbee.poller import zigbee_poller
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
+                farm_startup_guard.hold("restore")
+                from backend.app.services.farm_startup_guard import notify_change
+
+                await notify_change()
                 await _quiesce_part_render()
                 await _quiesce_library_previews()
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
-                smart_plug_manager.stop_scheduler()
+                await smart_plug_manager.stop_scheduler()
                 notification_service.stop_digest_scheduler()
                 await background_dispatch.stop()
                 await zigbee_supervisor.stop()

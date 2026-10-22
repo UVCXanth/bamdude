@@ -277,7 +277,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             project(archive, _ARCHIVE_FIELDS),
             live,
             active,
-            (-1,) if acounts.get(pid, 0) else (),
+            tuple(range(acounts.get(pid, 0))),
             users.get(item.archive_id, 0) if item else 0,
             tuple(sorted(references)),
             now,
@@ -364,7 +364,13 @@ async def list_issues(db, scope, *, printer_id=None, cursor=None):
     items = (
         select(PrinterQueue.printer_id, literal("item"), PrintQueueItem.id)
         .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
-        .where(PrinterQueue.printer_id.in_(pids), PrintQueueItem.status == "printing")
+        .where(
+            PrinterQueue.printer_id.in_(pids),
+            or_(
+                PrintQueueItem.status == "printing",
+                and_(PrinterQueue.status == "printing", PrintQueueItem.id == PrinterQueue.current_item_id),
+            ),
+        )
     )
     archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
         PrintArchive.printer_id.in_(pids), PrintArchive.status == "printing", PrintArchive.deleted_at.is_(None)

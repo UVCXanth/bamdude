@@ -8184,6 +8184,9 @@ class BambuMQTTClient:
         # job. IDLE / FINISH / FAILED are valid start targets; only active-print
         # states are refused. Callers treat False here as a DEFER (leave the queue
         # item pending), not a failure.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require()
         if routing_guard is not None:
             routing_guard.validate(
                 self.get_feed_snapshot(routing_guard.plan.printer_id),
@@ -8780,6 +8783,9 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False if not connected
         """
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require()
         if not self._client or not self.state.connected:
             return False
 

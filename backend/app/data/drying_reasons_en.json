@@ -11,5 +11,6 @@
   "screen_only": "this printer dries only from its own screen",
   "unsupported": "this printer's firmware cannot dry",
   "temp_over_limit": "the temperature is above this AMS's limit",
-  "not_started": "the AMS never started drying"
+  "not_started": "the AMS never started drying",
+  "farm_recovery_hold": "new starts are paused while the farm recovers"
 }

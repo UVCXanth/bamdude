@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- **Pause new farm starts after an unconfirmed shutdown.** An operator can inspect the farm and explicitly allow new work; there is no automatic countdown. The durable pause survives restarts and backup restore cannot import another installation's approval. This is one installation-wide decision: printer reconnects do not revoke it, and controls, completion and swap macros of an existing print retain their normal behaviour.
+
+- **Info shows a terminal queue item still held by a printing queue header.** Existing print-state diagnostics and confirmed repair actions remain available. The additional inconsistency is shown for inspection, without clearing a pending physical action automatically.
+
 - **Deleting a folder no longer destroys the files already in its trash.** A file sent to the trash before its folder was deleted — or in the same multi-select delete — stayed attached to the folder, and the folder took its record with it: the trash lost it and restoring answered "not found". Deleting a folder now detaches those files too, keeps their original delete time (their retention is unchanged) and leaves them restorable to the library root, nested folders included. Files lost this way before the fix are not recovered.
 
 - **The trash shows a deleted folder's files straight away.** Deleting a folder sends its files to the trash, but the trash list and its count beside the library header kept their earlier answer until a reload. They now refresh as they do after deleting single files.

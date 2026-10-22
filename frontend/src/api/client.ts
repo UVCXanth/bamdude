@@ -8582,6 +8582,7 @@ export type Permission =
   | 'stats:read' | 'stats:filter_by_user'
   | 'printer_sensor_history:read'
   | 'system:read'
+  | 'farm:resume'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'git:backup' | 'git:restore'
   | 'cloud:auth' | 'orca_cloud:auth' | 'cloud_link:manage'
@@ -9549,7 +9550,18 @@ function inboxQuery(params: InboxFilters): URLSearchParams {
   return qs;
 }
 
+export interface FarmStartupState {
+  state: 'starting' | 'held' | 'running' | 'stopping' | 'storage_unavailable' | 'readiness_failed' | 'restart_required';
+  boot_id: string | null; hold_id: string | null; reason: string | null; since: string | null;
+  ready: boolean; can_resume: boolean;
+}
+
 export const api = {
+  getFarmStartup: () => request<FarmStartupState>('/system/farm-startup'),
+  resumeFarmStartup: (expected_boot_id: string, expected_hold_id: string) =>
+    request<FarmStartupState>('/system/farm-startup/resume', {
+      method: 'POST', body: JSON.stringify({ expected_boot_id, expected_hold_id }),
+    }),
   getMonitorSnapshot: (view: MonitorView, signal?: AbortSignal) =>
     request<MonitorSnapshot>(`/monitor/snapshot?view=${view}`, { signal }),
   getMonitorForecast: (signal?: AbortSignal) => request<FarmForecast>('/queue/forecast', { signal }),

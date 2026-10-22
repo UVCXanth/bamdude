@@ -507,6 +507,11 @@ async def _try_start(
     dispatching_printers: set[int],
     started: set[tuple[int, int]],
 ) -> None:
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    if not farm_startup_guard.allowed():
+        run.reason = "farm_recovery_hold"
+        return
     if run.latest_start is not None and run.latest_start <= now:
         # The last waiting reason becomes the detail: "its start window passed (the printer was printing)".
         _finish(run, "skipped", now, detail=run.reason, reason="window_passed")

@@ -16,6 +16,24 @@ from backend.tests.unit.services.test_terminal_queue_repair import make_pair, te
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
+async def test_info_shows_terminal_row_still_owned_by_printing_header(
+    db_session, printer_factory, archive_factory, telemetry
+):
+    p, q, a, item, _ = await prepare(db_session, printer_factory, archive_factory)
+    item.status = "completed"
+    a.extra_data = {"swap_macro_events_pending": ["swap_mode_change_table"]}
+    await db_session.commit()
+    page = await store.list_issues(db_session, None)
+    issue = next(row for row in page["issues"] if row["kind"] == "item" and row["target_id"] == item.id)
+    assert issue["code"] == "header_without_active_item"
+    assert issue["actions"] == []
+    assert "effects_pending" in issue["blocked_reasons"]
+    await db_session.refresh(q)
+    await db_session.refresh(a)
+    assert q.current_item_id == item.id
+    assert a.extra_data["swap_macro_events_pending"] == ["swap_mode_change_table"]
+
+
 async def prepare(db, printer_factory, archive_factory):
     rows = await make_pair(db, printer_factory, archive_factory)
     rows[2].extra_data = {"historical": {"kept": True}}

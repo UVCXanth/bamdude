@@ -44,6 +44,7 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
+from backend.app.services.farm_startup_guard import FarmStartupRefused
 from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
 from backend.app.services.filament_preflight import final_guard, preflight_item, settle_plan
 from backend.app.services.filament_routing import RoutingDeferred
@@ -1220,7 +1221,7 @@ class BackgroundDispatchService:
 
         try:
             await self._process_job(job)
-        except (RoutingDeferred, SourceUnavailable) as exc:
+        except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
             await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
             pass  # outcome.cancelled already set by the runner
@@ -1408,6 +1409,9 @@ class BackgroundDispatchService:
         # already-refused dispatch costs no walk over the share, and again under
         # the lock in ``_enqueue_claimed_job``, which is the answer that decides.
         # A refusal after the copy discards the staged bytes and leaves no row.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require()
         async with self._lock:
             self._refuse_unless_free(printer_id, printer_name)
 
@@ -1513,6 +1517,9 @@ class BackgroundDispatchService:
         before the spool existed.
         """
         async with self._lock:
+            from backend.app.services.farm_startup_guard import farm_startup_guard
+
+            farm_startup_guard.require()
             # The re-check. Time has passed while the source was copied, and the
             # answer from before the copy is not evidence any more.
             self._refuse_unless_free(printer_id, printer_name)
@@ -1684,7 +1691,7 @@ class BackgroundDispatchService:
             # so for them this reads exactly as the bare call did.
             if (job.outcome or {}).get("success"):
                 await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
-        except (RoutingDeferred, SourceUnavailable) as exc:
+        except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
             await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
             await self._release_direct_claim(job, status="cancelled")
@@ -1928,6 +1935,9 @@ class BackgroundDispatchService:
 
     async def _process_job(self, job: PrintDispatchJob):
         # Lazy import — print_scheduler imports us back.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        farm_startup_guard.require()
         from backend.app.services.print_scheduler import scheduler as print_scheduler
 
         # Strict mode (opt-in): a DIRECT print whose printer's stagger group has
@@ -2852,7 +2862,7 @@ class BackgroundDispatchService:
                     "cancelled": False,
                     "deferred": False,
                 }
-            except (RoutingDeferred, SourceUnavailable) as exc:
+            except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
                 job.outcome = {
                     "success": False,
                     "archive_id": None,
@@ -3687,7 +3697,7 @@ class BackgroundDispatchService:
                     "cancelled": False,
                     "deferred": False,
                 }
-            except (RoutingDeferred, SourceUnavailable) as exc:
+            except (RoutingDeferred, SourceUnavailable, FarmStartupRefused) as exc:
                 job.outcome = {
                     "success": False,
                     "archive_id": None,

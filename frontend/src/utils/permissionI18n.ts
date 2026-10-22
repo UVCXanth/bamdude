@@ -64,6 +64,7 @@ const CATEGORY_KEYS: Record<string, string> = {
   'Firmware': 'firmware',
   'Stats & History': 'statsHistory',
   'System': 'system',
+  'Farm': 'system',
   'Settings': 'settings',
   'Backup': 'backup',
   'Cloud': 'cloud',
@@ -122,6 +123,7 @@ const ACTION_KEYS: Record<string, string> = {
 
 // Labels that don't follow the simple "Action Resource" pattern
 const LABEL_OVERRIDES: Record<string, string> = {
+  'Resume Farm': 'farmResume',
   'Files Printers': 'printerFiles',
   'Ams Rfid Printers': 'amsRfid',
   'Clear Plate Printers': 'clearPlate',

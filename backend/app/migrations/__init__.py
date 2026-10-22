@@ -16,7 +16,7 @@ import logging
 import pkgutil
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ async def _run_pending(engine, session_factory) -> None:
         logger.info("Migration %d applied successfully", version)
 
 
-async def run_all_migrations(engine, session_factory) -> None:
+async def run_all_migrations(engine, session_factory) -> bool:
     """Main entry point - called from init_db().
 
     Simple flow:
@@ -215,12 +215,16 @@ async def run_all_migrations(engine, session_factory) -> None:
 
     # Create/update all tables from models
     async with engine.begin() as conn:
+        created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
         await conn.run_sync(Base.metadata.create_all)
 
     # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
     if not is_sqlite():
         from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
 
+        # A failed or declined import is not proof this is a new installation.
+        if any((Path(settings.data_dir) / name).exists() for name in ("bamdude.db", "bambuddy.db", "bambutrack.db")):
+            created_schema = False
         await auto_migrate_sqlite_to_pg(engine, Base.metadata)
 
     # Ensure _migrations table
@@ -246,6 +250,7 @@ async def run_all_migrations(engine, session_factory) -> None:
     # PostgreSQL install with a stray bambuddy.db in its data directory deserves
     # the same sentence (two stat calls). See _warn_if_foreign_bambuddy_file.
     await _warn_if_foreign_bambuddy_file(settings.data_dir)
+    return created_schema
 
 
 async def _has_existing_data(engine) -> bool:

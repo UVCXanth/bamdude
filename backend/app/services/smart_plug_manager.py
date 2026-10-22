@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
+from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.printer_manager import printer_manager
@@ -120,20 +121,14 @@ class SmartPlugManager:
             self._history_task = asyncio.create_task(self._history_loop())
             logger.info("Measurement history loop started")
 
-    def stop_scheduler(self):
-        """Stop the background scheduler."""
-        if self._scheduler_task:
-            self._scheduler_task.cancel()
-            self._scheduler_task = None
-            logger.info("Smart plug scheduler stopped")
-        if self._snapshot_task:
-            self._snapshot_task.cancel()
-            self._snapshot_task = None
-            logger.info("Smart plug energy snapshot loop stopped")
-        if self._history_task:
-            self._history_task.cancel()
-            self._history_task = None
-            logger.info("Measurement history loop stopped")
+    async def stop_scheduler(self):
+        tasks = [task for task in (self._scheduler_task, self._snapshot_task, self._history_task) if task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._scheduler_task = self._snapshot_task = self._history_task = None
+        logger.info("Smart plug scheduler and energy readers stopped")
 
     async def _history_loop(self):
         """Flush what was reported, read what does not report, prune daily.
@@ -328,11 +323,11 @@ class SmartPlugManager:
                     continue
 
                 # Check if we should turn on
-                if plug.schedule_on_time == current_time:
+                if plug.schedule_on_time == current_time and farm_startup_guard.allowed():
                     last_check = self._last_schedule_check.get((plug.id, "on"))
                     if last_check != scheduled_minute:
                         logger.info("Schedule: Turning on plug '%s' at %s", plug.name, current_time)
-                        success = await service.turn_on(plug)
+                        success = await service.turn_on(plug) if farm_startup_guard.allowed() else False
                         if success:
                             plug.last_state = "ON"
                             plug.last_checked = datetime.now(timezone.utc)

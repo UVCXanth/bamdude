@@ -1482,6 +1482,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.ARCHIVES_REPRINT_ALL: "can_queue",
     # can_control_printer — physical-world side effects on hardware
     Permission.PRINTERS_CONTROL: "can_control_printer",
+    Permission.FARM_RESUME: "can_control_printer",
     Permission.PRINTERS_FILES: "can_control_printer",
     Permission.PRINTERS_AMS_RFID: "can_control_printer",
     Permission.PRINTERS_CLEAR_PLATE: "can_control_printer",

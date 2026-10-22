@@ -193,6 +193,10 @@ class AutoQueueScheduler:
 
     async def tick(self) -> None:
         """Single iteration: assign pending auto items to eligible printers."""
+        from backend.app.services.farm_startup_guard import farm_startup_guard
+
+        if not farm_startup_guard.allowed():
+            return
         notification_generation = self._notification_generation
         from backend.app.services.printer_manager import printer_manager
 
@@ -699,6 +703,10 @@ class AutoQueueScheduler:
             )
             succeeded = True
             for plug in plugs:
+                from backend.app.services.farm_startup_guard import farm_startup_guard
+
+                if not farm_startup_guard.allowed():
+                    return True
                 try:
                     service = await smart_plug_manager.get_service_for_plug(plug, db)
                     if not await service.turn_on(plug):

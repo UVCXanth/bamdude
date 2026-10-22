@@ -452,7 +452,7 @@ async def init_db():
     if not is_sqlite():
         await case_folding.probe_postgres_case_folding(engine)
 
-    await run_all_migrations(engine, async_session)
+    created_schema = await run_all_migrations(engine, async_session)
 
     # Boot self-check: fail loudly if the tri-state calibration columns are
     # missing rather than serving a drifted schema (see the function docstring).
@@ -463,6 +463,27 @@ async def init_db():
     # fresh AsyncSession (NOT the migration connection) to avoid SQLite WAL
     # writer contention.
     await _migrate_encrypt_legacy_secrets()
+    if created_schema is not True:
+        return False
+
+    from sqlalchemy import select
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.macro import Macro
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer import Printer
+    from backend.app.models.scheduled_drying import DryingSchedule
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.models.user import User
+
+    async with async_session() as db:
+        for model in (Printer, User, PrintArchive, PrintQueueItem, AutoQueueItem, SmartPlug, DryingSchedule):
+            if await db.scalar(select(model.id).limit(1)) is not None:
+                return False
+        if await db.scalar(select(Macro.id).where(Macro.is_custom.is_(True)).limit(1)) is not None:
+            return False
+    return True
 
 
 async def _verify_calibration_mode_columns(engine) -> None:

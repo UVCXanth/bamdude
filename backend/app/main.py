@@ -10699,7 +10699,7 @@ async def stop_queue_source_collector() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     # Startup
     printer_manager._print_lifecycle_stopping = False
     # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
@@ -10729,7 +10729,8 @@ async def lifespan(app: FastAPI):
 
         await _embedded_pg.start()
 
-    await init_db()
+    new_empty_store = await init_db()
+    farm_startup_guard.admit_new_installation(new_empty_store=new_empty_store)
 
     # Camera ownership is worker-only. A failed worker degrades cameras but
     # must not prevent queueing, dispatch or health endpoints from starting.
@@ -11222,6 +11223,8 @@ async def lifespan(app: FastAPI):
             if restored:
                 logging.info("Restored %s MQTT smart plug subscriptions", restored)
 
+    await printer_manager.load_awaiting_plate_clear_from_db()
+
     # Connect to all active printers
     async with async_session() as db:
         await init_printer_connections(db)
@@ -11262,13 +11265,14 @@ async def lifespan(app: FastAPI):
                 )
     except Exception:  # noqa: BLE001 — never block startup on a recovery sweep
         logging.exception("Startup: could not release interrupted dispatch claims")
+        farm_startup_guard.readiness_failed = True
 
     # Start the print scheduler
-    spawn_background_task(print_scheduler.run(), name="print-scheduler")
+    app.state.print_scheduler_task = spawn_background_task(print_scheduler.run(), name="print-scheduler")
 
     # Start the auto-queue scheduler — routes pending auto items to idle
     # printers; assignment hands off to print_scheduler/background_dispatch.
-    spawn_background_task(auto_queue_scheduler.run(), name="auto-queue-scheduler")
+    app.state.auto_queue_scheduler_task = spawn_background_task(auto_queue_scheduler.run(), name="auto-queue-scheduler")
 
     # Start the stock-break aggregator — the forecast that used to exist only in
     # the browser, so "this filament runs out before a replacement arrives"
@@ -11351,8 +11355,6 @@ async def lifespan(app: FastAPI):
 
     # Rehydrate plate-clear gates from DB so an Auto Off power cycle during a
     # pending confirmation can't let the queue auto-dispatch onto a dirty plate (#961).
-    await printer_manager.load_awaiting_plate_clear_from_db()
-
     # Every printer has a queue. A guard for printers added by a path that never
     # created one (the Telegram bot did not) and for databases restored from
     # elsewhere — see services/printer_queues for what the gap cost.
@@ -11613,6 +11615,9 @@ async def lifespan(app: FastAPI):
         pass
     print_scheduler.stop()
     auto_queue_scheduler.stop()
+    for task in (app.state.print_scheduler_task, app.state.auto_queue_scheduler_task):
+        task.cancel()
+    await asyncio.gather(app.state.print_scheduler_task, app.state.auto_queue_scheduler_task, return_exceptions=True)
     stock_forecast_alerts.stop()
     await background_dispatch.stop()
     from backend.app.services.macro_trigger import stop_event_macro_tasks
@@ -11624,7 +11629,7 @@ async def lifespan(app: FastAPI):
         smart_plug_manager.stop_auto_off_tasks(),
         stop_bed_cooldown_tasks(),
     )
-    smart_plug_manager.stop_scheduler()
+    await smart_plug_manager.stop_scheduler()
     await ha_sensor_manager.stop()
     await location_ha_sensor_manager.stop()
     try:
@@ -11780,12 +11785,48 @@ async def lifespan(app: FastAPI):
         await _embedded_pg.stop()
 
 
+from backend.app.services.farm_startup_guard import FarmReadyMiddleware, FarmStartupRefused, farm_startup_guard
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    farm_startup_guard.start(Path(app_settings.data_dir))
+    try:
+        async with _application_lifespan(app):
+            try:
+                yield
+            finally:
+                farm_startup_guard.close_admission()
+    except BaseException:
+        farm_startup_guard.close_admission()
+        raise
+    else:
+        from backend.app.services.farm_startup_guard import drain_commands
+
+        await drain_commands()
+        farm_startup_guard.finish(clean=True)
+
+
 app = FastAPI(
     title=app_settings.app_name,
     description="Archive and manage Bambu Lab 3MF files",
     version=APP_VERSION,
     lifespan=lifespan,
 )
+
+app.add_middleware(FarmReadyMiddleware)
+
+
+@app.exception_handler(FarmStartupRefused)
+async def farm_startup_refused_handler(request, exc):
+    from fastapi.responses import JSONResponse
+
+    from backend.app.services.filament_intake import routing_detail
+
+    return JSONResponse(
+        status_code=503 if exc.reason == "storage_unavailable" else 409, content={"detail": routing_detail(exc.reason)}
+    )
+
 
 # Every ``HTTPException`` answers in the system language: the English sentence
 # raised at the site is looked up in ``data/api_errors_uk.json`` on the way out.
@@ -12474,6 +12515,9 @@ app.include_router(printer_sensor_history.router, prefix=app_settings.api_prefix
 app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(filament_calibration_routes.router, prefix=app_settings.api_prefix)
+from backend.app.api.routes import farm_startup
+
+app.include_router(farm_startup.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(print_state_recovery.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)

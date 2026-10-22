@@ -85,6 +85,12 @@ def classify(f: RecoveryFacts) -> dict | None:
             return {"code": "active_archive_without_current_run", "actions": [], "blocked_reasons": ["outcome_unknown"]}
         return None
     if i is not None and i.get("status") != "printing":
+        if q.get("status") == "printing" and q.get("current_item_id") == i.get("id"):
+            return {
+                "code": "header_without_active_item",
+                "actions": [],
+                "blocked_reasons": ["effects_pending" if effects_pending(a) else "ambiguous_owner"],
+            }
         return None
     if i:
         if a is None:

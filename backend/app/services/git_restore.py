@@ -744,6 +744,7 @@ class GitRestoreService:
         """Apply selected categories from one backup commit."""
         # Import locally to avoid a module-level cycle: the backup service takes
         # the mirror-image lock against us.
+        from backend.app.services.farm_startup_guard import farm_startup_guard
         from backend.app.services.git_backup import git_backup_service
 
         # The lock serialises two concurrent restores; the backup side has no
@@ -794,6 +795,10 @@ class GitRestoreService:
                         raise RuntimeError(error)
 
                     settings_keys_written: set[str] = set()
+                    farm_startup_guard.hold("restore")
+                    from backend.app.services.farm_startup_guard import notify_change
+
+                    await notify_change()
                     await self._apply(
                         db, payload, categories, overwrite_existing, settings_keys_written, results=results
                     )

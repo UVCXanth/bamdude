@@ -400,14 +400,24 @@ class TestSmartPlugManager:
             assert manager._scheduler_task is not None
             mock_loop.assert_called_once()
 
-    def test_stop_scheduler(self, manager):
-        """Verify scheduler can be stopped."""
-        mock_task = MagicMock()
-        manager._scheduler_task = mock_task
+    async def test_stop_scheduler(self, manager):
+        """Stop owns the cancelled scheduler until its cleanup has finished."""
+        entered, finished = asyncio.Event(), asyncio.Event()
 
-        manager.stop_scheduler()
+        async def work():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                finished.set()
 
-        mock_task.cancel.assert_called_once()
+        task = asyncio.create_task(work())
+        manager._scheduler_task = task
+        await entered.wait()
+        await manager.stop_scheduler()
+        assert task.done()
+        assert finished.is_set()
         assert manager._scheduler_task is None
 
     def test_start_scheduler_idempotent(self, manager):

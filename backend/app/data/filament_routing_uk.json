@@ -86,5 +86,6 @@
   "routing_unclassified": "Не вдалося визначити причину маршрутизації. Перегляньте завдання в авточерзі.",
   "autoqueue_more_issues": "Ще {count} перешкод. Повний список — в авточерзі.",
   "autoqueue_multiple_models": "кілька моделей принтерів",
-  "autoqueue_no_eligible_printer": "Немає доступних активних принтерів {model}{location}"
+  "autoqueue_no_eligible_printer": "Немає доступних активних принтерів {model}{location}",
+  "farm_recovery_hold": "Нові запуски утримуються під час відновлення ферми. Перевірте банер стану."
 }

@@ -27,6 +27,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.schemas.system import DbHealth
 from backend.app.services import db_health
+from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.log_health import ScanResult, scan_logs
 from backend.app.services.log_reader import collect_sensitive_strings
 from backend.app.services.preview_artifacts import disk
@@ -645,6 +646,7 @@ async def get_system_info(
             "uptime_seconds": app_uptime_seconds,
             "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
+        "farm_startup": farm_startup_guard.status(),
         "preview": get_preview_health().model_dump(),
         "step_preview": await step_preview_state(),
         "analysis_worker": get_analysis_health(),
