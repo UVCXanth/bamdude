@@ -282,12 +282,18 @@ async def test_permission_upgrade_seeds_only_administrators(db_session, test_eng
     from backend.app.migrations import m205_farm_resume_permission as migration
     from backend.app.models.group import Group
 
-    groups = [Group(name=name, permissions=[], is_system=True) for name in ("Administrators", "Operators", "Viewers")]
+    groups = [
+        Group(name="Administrators", permissions=["printers:read"], is_system=True),
+        *(Group(name=name, permissions=[], is_system=True) for name in ("Operators", "Viewers")),
+        Group(name="Farm leads", permissions=["queue:read_all"], is_system=False),
+    ]
     db_session.add_all(groups)
     await db_session.commit()
     await migration.seed(async_sessionmaker(test_engine, expire_on_commit=False))
     await migration.seed(async_sessionmaker(test_engine, expire_on_commit=False))
     db_session.expire_all()
     result = (await db_session.scalars(select(Group).order_by(Group.id))).all()
-    assert result[0].permissions == ["farm:resume"]
+    # Added once, beside what the group already held; nobody else gains it.
+    assert result[0].permissions == ["printers:read", "farm:resume"]
     assert result[1].permissions == result[2].permissions == []
+    assert result[3].permissions == ["queue:read_all"]
