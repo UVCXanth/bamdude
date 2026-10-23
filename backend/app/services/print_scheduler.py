@@ -3011,9 +3011,10 @@ class PrintScheduler:
                         reason=failure_reasons.dispatch_reason_text(restored.code, restored.message),
                         db=db,
                     )
-                    if not published:
-                        # The policy of a refusal before the start; after a sent start the
-                        # printer's state is unknown and no physical action is added.
+                    if not published and not restored.swap_started:
+                        # The policy of a refusal before the start. After a sent start, or a
+                        # swap start that ran or may have, the printer's state is unknown and
+                        # no physical action is added: it is left as it is for the operator.
                         item = await db.get(PrintQueueItem, queue_item_id)
                         if item is not None:
                             await self._power_off_if_needed(db, item)

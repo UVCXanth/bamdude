@@ -252,10 +252,13 @@ RESPONSE_FILE_RECEIVED = "file_received"
 RESPONSE_STALLED = "stalled_after_accept"
 
 #: Our own observer failing after a sent start is no verdict of the printer's (D-R4): the runner
-#: looks again with the same claim, at most this many looks in all, then stops watching
-#: visibly — the start is never sent again and the attempt is never called unsent.
+#: looks again with the same claim, at least this many looks AND at least the printer's own
+#: answer window (the observer's acknowledgement wait plus its start wait after the file landed),
+#: then stops watching visibly — the start is never sent again and the attempt is never called
+#: unsent. Failing fast never ends the watch while a printer still reading the file may start it.
 OBSERVER_MAX_ATTEMPTS = 3
 OBSERVER_RETRY_SECONDS = 5.0
+OBSERVER_WATCH_SECONDS = 90.0 + 180.0
 
 #: Execution archives whose sent start no runner of THIS process watches any more: the runner
 #: ended without the printer's verdict. The live owner says so itself (it is never called
@@ -3247,13 +3250,17 @@ class BackgroundDispatchService:
 
         Only the printer's own answers decide (D-R4). A look that fails — our observer raised,
         or answered something that is no verdict — is looked at again with the same claim and
-        the job still active, at most ``OBSERVER_MAX_ATTEMPTS`` looks; then the watch ends
-        visibly (``DispatchObservationLost``), never with a second start.
+        the job still active, for at least ``OBSERVER_MAX_ATTEMPTS`` looks and at least
+        ``OBSERVER_WATCH_SECONDS``; then the watch ends visibly (``DispatchObservationLost``),
+        never with a second start.
         """
         from backend.app.services import dispatch_phase
         from backend.app.utils.failure_reasons import DISPATCH_ACCEPTED_NOT_STARTED, DISPATCH_NO_ACKNOWLEDGEMENT
 
-        for look in range(1, OBSERVER_MAX_ATTEMPTS + 1):
+        watching_since = time.monotonic()
+        look = 0
+        while True:
+            look += 1
             try:
                 answer = await self._await_print_response(job.printer_id, printer_name, pre_state, **verify)
                 failure = None
@@ -3288,17 +3295,18 @@ class BackgroundDispatchService:
                 if failure is not None
                 else f"no verdict in the answer {answer!r}"
             )
-            logger.error(
-                "Dispatch %s: watching printer %s after the start was sent failed (look %d of %d): %s",
+            # The first failure with its traceback; the repeats of a failing observer in one line each.
+            (logger.error if look == 1 else logger.warning)(
+                "Dispatch %s: watching printer %s after the start was sent failed (look %d): %s",
                 job.id,
                 job.printer_id,
                 look,
-                OBSERVER_MAX_ATTEMPTS,
                 why,
-                exc_info=failure is not None,
+                exc_info=failure is not None and look == 1,
             )
-            if look < OBSERVER_MAX_ATTEMPTS:
-                await asyncio.sleep(OBSERVER_RETRY_SECONDS)
+            if look >= OBSERVER_MAX_ATTEMPTS and time.monotonic() - watching_since >= OBSERVER_WATCH_SECONDS:
+                break
+            await asyncio.sleep(OBSERVER_RETRY_SECONDS)
         raise DispatchObservationLost(
             f"BamDude could not watch {printer_name}'s answer to the start command ({why}). The print may be "
             "running: check the printer, then close the attempt in Info."

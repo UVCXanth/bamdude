@@ -248,6 +248,37 @@ def quick_observer(monkeypatch):
     import backend.app.services.background_dispatch as bd
 
     monkeypatch.setattr(bd, "OBSERVER_RETRY_SECONDS", 0, raising=False)
+    monkeypatch.setattr(bd, "OBSERVER_WATCH_SECONDS", 0, raising=False)
+
+
+async def test_a_watch_that_fails_fast_still_lasts_the_printers_own_answer_window(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """Review r1: looks that fail at once would end the watch in seconds, long before a printer
+    still reading the file (#1150) answers — the watch lasts at least the observer's own window,
+    so Info never offers the close of an attempt the printer may be about to start."""
+    import time
+
+    import backend.app.services.background_dispatch as bd
+
+    monkeypatch.setattr(bd, "OBSERVER_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(bd, "OBSERVER_WATCH_SECONDS", 0.3)
+    _queue_id, mqtt, _item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    looks = []
+
+    async def failing(*_args, **_kwargs):
+        looks.append(time.monotonic())
+        raise RuntimeError("the status read raised")
+
+    monkeypatch.setattr(service, "_await_print_response", failing)
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_called_once()
+    assert len(looks) > bd.OBSERVER_MAX_ATTEMPTS
+    assert looks[-1] - looks[0] >= 0.3 - 0.02
 
 
 @pytest.mark.parametrize("glitch", [RuntimeError("the status read raised"), "running"], ids=["exception", "no_verdict"])
@@ -559,7 +590,11 @@ async def test_a_refusal_that_ends_the_job_tells_the_operator_once_with_its_clas
     assert (await db_session.get(PrinterQueue, queue_id)).status == "error"
     notice.assert_awaited_once()
     assert the_reason(notice) == failure_reasons.dispatch_reason_text(row.error_code, row.error_message)
-    power_off.assert_awaited_once()  # nothing was published: the policy of a refusal before the start
+    if refusal == "swap_start_ran":
+        # The table may have moved: the printer is left as it is for the operator (review r1).
+        power_off.assert_not_awaited()
+    else:
+        power_off.assert_awaited_once()  # nothing was published: the policy of a refusal before the start
 
 
 async def test_a_refusal_after_a_sent_start_is_told_but_adds_no_physical_action(

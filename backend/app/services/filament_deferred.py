@@ -28,12 +28,14 @@ SOURCE_CAPTURE_WAIT_CODE = "source_capture"
 @dataclass(frozen=True)
 class DeferResult:
     """What :func:`defer_claim` did. Truthy when THIS attempt's row took the refusal;
-    ``terminal`` when it ended the row as failed with ``code`` / ``message`` (not yet committed)."""
+    ``terminal`` when it ended the row as failed with ``code`` / ``message`` (not yet committed);
+    ``swap_started`` when our swap-start macro ran or may have (the printer is left as it is)."""
 
     owned: bool
     terminal: bool = False
     code: str | None = None
     message: str | None = None
+    swap_started: bool = False
 
     def __bool__(self) -> bool:
         return self.owned
@@ -244,4 +246,4 @@ async def defer_claim(
             .execution_options(synchronize_session=False)
         )
     await update_queue_counters(db, item.queue_id)
-    return DeferResult(True, terminal, code if terminal else None, message if terminal else None)
+    return DeferResult(True, terminal, code if terminal else None, message if terminal else None, swap_started)
