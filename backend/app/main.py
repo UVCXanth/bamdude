@@ -1664,9 +1664,11 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         # it paused" is the first question a timeline reader asks.
         try:
             from backend.app.models.print_usage_event import EVENT_PAUSE
-            from backend.app.services.print_usage_journal import active_archive_id, record_event
+            from backend.app.services.print_usage_journal import active_archive_id, journal_lock, record_event
 
-            async with async_session() as db:
+            # The journal lock before the session, as every journal writer takes them: the row
+            # lands in the order the printer reported, never ahead of a queued tray or tail fact.
+            async with journal_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)

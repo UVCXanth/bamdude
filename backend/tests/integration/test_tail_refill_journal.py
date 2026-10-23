@@ -1067,3 +1067,41 @@ async def test_the_x2d_incident_replayed_end_to_end(db_session, incident):
         (0, old.id),
         (42, new.id),
     ]
+
+
+# ── F-R2 · every journal writer keeps the printer's order ────────────────────
+
+
+async def test_the_pause_row_waits_for_the_journal_lock(db_session, test_engine, printer_factory, monkeypatch):
+    """The pause row joins the journal in the order the printer reported it, like a tray
+    change, a tail fact or the resume row: its writer takes the journal lock before its session."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app import main as main_mod
+    from backend.app.models.print_usage_event import EVENT_PAUSE
+
+    printer, archive = await a_print(db_session, printer_factory)
+    state = MagicMock(hms_errors=[], subtask_name="plate", gcode_file="plate.3mf", layer_num=40)
+
+    async def nothing(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main_mod.printer_manager, "get_printer", lambda _pid: None)
+    monkeypatch.setattr(main_mod, "_expected_pause_reasons", {})
+    monkeypatch.setattr(main_mod.ws_manager, "send_print_paused", nothing)
+    monkeypatch.setattr(main_mod.notification_service, "on_print_pause", nothing)
+    monkeypatch.setattr(main_mod, "_current_tray_frozen", AsyncMock(return_value=(TRAY, None, None)))
+    monkeypatch.setattr(main_mod, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
+
+    lock = journal.journal_lock(printer.id)
+    async with lock:
+        pause = asyncio.create_task(main_mod._handle_pause_edge(printer.id, state))
+        for _ in range(200):
+            if lock._waiters or pause.done():
+                break
+            await asyncio.sleep(0.01)
+        assert lock._waiters, "the pause row was written without the journal lock"
+        assert await rows(db_session, printer.id, archive.id) == []
+    await pause
+
+    assert [r[0] for r in await rows(db_session, printer.id, archive.id)] == [EVENT_PAUSE]
