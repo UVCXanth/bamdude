@@ -228,6 +228,91 @@ def test_a_seed_of_another_print_is_refused(joined):
     assert joined.open_tail() is None
 
 
+def packet(client, tray, layer=None):
+    """A real status packet: the tray and, when it carries one, its own layer — no state prepared."""
+    data = {"ams": {"tray_now": str(tray)}}
+    if layer is not None:
+        data["layer_num"] = layer
+    client._process_message({"print": data})
+
+
+def test_each_held_fact_keeps_its_own_packets_layer(joined):
+    """F-R4: a held tray report is journaled at the layer of the packet that carried it —
+    not the layer of the packet before, nor the layer at the seed."""
+    first_packet(joined, 254, layer=40)
+    refill(joined)
+    packet(joined, ORIGIN, layer=45)
+    generation = joined.journal_generation()
+
+    assert joined.seed_usage_journal(generation, log=[(ORIGIN, 0)], last_loaded_tray=ORIGIN, tail_origin=None)
+
+    assert feed_events(joined) == [("tail_start", ORIGIN, 40, True), ("feed_return", ORIGIN, 45, False)]
+
+
+def test_a_slow_seed_replays_several_transitions_in_their_own_order(joined):
+    """F-R4: two tails and their returns held through a long seed come back chronological."""
+    first_packet(joined, 254, layer=40)
+    refill(joined)
+    packet(joined, ORIGIN, layer=45)
+    refill(joined, "")
+    packet(joined, 254, layer=60)
+    refill(joined)
+    packet(joined, ORIGIN, layer=72)
+    joined.state.layer_num = 90  # the seed lands much later
+
+    assert joined.seed_usage_journal(
+        joined.journal_generation(), log=[(ORIGIN, 0)], last_loaded_tray=ORIGIN, tail_origin=None
+    )
+
+    assert [(e[0], e[2]) for e in feed_events(joined)] == [
+        ("tail_start", 40),
+        ("feed_return", 45),
+        ("tail_start", 60),
+        ("feed_return", 72),
+    ]
+
+
+def test_a_packet_without_a_layer_takes_the_layer_already_known(joined):
+    """A delta that carries no layer was sent on the layer already reported."""
+    first_packet(joined, ORIGIN, layer=40)
+    refill(joined, "")
+    packet(joined, 254)
+    refill(joined)
+    packet(joined, ORIGIN, layer=44)
+
+    assert joined.seed_usage_journal(
+        joined.journal_generation(), log=[(ORIGIN, 0)], last_loaded_tray=ORIGIN, tail_origin=None
+    )
+
+    assert [(e[0], e[2]) for e in feed_events(joined)] == [("tail_start", 40), ("feed_return", 44)]
+
+
+def test_a_fact_seen_before_any_layer_is_a_gap_boundary_never_a_later_one_backwards(joined):
+    """No layer at all yet: the boundary is the next one observed and says it was not seen
+    at its own layer (a gap), and the replay never runs backwards."""
+    joined._process_message(
+        {"print": {"ams": {"tray_now": "254"}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf"}}
+    )
+    refill(joined)
+    packet(joined, ORIGIN, layer=50)
+    joined.state.layer_num = 90  # the seed lands much later
+
+    assert joined.seed_usage_journal(
+        joined.journal_generation(), log=[(ORIGIN, 0)], last_loaded_tray=ORIGIN, tail_origin=None
+    )
+
+    events = feed_events(joined)
+    assert events == [("tail_start", ORIGIN, 50, True), ("feed_return", ORIGIN, 50, False)]
+
+
+def test_a_live_tray_change_is_logged_at_its_own_packets_layer(client):
+    """The non-held path reads the same layer: the packet's own, not the one before."""
+    packet(client, 3, layer=26)
+
+    client.on_tray_change.assert_called_once_with(3, 26)
+    assert client.state.tray_change_log == [(ORIGIN, 0), (3, 26)]
+
+
 def test_without_a_seed_the_journal_stays_held(joined):
     """F04: a failed seed opens nothing with an invented clean state."""
     first_packet(joined, 254)

@@ -276,6 +276,16 @@ def is_successful_project_file(print_data: object) -> bool:
     )
 
 
+def _packet_layer(print_data: object) -> int | None:
+    """The layer a ``print`` payload itself reports, or None when it carries none."""
+    if not isinstance(print_data, dict) or "layer_num" not in print_data:
+        return None
+    try:
+        return int(print_data["layer_num"])
+    except (TypeError, ValueError):
+        return None
+
+
 def is_printer_status_frame(print_data: object) -> bool:
     """Whether a ``print`` payload is the printer reporting its OWN state.
 
@@ -4692,7 +4702,9 @@ class BambuMQTTClient:
                 # normalised unit 6), 128-135 (AMS-HT), 254 (external spool)
                 tn = self.state.tray_now
                 if self._is_journal_tray(tn):
-                    self._observe_journal_tray(tn, self.state.layer_num)
+                    # This packet's own layer: it is parsed after the tray branch, so the
+                    # state still holds the layer of the packet before.
+                    self._observe_journal_tray(tn, _packet_layer(printer_status))
 
                 logger.debug("[%s] tray_now updated: %s", self.serial_number, self.state.tray_now)
 
@@ -7696,21 +7708,25 @@ class BambuMQTTClient:
             return not self._was_running
         return self._journal_held
 
-    def _observe_journal_tray(self, tn: int, layer: int) -> None:
-        """A tray report of a print: journaled now, or held for the joined print's seed."""
+    def _observe_journal_tray(self, tn: int, layer: int | None) -> None:
+        """A tray report of a print: journaled now, or held for the joined print's seed.
+
+        ``layer`` is the reporting packet's own; a packet without one was sent on the layer
+        already reported. A held report before any layer at all keeps None: the replay
+        resolves it without ever running backwards.
+        """
+        if layer is None and (self.state.layer_num or self.state.total_layers):
+            layer = self.state.layer_num
         with self._journal_lock:
             if self._journal_is_held():
                 if not self._journal_pending or self._journal_pending[-1][0] != tn:
-                    # A client that joined has no layer yet: this packet's own is parsed after
-                    # its tray branch. The replay then takes the layer known at the seed.
-                    known = layer if (self.state.layer_num or self.state.total_layers) else None
-                    self._journal_pending.append((tn, known, self._empty_ams_trays()))
+                    self._journal_pending.append((tn, layer, self._empty_ams_trays()))
                     del self._journal_pending[:-_JOURNAL_PENDING_LIMIT]
                 # Bookkeeping only (the "survives the end-of-print retract" fallback): the
                 # seed puts the journal's own origin back before anything is replayed.
                 self.state.last_loaded_tray = tn
                 return
-            self._apply_journal_tray(tn, layer, self._empty_ams_trays())
+            self._apply_journal_tray(tn, self.state.layer_num if layer is None else layer, self._empty_ams_trays())
 
     def _apply_journal_tray(self, tn: int, layer: int, empty: frozenset[int]) -> None:
         """One tray observation against the print's chronology and the tail latch.
@@ -7820,8 +7836,14 @@ class BambuMQTTClient:
             self._journal_held = False
             self._journal_after_gap = True
             pending, self._journal_pending = self._journal_pending, []
-            for tn, layer, empty in pending:
-                self._apply_journal_tray(tn, self.state.layer_num if layer is None else layer, empty)
+            for index, (tn, layer, empty) in enumerate(pending):
+                if layer is None:
+                    # Seen before any layer was reported: its boundary is the next one observed
+                    # (never a later fact's layer run backwards), recorded as a gap boundary.
+                    later = next((known for _tn, known, _empty in pending[index + 1 :] if known is not None), None)
+                    layer = self.state.layer_num if later is None else later
+                    self._journal_after_gap = True
+                self._apply_journal_tray(tn, layer, empty)
             return True
 
     def _ams_unit_ids(self) -> list[int]:
