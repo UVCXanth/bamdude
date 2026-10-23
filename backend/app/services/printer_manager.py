@@ -743,6 +743,9 @@ class PrinterManager:
         # Usage-journal events beyond tray changes (runout / spool_loaded).
         # Receives ``(printer_id, event, kind, global_tray_id, layer_num)``.
         self._on_usage_event: Callable[[int, str, str | None, int | None, int], None] | None = None
+        # The runout tail's journal facts (post-rebuild F-R2). Receives ``(printer_id, event,
+        # origin_tray, layer_num, after_gap, subtask_id)``; see ``set_feed_event_callback``.
+        self._on_feed_event: Callable[..., None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
@@ -1089,6 +1092,16 @@ class PrinterManager:
         """
         self._on_usage_event = callback
 
+    def set_feed_event_callback(self, callback: Callable[..., None]):
+        """Set callback for the runout tail's journal facts (post-rebuild F-R2).
+
+        Receives ``(printer_id, event, origin_tray, layer_num, after_gap, subtask_id)`` —
+        ``event`` is ``"tail_start"`` or ``"feed_return"``; ``subtask_id`` is the print the
+        client saw when it observed the fact, so a late fact never lands in the next print.
+        Scheduled in arrival order with the tray-change and usage callbacks.
+        """
+        self._on_feed_event = callback
+
     def _schedule_async(self, coro):
         """Schedule an async coroutine from a sync context.
 
@@ -1183,6 +1196,11 @@ class PrinterManager:
             if self._on_usage_event:
                 self._schedule_async(self._on_usage_event(printer_id, event, kind, tray_global, layer_num))
 
+        def on_feed_event(event: str, origin: int, layer_num: int, after_gap: bool):
+            if self._on_feed_event:
+                subtask_id = getattr(getattr(client, "state", None), "subtask_id", None)
+                self._schedule_async(self._on_feed_event(printer_id, event, origin, layer_num, after_gap, subtask_id))
+
         def on_macro_complete(macro_name: str, status: str):
             self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
 
@@ -1238,6 +1256,7 @@ class PrinterManager:
             on_lights_report=on_lights_report,
             on_tray_change=on_tray_change,
             on_usage_event=on_usage_event,
+            on_feed_event=on_feed_event,
             on_kprofile_tables_due=on_kprofile_tables_due,
         )
 

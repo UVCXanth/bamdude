@@ -1451,84 +1451,108 @@ async def assign_spoolman_slot(
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
 
-    # Deliberate mid-pause replacement: journal the manual runout NOW, while
-    # the outgoing spool is still the current assignment, so the assignment
-    # below closes it as the spool_loaded boundary (see inventory.assign_spool).
-    if body.mid_print_replacement:
-        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+    from backend.app.main import _get_ams_assignment_lock
+    from backend.app.services.print_usage_journal import journal_lock
 
-        if not await note_manual_replacement_intent(
-            db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id
-        ):
-            raise HTTPException(
-                status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
+    # The remote lookup above ran outside every lock; the binding and its journal facts
+    # change under the slot's assignment lock — the one the internal assignment, insertion
+    # and RFID reconciliation take — and the journal lock, in that order (post-rebuild
+    # F-R3). Nothing below waits on the network until both are released.
+    await db.commit()  # no read transaction is carried into the locks
+    async with _get_ams_assignment_lock(body.printer_id), journal_lock(body.printer_id):
+        # What the remote wait may have changed: the printer itself.
+        if await db.scalar(select(Printer.id).where(Printer.id == body.printer_id)) is None:
+            raise HTTPException(status_code=404, detail="Printer not found")
+
+        # Deliberate mid-pause replacement: journal the manual runout NOW, while
+        # the outgoing spool is still the current assignment, so the assignment
+        # below closes it as the spool_loaded boundary (see inventory.assign_spool).
+        if body.mid_print_replacement:
+            from backend.app.services.print_usage_journal import note_manual_replacement_intent
+
+            if not await note_manual_replacement_intent(
+                db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id
+            ):
+                raise HTTPException(
+                    status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
+                )
+
+        # What the upsert below is about to displace, read BEFORE it (spec
+        # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
+        # in place, so afterwards there is nothing left to report. Reported on the
+        # response so the UI can offer Replace in one step; the replace itself is
+        # unchanged — an occupied slot is never refused. A column-only select on
+        # purpose: the raw SQL changes the row without the ORM knowing, and loading
+        # the entity here would leave a stale copy in the identity map.
+        spool_on_slot = (
+            await db.execute(
+                select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+                    SpoolmanSlotAssignment.printer_id == body.printer_id,
+                    SpoolmanSlotAssignment.ams_id == body.ams_id,
+                    SpoolmanSlotAssignment.tray_id == body.tray_id,
+                )
+            )
+        ).scalar_one_or_none()
+        replaced_spoolman_spool_id = spool_on_slot if spool_on_slot != body.spoolman_spool_id else None
+        if replaced_spoolman_spool_id is not None:
+            logger.info(
+                "Slot %s/%s/%s: spool %s replaced with %s",
+                body.printer_id,
+                body.ams_id,
+                body.tray_id,
+                replaced_spoolman_spool_id,
+                body.spoolman_spool_id,
             )
 
-    # What the upsert below is about to displace, read BEFORE it (spec
-    # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
-    # in place, so afterwards there is nothing left to report. Reported on the
-    # response so the UI can offer Replace in one step; the replace itself is
-    # unchanged — an occupied slot is never refused. A column-only select on
-    # purpose: the raw SQL changes the row without the ORM knowing, and loading
-    # the entity here would leave a stale copy in the identity map.
-    spool_on_slot = (
-        await db.execute(
-            select(SpoolmanSlotAssignment.spoolman_spool_id).where(
-                SpoolmanSlotAssignment.printer_id == body.printer_id,
-                SpoolmanSlotAssignment.ams_id == body.ams_id,
-                SpoolmanSlotAssignment.tray_id == body.tray_id,
+        # A slot whose emptied reel is still feeding its tail: record the tail with the reel
+        # going out BEFORE the binding names the new one (post-rebuild F-R3). Best-effort; the
+        # savepoint keeps a failure from undoing anything else.
+        try:
+            from backend.app.services.print_usage_journal import ensure_tail_recorded
+
+            async with db.begin_nested():
+                await ensure_tail_recorded(db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id)
+        except Exception:
+            logger.exception("ensure_tail_recorded failed for printer %s", body.printer_id)
+
+        # Spool confirmed in Spoolman — upsert into local slot-assignment table
+        # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
+        try:
+            await db.execute(
+                text(
+                    "INSERT INTO spoolman_slot_assignments"
+                    " (printer_id, ams_id, tray_id, spoolman_spool_id)"
+                    " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                    " ON CONFLICT(printer_id, ams_id, tray_id)"
+                    " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                ),
+                {
+                    "printer_id": body.printer_id,
+                    "ams_id": body.ams_id,
+                    "tray_id": body.tray_id,
+                    "spool_id": body.spoolman_spool_id,
+                },
             )
-        )
-    ).scalar_one_or_none()
-    replaced_spoolman_spool_id = spool_on_slot if spool_on_slot != body.spoolman_spool_id else None
-    if replaced_spoolman_spool_id is not None:
-        logger.info(
-            "Slot %s/%s/%s: spool %s replaced with %s",
-            body.printer_id,
-            body.ams_id,
-            body.tray_id,
-            replaced_spoolman_spool_id,
-            body.spoolman_spool_id,
-        )
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            logger.error("Failed to persist slot assignment: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to save slot assignment") from exc
 
-    # Spool confirmed in Spoolman — upsert into local slot-assignment table
-    # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
-    try:
-        await db.execute(
-            text(
-                "INSERT INTO spoolman_slot_assignments"
-                " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                " ON CONFLICT(printer_id, ams_id, tray_id)"
-                " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-            ),
-            {
-                "printer_id": body.printer_id,
-                "ams_id": body.ams_id,
-                "tray_id": body.tray_id,
-                "spool_id": body.spoolman_spool_id,
-            },
-        )
-        await db.commit()
-    except Exception as exc:
-        await db.rollback()
-        logger.error("Failed to persist slot assignment: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to save slot assignment") from exc
+        # Replacement-after-runout boundary for the usage journal (tagless spools
+        # have no other signal). Best-effort — never fails the assignment.
+        try:
+            from backend.app.services.print_usage_journal import note_assignment_change
 
-    # Replacement-after-runout boundary for the usage journal (tagless spools
-    # have no other signal). Best-effort — never fails the assignment.
-    try:
-        from backend.app.services.print_usage_journal import note_assignment_change
-
-        await note_assignment_change(
-            db,
-            printer_id=body.printer_id,
-            ams_id=body.ams_id,
-            tray_id=body.tray_id,
-            spoolman_spool_id=body.spoolman_spool_id,
-        )
-    except Exception:
-        logger.exception("note_assignment_change failed for printer %s", body.printer_id)
+            await note_assignment_change(
+                db,
+                printer_id=body.printer_id,
+                ams_id=body.ams_id,
+                tray_id=body.tray_id,
+                spoolman_spool_id=body.spoolman_spool_id,
+            )
+        except Exception:
+            logger.exception("note_assignment_change failed for printer %s", body.printer_id)
 
     # #1457: clear stale fallback-tag links on OTHER spools still bound to this
     # slot. Without this, a non-RFID slot's deterministic fallback tag stays

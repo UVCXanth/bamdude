@@ -5909,7 +5909,7 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
         )
 
 
-async def _restore_usage_tracking_session(printer_id: int, state, db, logger) -> None:
+async def _restore_usage_tracking_session(printer_id: int, state, db, logger, *, generation: int | None = None) -> None:
     """Put the filament-attribution context back after a restart mid-print.
 
     ``usage_tracker._active_sessions`` and ``PrinterState.tray_change_log`` both
@@ -5921,6 +5921,14 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger) ->
     The persisted row is only trusted when its print name still matches what the
     printer says it is running: a row left behind by a completion we never saw
     must not attach itself to the next print.
+
+    The client that joined the print holds its usage journal until this seed
+    (post-rebuild F-R4): the chronology, the tray last fed from — the origin of a
+    runout tail the journal still holds open, else the chronology's last tray —
+    and that tail. It then replays, in order, the tray reports it held. The seed
+    names the print it was computed for (``generation``), so a client that has
+    moved on to another print refuses it. A failure here leaves the journal held:
+    nothing is journaled against an invented clean state.
     """
     try:
         from backend.app.api.routes.settings import get_setting
@@ -5953,36 +5961,70 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger) ->
                 printer_id,
                 register_active=not (bool(_spoolman_on) and _spoolman_on.lower() == "true"),
             )
+        log = list(state.tray_change_log or [])
         if persisted_log:
             restored = [tuple(entry) for entry in persisted_log if isinstance(entry, (list, tuple)) and len(entry) == 2]
             # Anything this process already observed goes after the persisted
             # history — the log is ordered by layer, and a fresh process can only
             # have seen changes from later in the print.
-            for entry in state.tray_change_log or []:
+            for entry in log:
                 if tuple(entry) not in restored:
                     restored.append(tuple(entry))
-            state.tray_change_log = restored
+            log = restored
 
         tray_now = state.tray_now
-        if 0 <= tray_now <= 254:
-            if not state.tray_change_log:
-                # No persisted history — a print that started before this build,
-                # or before the row existed. Seed with the tray feeding right now
-                # so the remainder of the print is at least attributable to the
-                # right spool.
-                state.tray_change_log = [(tray_now, state.layer_num)]
-                logger.info(
-                    "[RESTART] Seeded tray change log for printer %s: tray=%d at layer=%d",
-                    printer_id,
-                    tray_now,
-                    state.layer_num,
-                )
-            # The tray handler updates ``last_loaded_tray`` on every push
-            # regardless of whether it logged a change, so re-align it to avoid a
-            # duplicate entry on the next push. Only ever with a real tray:
-            # ``last_loaded_tray`` is the "survives the end-of-print retract to
-            # 255" fallback, and writing 255 into it would defeat that.
-            state.last_loaded_tray = tray_now
+        if 0 <= tray_now <= 254 and not log:
+            # No persisted history — a print that started before this build,
+            # or before the row existed. Seed with the tray feeding right now
+            # so the remainder of the print is at least attributable to the
+            # right spool.
+            log = [(tray_now, state.layer_num)]
+            logger.info(
+                "[RESTART] Seeded tray change log for printer %s: tray=%d at layer=%d",
+                printer_id,
+                tray_now,
+                state.layer_num,
+            )
+
+        from backend.app.services.print_usage_journal import active_archive_id, load_events, open_tail_episode
+
+        archive_id = await active_archive_id(db, printer_id)
+        tail = open_tail_episode(await load_events(db, printer_id, archive_id)) if archive_id is not None else None
+        # Where the next held report is read from: the tail's origin, else the tray the
+        # chronology last fed from. Only ever a real tray: ``last_loaded_tray`` is the
+        # "survives the end-of-print retract to 255" fallback.
+        if tail is not None:
+            last_loaded = tail.origin
+        elif log:
+            last_loaded = log[-1][0]
+        elif 0 <= tray_now <= 254:
+            last_loaded = tray_now
+        else:
+            last_loaded = state.last_loaded_tray
+
+        client = printer_manager.get_client(printer_id)
+        if client is not None and generation is not None:
+            if client.seed_usage_journal(
+                generation,
+                log=log,
+                last_loaded_tray=last_loaded,
+                tail_origin=tail.origin if tail is not None else None,
+                tail_open_layer=tail.start.layer_num if tail is not None else 0,
+            ):
+                if tail is not None:
+                    logger.info(
+                        "[RESTART] Printer %s resumes the runout tail of tray %d (from layer %d)",
+                        printer_id,
+                        tail.origin,
+                        tail.start.layer_num,
+                    )
+            else:
+                logger.info("[RESTART] Usage-journal seed for printer %s not applied: another print now", printer_id)
+        else:
+            # No held client to seed (nothing joined): put the chronology back as before.
+            state.tray_change_log = log
+            if 0 <= tray_now <= 254:
+                state.last_loaded_tray = tray_now
     except Exception:
         # Never let attribution recovery cost the caller its timelapse baseline —
         # that capture has to happen before the printer uploads the in-flight MP4
@@ -6485,7 +6527,9 @@ async def on_print_running_observed(printer_id: int, data: dict):
     _state = printer_manager.get_status(printer_id)
     if _state is not None:
         async with async_session() as db:
-            await _restore_usage_tracking_session(printer_id, _state, db, logger)
+            await _restore_usage_tracking_session(
+                printer_id, _state, db, logger, generation=data.get("_journal_generation")
+            )
 
     # ⚠️ Before the detector can fire: this client's runout dedup is empty and
     # the printer's HMS status is not. Unseeded, it holds its fire — so this
@@ -11135,9 +11179,11 @@ async def _application_lifespan(app: FastAPI):
         the tray that finished the job.
         """
         try:
+            from backend.app.services.print_usage_journal import journal_lock
             from backend.app.services.usage_tracker import record_tray_change_event
 
-            async with async_session() as db:
+            # The journal lock first: callbacks keep the order the printer reported in.
+            async with journal_lock(printer_id), async_session() as db:
                 await record_tray_change_event(db, printer_id, tray_global, layer_num)
         except Exception as e:
             logging.getLogger(__name__).warning(
@@ -11163,21 +11209,39 @@ async def _application_lifespan(app: FastAPI):
             from backend.app.services.print_usage_journal import (
                 active_archive_id,
                 freeze_spool_ids,
+                journal_lock,
                 record_event,
                 record_runout,
             )
 
             async with async_session() as db:
-                archive_id = await active_archive_id(db, printer_id)
-                if archive_id is None:
-                    logging.getLogger(__name__).debug(
-                        "Usage event %s on printer %d has no active archive, dropped", event, printer_id
-                    )
-                    return
-                spool_id = spoolman_spool_id = None
-                if tray_global is not None:
-                    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
-                if event == "runout":
+                # The journal lock is the first thing awaited (opening a session awaits
+                # nothing), so journal writes keep the printer's order; the notification
+                # below runs after it is released.
+                async with journal_lock(printer_id):
+                    archive_id = await active_archive_id(db, printer_id)
+                    if archive_id is None:
+                        logging.getLogger(__name__).debug(
+                            "Usage event %s on printer %d has no active archive, dropped", event, printer_id
+                        )
+                        return
+                    spool_id = spoolman_spool_id = None
+                    if tray_global is not None:
+                        spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+                    if event == EVENT_SPOOL_LOADED:
+                        await record_event(
+                            db,
+                            printer_id=printer_id,
+                            archive_id=archive_id,
+                            layer_num=layer_num,
+                            event=EVENT_SPOOL_LOADED,
+                            global_tray_id=tray_global,
+                            spool_id=spool_id,
+                            spoolman_spool_id=spoolman_spool_id,
+                        )
+                        return
+                    if event != "runout":
+                        return
                     accepted = await record_runout(
                         db,
                         printer_id=printer_id,
@@ -11188,46 +11252,59 @@ async def _application_lifespan(app: FastAPI):
                         spool_id=spool_id,
                         spoolman_spool_id=spoolman_spool_id,
                     )
-                    if not accepted.should_notify:
-                        return
-                    # Notify — pause/external doubles as the human-in-the-loop
-                    # prompt to assign the replacement spool. Ambiguous stays
-                    # silent (could equally be a jam).
-                    if kind != "ambiguous":
-                        try:
-                            from backend.app.services.spool_assignment_notifications import (
-                                _slot_label_from_global_tray,
-                            )
+                if not accepted.should_notify:
+                    return
+                # Notify — pause/external doubles as the human-in-the-loop
+                # prompt to assign the replacement spool. Ambiguous stays
+                # silent (could equally be a jam).
+                if kind != "ambiguous":
+                    try:
+                        from backend.app.services.spool_assignment_notifications import (
+                            _slot_label_from_global_tray,
+                        )
 
-                            printer_info = printer_manager.get_printer(printer_id)
-                            await notification_service.on_filament_runout(
-                                printer_id=printer_id,
-                                printer_name=printer_info.name if printer_info else f"Printer {printer_id}",
-                                slot=_slot_label_from_global_tray(tray_global) if tray_global is not None else "?",
-                                kind=kind or "pause",
-                                db=db,
-                            )
-                        except Exception as e:
-                            logging.getLogger(__name__).warning(
-                                "filament_runout notification failed for printer %d: %s", printer_id, e
-                            )
-                elif event == EVENT_SPOOL_LOADED:
-                    await record_event(
-                        db,
-                        printer_id=printer_id,
-                        archive_id=archive_id,
-                        layer_num=layer_num,
-                        event=EVENT_SPOOL_LOADED,
-                        global_tray_id=tray_global,
-                        spool_id=spool_id,
-                        spoolman_spool_id=spoolman_spool_id,
-                    )
+                        printer_info = printer_manager.get_printer(printer_id)
+                        await notification_service.on_filament_runout(
+                            printer_id=printer_id,
+                            printer_name=printer_info.name if printer_info else f"Printer {printer_id}",
+                            slot=_slot_label_from_global_tray(tray_global) if tray_global is not None else "?",
+                            kind=kind or "pause",
+                            db=db,
+                        )
+                    except Exception as e:
+                        logging.getLogger(__name__).warning(
+                            "filament_runout notification failed for printer %d: %s", printer_id, e
+                        )
         except Exception as e:
             logging.getLogger(__name__).warning(
                 "Failed to journal usage event %s for printer %d: %s", event, printer_id, e
             )
 
     printer_manager.set_usage_event_callback(on_usage_event)
+
+    async def on_feed_event(
+        printer_id: int, event: str, origin: int, layer_num: int, after_gap: bool, subtask_id: str | None
+    ):
+        """Journal a runout tail's start or the feed's return to its tray (post-rebuild F-R2)."""
+        try:
+            from backend.app.services.print_usage_journal import handle_feed_event, journal_lock
+
+            async with journal_lock(printer_id), async_session() as db:
+                await handle_feed_event(
+                    db,
+                    printer_id=printer_id,
+                    event=event,
+                    origin=origin,
+                    layer_num=layer_num,
+                    after_gap=after_gap,
+                    subtask_id=subtask_id,
+                )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to journal %s for printer %d (tray=%d, layer=%d): %s", event, printer_id, origin, layer_num, e
+            )
+
+    printer_manager.set_feed_event_callback(on_feed_event)
 
     # Initialize MQTT relay from settings
     async with async_session() as db:

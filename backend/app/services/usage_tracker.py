@@ -730,6 +730,12 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     boundary only when a replacement was demonstrably loaded; a runout with no
     follow-on keeps its own spool — the zero correction closes it at
     label_weight regardless. Empty/single-segment results mean "no split".
+
+    A runout tail of this tray (post-rebuild F-R4) is one unit of its own, in journal
+    order with the runouts: the old reel feeds to the layer the feed came back
+    (``feed_return``), the reel bound then from there; an assignment during the tail is
+    identity only, and the tail's own runout is its end, not a reel change
+    (``usage_attribution.tail_identity_changes``).
     """
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
@@ -740,10 +746,15 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
         KIND_AUTOSWITCH,
         KIND_MANUAL,
     )
+    from backend.app.services.print_usage_journal import TailEpisode, tail_episodes
+    from backend.app.utils.usage_attribution import tail_identity_changes, tail_owned_ids
 
-    events = without_stale_refill_runouts(events)
+    all_events = without_stale_refill_runouts(events)
+    episodes = tail_episodes(all_events, global_tray_id)
+    owned = tail_owned_ids(all_events, episodes)
+    events = [e for e in all_events if e.id not in owned]
     runouts = [e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
-    if not runouts:
+    if not runouts and not episodes:
         return []
 
     # ── The backup that took over BEFORE the first layer ──────────────────
@@ -758,7 +769,7 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     # Deliberately narrow: a tray with its own spool really did feed part of
     # the print, and a ``tray_change`` to another tray is stronger evidence
     # than the start — both keep the per-episode loop below.
-    if all(r.spool_id is None for r in runouts) and any(r.kind == KIND_AUTOSWITCH for r in runouts):
+    if runouts and all(r.spool_id is None for r in runouts) and any(r.kind == KIND_AUTOSWITCH for r in runouts):
         # ⚠️ Scoped to the runout's own window — the SAME window the per-episode
         # backup lookup below searches (after the runout, at its layer or the
         # next). Asked of the whole print instead, an ordinary tray change 60
@@ -785,11 +796,23 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
 
     loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id]
 
-    segments: list[tuple[int, int | None, int | None]] = [(0, runouts[0].spool_id, runouts[0].spoolman_spool_id)]
-    for idx, runout in enumerate(runouts):
-        next_runout_id = runouts[idx + 1].id if idx + 1 < len(runouts) else None
+    # Runouts and tail episodes, in journal order: each hands the tray on from where it is.
+    units = sorted(
+        [(r.id, r) for r in runouts] + [(ep.start.id, ep) for ep in episodes],
+        key=lambda unit: unit[0],
+    )
+    opener = units[0][1].start if isinstance(units[0][1], TailEpisode) else units[0][1]
+    segments: list[tuple[int, int | None, int | None]] = [(0, opener.spool_id, opener.spoolman_spool_id)]
+    for idx, (_unit_id, unit) in enumerate(units):
+        if isinstance(unit, TailEpisode):
+            segments.extend(
+                (layer, spool, spoolman) for layer, spool, spoolman, _ in tail_identity_changes(unit, all_events)
+            )
+            continue
+        runout = unit
+        next_unit_id = units[idx + 1][0] if idx + 1 < len(units) else None
         loaded = next(
-            (e for e in loads if e.id > runout.id and (next_runout_id is None or e.id < next_runout_id)),
+            (e for e in loads if e.id > runout.id and (next_unit_id is None or e.id < next_unit_id)),
             None,
         )
         if runout.kind in (KIND_AMBIGUOUS, KIND_MANUAL):
@@ -1425,13 +1448,18 @@ async def on_print_complete(
         except Exception:
             logger.exception("[UsageTracker] Journal load failed for archive %s", archive_id)
     # "Live assignment wins" is suspended only when the journal holds
-    # BOUNDARY events (runout / spool_loaded) — those own mid-print changes.
+    # BOUNDARY events (runout / spool_loaded / a runout tail) — those own mid-print changes.
     # Any print has a start row (and jams leave pause rows), so keying on
     # "any journal row" would kill the legitimate wrong-link correction for
     # every print; a jam-time spool swap stays on the old live-wins semantics.
-    from backend.app.models.print_usage_event import EVENT_RUNOUT as _EV_RUNOUT, EVENT_SPOOL_LOADED as _EV_LOADED
+    from backend.app.models.print_usage_event import (
+        EVENT_FEED_RETURN as _EV_RETURN,
+        EVENT_RUNOUT as _EV_RUNOUT,
+        EVENT_SPOOL_LOADED as _EV_LOADED,
+        EVENT_TAIL_START as _EV_TAIL,
+    )
 
-    has_boundary_events = any(e.event in (_EV_RUNOUT, _EV_LOADED) for e in journal_events)
+    has_boundary_events = any(e.event in (_EV_RUNOUT, _EV_LOADED, _EV_TAIL, _EV_RETURN) for e in journal_events)
     effective_started_at = None if has_boundary_events else (session.started_at if session else None)
 
     # Filament the trackers read and could not charge to any spool (audit D4).

@@ -21,6 +21,13 @@ EVENT_RUNOUT = "runout"
 EVENT_SPOOL_LOADED = "spool_loaded"
 EVENT_PAUSE = "pause"
 EVENT_RESUME = "resume"
+# A runout tail (post-rebuild F-R2): an emptied AMS reel's filament still in the tube
+# feeds under the external sentinel. ``tail_start`` freezes the reel that is running out;
+# ``feed_return`` freezes the reel bound when the feed came back to that tray — the feed
+# boundary. An assignment in between is identity only. No new columns: both live in the
+# existing string fields.
+EVENT_TAIL_START = "tail_start"
+EVENT_FEED_RETURN = "feed_return"
 
 KIND_PAUSE = "pause"
 KIND_AUTOSWITCH = "autoswitch"
@@ -30,6 +37,9 @@ KIND_AMBIGUOUS = "ambiguous"
 # prompt — no firmware event witnesses it. Shares the ambiguous contract:
 # a segment boundary only through spool_loaded, never a zero correction.
 KIND_MANUAL = "manual"
+# A ``feed_return`` first observed after a gap (a restart, a new MQTT client): it records
+# the observed boundary, not the historical one, and what fed in between is not recorded.
+KIND_GAP = "gap"
 
 
 class PrintUsageEvent(Base):

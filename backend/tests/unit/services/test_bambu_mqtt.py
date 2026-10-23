@@ -5185,6 +5185,8 @@ class TestPrintRunningObservedCallback:
 
         assert len(running_observed_calls) == 1
         payload = running_observed_calls[0]
+        # Plus the joined print's journal generation, which its usage-journal seed must name
+        # (post-rebuild F-R4); a print watched from its start has nothing to seed.
         assert set(payload.keys()) == {
             "filename",
             "subtask_name",
@@ -5193,6 +5195,7 @@ class TestPrintRunningObservedCallback:
             "raw_data",
             "ams_mapping",
             "plate_param",
+            "_journal_generation",
         }
 
 

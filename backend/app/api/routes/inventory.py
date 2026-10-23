@@ -2672,74 +2672,91 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
                     tray_state = raw_state
                 tray_has_spool = spool_present(tray)
 
-    # Deliberate mid-pause replacement (the user answered the "replacement or
-    # correction?" prompt with "replacement"): journal the manual runout NOW,
-    # while the outgoing spool is still the current assignment, so the
-    # assignment below closes it as the spool_loaded boundary. Refusal is
-    # loud — silently downgrading to a correction would misattribute.
-    if data.mid_print_replacement:
-        from backend.app.services.print_usage_journal import note_manual_replacement_intent
+    from backend.app.services.print_usage_journal import journal_lock
 
-        if not await note_manual_replacement_intent(
-            db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id
-        ):
-            raise HTTPException(409, "Mid-print replacement needs a print that is paused or has been paused")
+    # The slot's journal facts and its binding change together, in order with the
+    # printer's own tail / runout callbacks (post-rebuild F-R2/F-R3).
+    async with journal_lock(data.printer_id):
+        # Deliberate mid-pause replacement (the user answered the "replacement or
+        # correction?" prompt with "replacement"): journal the manual runout NOW,
+        # while the outgoing spool is still the current assignment, so the
+        # assignment below closes it as the spool_loaded boundary. Refusal is
+        # loud — silently downgrading to a correction would misattribute.
+        if data.mid_print_replacement:
+            from backend.app.services.print_usage_journal import note_manual_replacement_intent
 
-    # 3. Upsert assignment (replace if same printer+ams+tray)
-    existing = await db.execute(
-        select(SpoolAssignment).where(
-            SpoolAssignment.printer_id == data.printer_id,
-            SpoolAssignment.ams_id == data.ams_id,
-            SpoolAssignment.tray_id == data.tray_id,
+            if not await note_manual_replacement_intent(
+                db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id
+            ):
+                raise HTTPException(409, "Mid-print replacement needs a print that is paused or has been paused")
+
+        # A slot whose emptied reel is still feeding its tail: record the tail with the reel
+        # going out BEFORE the binding names the new one (post-rebuild F-R3) — it commits with
+        # the binding below. Best-effort: an assignment never fails on bookkeeping, and the
+        # savepoint keeps a failure from rolling back (and expiring) what the route has read.
+        try:
+            from backend.app.services.print_usage_journal import ensure_tail_recorded
+
+            async with db.begin_nested():
+                await ensure_tail_recorded(db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id)
+        except Exception:
+            logger.exception("ensure_tail_recorded failed for printer %s", data.printer_id)
+
+        # 3. Upsert assignment (replace if same printer+ams+tray)
+        existing = await db.execute(
+            select(SpoolAssignment).where(
+                SpoolAssignment.printer_id == data.printer_id,
+                SpoolAssignment.ams_id == data.ams_id,
+                SpoolAssignment.tray_id == data.tray_id,
+            )
         )
-    )
-    old = existing.scalar_one_or_none()
-    # What this assignment displaces, read before the row goes (spec 2026-09-13
-    # §3.3). Reported on the response so the UI can offer Replace in one step;
-    # the replace itself is unchanged — an occupied slot is never refused.
-    replaced_spool_id = old.spool_id if old and old.spool_id != data.spool_id else None
-    if replaced_spool_id is not None:
-        logger.info(
-            "Slot %s/%s/%s: spool %s replaced with %s",
-            data.printer_id,
-            data.ams_id,
-            data.tray_id,
-            replaced_spool_id,
-            data.spool_id,
-        )
-    if old:
-        await db.delete(old)
-        await db.flush()
+        old = existing.scalar_one_or_none()
+        # What this assignment displaces, read before the row goes (spec 2026-09-13
+        # §3.3). Reported on the response so the UI can offer Replace in one step;
+        # the replace itself is unchanged — an occupied slot is never refused.
+        replaced_spool_id = old.spool_id if old and old.spool_id != data.spool_id else None
+        if replaced_spool_id is not None:
+            logger.info(
+                "Slot %s/%s/%s: spool %s replaced with %s",
+                data.printer_id,
+                data.ams_id,
+                data.tray_id,
+                replaced_spool_id,
+                data.spool_id,
+            )
+        if old:
+            await db.delete(old)
+            await db.flush()
 
-    assignment = SpoolAssignment(
-        spool_id=data.spool_id,
-        printer_id=data.printer_id,
-        ams_id=data.ams_id,
-        tray_id=data.tray_id,
-        fingerprint_color=fingerprint_color,
-        fingerprint_type=fingerprint_type,
-        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-    )
-    db.add(assignment)
-    await db.commit()
-    await db.refresh(assignment)
-
-    # If this slot ran out during the active print, this assignment IS the
-    # replacement (the runout notification asks for exactly this) — journal
-    # the spool_loaded boundary. Best-effort; the assignment must never fail
-    # on bookkeeping.
-    try:
-        from backend.app.services.print_usage_journal import note_assignment_change
-
-        await note_assignment_change(
-            db,
+        assignment = SpoolAssignment(
+            spool_id=data.spool_id,
             printer_id=data.printer_id,
             ams_id=data.ams_id,
             tray_id=data.tray_id,
-            spool_id=data.spool_id,
+            fingerprint_color=fingerprint_color,
+            fingerprint_type=fingerprint_type,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
-    except Exception:
-        logger.exception("note_assignment_change failed for printer %s", data.printer_id)
+        db.add(assignment)
+        await db.commit()
+        await db.refresh(assignment)
+
+        # If this slot ran out during the active print, this assignment IS the
+        # replacement (the runout notification asks for exactly this) — journal
+        # the spool_loaded boundary. Best-effort; the assignment must never fail
+        # on bookkeeping.
+        try:
+            from backend.app.services.print_usage_journal import note_assignment_change
+
+            await note_assignment_change(
+                db,
+                printer_id=data.printer_id,
+                ams_id=data.ams_id,
+                tray_id=data.tray_id,
+                spool_id=data.spool_id,
+            )
+        except Exception:
+            logger.exception("note_assignment_change failed for printer %s", data.printer_id)
 
     # re-Connect MQTT if stalled
     await printer_manager.ensure_fresh_connection(data.printer_id)

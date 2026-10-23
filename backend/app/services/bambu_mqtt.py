@@ -47,6 +47,9 @@ _connection_generations = count(1)
 
 logger = logging.getLogger(__name__)
 
+# Tray reports held for a joined print's seed; only changes are kept, so a few suffice.
+_JOURNAL_PENDING_LIMIT = 64
+
 
 def _install_paho_suback_guard() -> None:
     """Guard paho's SUBACK handler against malformed (sub-2-byte) packets.
@@ -2200,6 +2203,7 @@ class BambuMQTTClient:
         on_skipped_objects_changed: Callable[[list], None] | None = None,
         on_tray_change: Callable[[int, int], None] | None = None,
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
+        on_feed_event: Callable[[str, int, int, bool], None] | None = None,
         on_lights_report: Callable[[bool], None] | None = None,
         on_kprofile_tables_due: Callable[[list[str]], None] | None = None,
         on_spool_inserted: Callable[[dict], None] | None = None,
@@ -2274,6 +2278,13 @@ class BambuMQTTClient:
         # runout. Receives ``(event, kind, global_tray_id, layer_num)``.
         # main.py mirrors these into ``print_usage_events``.
         self.on_usage_event = on_usage_event
+        # The runout tail's two journal facts (post-rebuild F-R2): ``("tail_start", origin,
+        # layer, after_gap)`` when an emptied AMS reel's tube starts feeding under the
+        # external sentinel, ``("feed_return", origin, layer, after_gap)`` when the feed
+        # comes back to that tray. ``after_gap`` says the observation was the first after
+        # this client joined the print or reconnected — a return seen then may have
+        # happened while nobody was watching.
+        self.on_feed_event = on_feed_event
         # Runout dedup: tray → fired kind, cleared on new print. The firmware
         # repeats HMS codes in every push until the fault clears; the journal
         # wants ONE boundary per tray per print (kind may upgrade
@@ -2356,6 +2367,30 @@ class BambuMQTTClient:
         # episode log at DEBUG; the first sighting (and each new episode) at
         # INFO. Cleared on a real tray change and on new-print reset.
         self._last_tail_suppressed: tuple[int, int] | None = None
+        # The runout-tail latch (post-rebuild F-R1): the AMS tray whose emptied reel the
+        # tube still feeds while tray_now reads the external sentinel, and the layer the
+        # episode opened on. Only the feed coming back to that tray (``feed_return``) or
+        # a feed from another AMS tray (the backup, an ordinary tray change) closes it —
+        # a reel put back into the slot, or our own ams_filament_setting echoing a type,
+        # does not: the new reel is in the slot, not in the nozzle.
+        self._tail_origin: int | None = None
+        self._tail_open_layer: int = 0
+        # The journal hold of a print this client joined mid-flight (F-R4). ``None``: this
+        # client decided nothing yet, and is held for as long as it has not seen a print
+        # run — the first packet's tray branch runs BEFORE its gcode_state is parsed, so
+        # a joined print's first tray report must not be journaled against an empty
+        # chronology. ``True``: a joined print is running and its seed is awaited
+        # (``seed_usage_journal``). ``False``: seeded, or the print started under this
+        # client's watch. Held tray observations wait in arrival order and are replayed
+        # after the seed; nothing else waits for it.
+        self._journal_held: bool | None = None
+        self._journal_pending: list[tuple[int, int | None, frozenset[int]]] = []
+        self._journal_lock = threading.RLock()
+        # One per print this client lineage started or joined: a seed names the print it
+        # was computed for, so it can never be applied to the next one.
+        self._journal_generation: int = 0
+        # The next tray observation of a print is the first after joining it or reconnecting.
+        self._journal_after_gap: bool = False
         # The routing code of the last ``start_print`` that published nothing (None after one that did).
         self.last_start_refusal: str | None = None
         self._last_message_time: float = 0.0  # Track when we last received a message
@@ -2552,6 +2587,19 @@ class BambuMQTTClient:
         # sweep classifies it "running" and no-ops, so re-firing after a
         # frequent stale-watchdog reconnect is harmless.
         self._startup_reconcile_done = False
+        # The usage journal's derived state (post-rebuild F-R4): the chronology, the origin
+        # and an open runout tail survive the swap, or the first report of the new client
+        # would be read against nothing. Its first tray report follows the reconnect gap.
+        with prior._journal_lock:
+            self.state.tray_change_log = list(prior.state.tray_change_log)
+            self.state.last_loaded_tray = prior.state.last_loaded_tray
+            self._tail_origin = prior._tail_origin
+            self._tail_open_layer = prior._tail_open_layer
+            self._last_tail_suppressed = prior._last_tail_suppressed
+            self._journal_held = prior._journal_held
+            self._journal_pending = list(prior._journal_pending)
+            self._journal_generation = prior._journal_generation
+        self._journal_after_gap = True
 
     @property
     def _sequence_id(self) -> int:
@@ -4644,73 +4692,7 @@ class BambuMQTTClient:
                 # normalised unit 6), 128-135 (AMS-HT), 254 (external spool)
                 tn = self.state.tray_now
                 if self._is_journal_tray(tn):
-                    # Log tray change for mid-print usage splitting. Gate on
-                    # the print-lifecycle flags (`_was_running` set on first
-                    # RUNNING / new print, `_completion_triggered` set when
-                    # on_print_complete fires) instead of ``state in
-                    # ("RUNNING", "PAUSE")`` — P2S firmware briefly transitions
-                    # out of RUNNING during AMS auto-fallback (#957), so a
-                    # literal-string gate misses the switch and the usage
-                    # tracker double-credits at completion (original tray gets
-                    # the full 3MF estimate via slot_to_tray + the AMS
-                    # remain%-delta path adds the fallback weight on top).
-                    # Dedup keys on the LOG TAIL as well: after a mid-print
-                    # client recreation the restored log already carries the
-                    # current tray while the fresh client's last_loaded_tray
-                    # is -1 — appending again would hand the completion split
-                    # a same-tray duplicate whose second segment it silently
-                    # drops.
-                    _log_tail = self.state.tray_change_log[-1][0] if self.state.tray_change_log else None
-                    changed = (
-                        tn != self.state.last_loaded_tray
-                        and tn != _log_tail
-                        and self._was_running
-                        and not self._completion_triggered
-                    )
-                    if (
-                        changed
-                        and tn >= 254
-                        and self.state.last_loaded_tray is not None
-                        and 0 <= self.state.last_loaded_tray < 254
-                        and self._ams_tray_reports_empty(self.state.last_loaded_tray)
-                    ):
-                        # Runout tail, not a tray change (X2D, 2026-08-23):
-                        # when an AMS slot runs dry the firmware flips the
-                        # nozzle's source to its external id and keeps printing
-                        # the filament still in the feed tube — that filament
-                        # is the emptied reel's, and one nozzle cannot combine
-                        # AMS and external in a single job. The discriminator
-                        # is the source slot itself: emptied means tail; still
-                        # loaded means a genuine dual-nozzle switch to the
-                        # other nozzle's external, which logs normally below.
-                        # last_loaded_tray deliberately stays on the origin so
-                        # the post-refill return (or an AMS-backup hop) reads
-                        # as one clean change from the origin tray.
-                        _pair = (tn, self.state.last_loaded_tray)
-                        logger.log(
-                            logging.DEBUG if self._last_tail_suppressed == _pair else logging.INFO,
-                            "[%s] tray_now=%d with emptied source slot %d - runout tail, not a tray change",
-                            self.serial_number,
-                            tn,
-                            self.state.last_loaded_tray,
-                        )
-                        self._last_tail_suppressed = _pair
-                    else:
-                        # Any non-suppressed journal-tray sighting ends the
-                        # tail episode — including the quiet return to the
-                        # refilled origin slot, which is not a "change".
-                        self._last_tail_suppressed = None
-                        if changed:
-                            self.state.tray_change_log.append((tn, self.state.layer_num))
-                            logger.info(
-                                "[%s] Tray change during print: tray=%d at layer=%d",
-                                self.serial_number,
-                                tn,
-                                self.state.layer_num,
-                            )
-                            if self.on_tray_change:
-                                self.on_tray_change(tn, self.state.layer_num)
-                        self.state.last_loaded_tray = self.state.tray_now
+                    self._observe_journal_tray(tn, self.state.layer_num)
 
                 logger.debug("[%s] tray_now updated: %s", self.serial_number, self.state.tray_now)
 
@@ -7180,6 +7162,13 @@ class BambuMQTTClient:
             # backend restart happened to reset the client).
             self.state.last_loaded_tray = tn if self._is_journal_tray(tn) else -1
             self._last_tail_suppressed = None
+            # Watched from its start: nothing to seed, nothing held belongs to it.
+            with self._journal_lock:
+                self._journal_held = False
+                self._journal_pending.clear()
+                self._journal_generation += 1
+                self._journal_after_gap = False
+                self._tail_origin = None
             # Initialize timelapse tracking based on current state
             # NOTE: xcam data is parsed BEFORE this code runs in _process_message,
             # so self.state.timelapse may already be set from this message.
@@ -7217,6 +7206,13 @@ class BambuMQTTClient:
             # ``_was_running``, set below, so it cannot have fired yet on this
             # client, and the status repeats on every push.
             self._runout_seeded = False
+            # Likewise the usage journal: tray reports wait for the seed (``seed_usage_journal``),
+            # which must name this print — a seed computed for another one is refused.
+            with self._journal_lock:
+                self._journal_held = True
+                self._journal_generation += 1
+                self._journal_after_gap = True
+                journal_generation = self._journal_generation
             # Restart-recovery hook (#1485 follow-up): BamDude started mid-
             # print, so the #1304 first-push guard suppressed on_print_start,
             # but we still need main.py to capture a fresh timelapse baseline
@@ -7235,6 +7231,7 @@ class BambuMQTTClient:
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
                     "plate_param": self._captured_print_param,
+                    "_journal_generation": journal_generation,
                 }
             )
 
@@ -7664,16 +7661,18 @@ class BambuMQTTClient:
             or tn == 254
         )
 
-    def _ams_tray_reports_empty(self, global_tray_id: int) -> bool:
-        """True when the merged AMS state shows this slot with no filament.
+    def _empty_ams_trays(self) -> frozenset[int]:
+        """Global ids of the AMS slots the merged state shows with no filament right now.
 
-        The stale-tray clearing in the AMS parser injects blank content fields
-        the moment a slot's state says "not loaded", so an emptied slot is a
-        tray dict with a blank ``tray_type``. A tray we cannot find is NOT
-        empty — absence of data must not read as absence of filament.
+        The stale-tray clearing in the AMS parser injects blank content fields the moment a
+        slot's state says "not loaded", so an emptied slot is a tray dict with a blank
+        ``tray_type``. A tray we cannot find is NOT empty — absence of data must not read as
+        absence of filament. Read for every slot at once, so a held observation can carry it
+        to its replay.
         """
         ams_raw = (self.state.raw_data or {}).get("ams") or {}
         ams_list = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw
+        empty: set[int] = set()
         for unit in ams_list if isinstance(ams_list, list) else []:
             if not isinstance(unit, dict):
                 continue
@@ -7688,10 +7687,142 @@ class BambuMQTTClient:
                     tray_id = int(tray.get("id", 0))
                 except (TypeError, ValueError):
                     continue
-                gid = unit_id if unit_id >= 128 else unit_id * 4 + tray_id
-                if gid == global_tray_id:
-                    return not str(tray.get("tray_type", "") or "").strip()
-        return False
+                if not str(tray.get("tray_type", "") or "").strip():
+                    empty.add(unit_id if unit_id >= 128 else unit_id * 4 + tray_id)
+        return frozenset(empty)
+
+    def _journal_is_held(self) -> bool:
+        if self._journal_held is None:
+            return not self._was_running
+        return self._journal_held
+
+    def _observe_journal_tray(self, tn: int, layer: int) -> None:
+        """A tray report of a print: journaled now, or held for the joined print's seed."""
+        with self._journal_lock:
+            if self._journal_is_held():
+                if not self._journal_pending or self._journal_pending[-1][0] != tn:
+                    # A client that joined has no layer yet: this packet's own is parsed after
+                    # its tray branch. The replay then takes the layer known at the seed.
+                    known = layer if (self.state.layer_num or self.state.total_layers) else None
+                    self._journal_pending.append((tn, known, self._empty_ams_trays()))
+                    del self._journal_pending[:-_JOURNAL_PENDING_LIMIT]
+                # Bookkeeping only (the "survives the end-of-print retract" fallback): the
+                # seed puts the journal's own origin back before anything is replayed.
+                self.state.last_loaded_tray = tn
+                return
+            self._apply_journal_tray(tn, layer, self._empty_ams_trays())
+
+    def _apply_journal_tray(self, tn: int, layer: int, empty: frozenset[int]) -> None:
+        """One tray observation against the print's chronology and the tail latch.
+
+        Log tray changes for mid-print usage splitting. Gated on the print-lifecycle
+        flags (``_was_running`` set on first RUNNING / new print, ``_completion_triggered``
+        set when on_print_complete fires) instead of ``state in ("RUNNING", "PAUSE")`` —
+        P2S firmware briefly transitions out of RUNNING during AMS auto-fallback (#957), so
+        a literal-string gate misses the switch and the usage tracker double-credits at
+        completion. Dedup keys on the LOG TAIL as well: a restored log can already carry the
+        current tray — appending again would hand the completion split a same-tray
+        duplicate whose second segment it silently drops.
+        """
+        log_tail = self.state.tray_change_log[-1][0] if self.state.tray_change_log else None
+        origin = self.state.last_loaded_tray
+        running = self._was_running and not self._completion_triggered
+        changed = tn != origin and tn != log_tail and running
+        after_gap = self._journal_after_gap
+        if running:
+            self._journal_after_gap = False
+        if self._tail_origin is not None:
+            if tn >= 254:
+                # Still the tail, whatever the slot reads now: a reel put back in (or our own
+                # ams_filament_setting echoing a type) is in the slot, not in the nozzle.
+                logger.debug(
+                    "[%s] tray_now=%d - runout tail of tray %d continues", self.serial_number, tn, self._tail_origin
+                )
+                return
+            latched, self._tail_origin = self._tail_origin, None
+            self._last_tail_suppressed = None
+            if tn == latched:
+                logger.info(
+                    "[%s] Feed came back to tray %d at layer %d - end of its tail", self.serial_number, tn, layer
+                )
+                if running and self.on_feed_event:
+                    self.on_feed_event("feed_return", latched, layer, after_gap)
+            # Another AMS tray: the backup took over — the ordinary tray change below says so.
+        elif changed and tn >= 254 and origin is not None and 0 <= origin < 254 and origin in empty:
+            # Runout tail, not a tray change (X2D, 2026-08-23): when an AMS slot runs dry the
+            # firmware flips the nozzle's source to its external id and keeps printing the
+            # filament still in the feed tube — that filament is the emptied reel's, and one
+            # nozzle cannot combine AMS and external in a single job. The discriminator is
+            # the source slot itself: emptied means tail; still loaded means a genuine
+            # dual-nozzle switch to the other nozzle's external, which logs normally below.
+            # last_loaded_tray deliberately stays on the origin, and the latch holds until
+            # the feed leaves the sentinel (post-rebuild F-R1).
+            self._tail_origin = origin
+            self._tail_open_layer = layer
+            self._last_tail_suppressed = (tn, origin)
+            logger.info(
+                "[%s] tray_now=%d with emptied source slot %d - runout tail, not a tray change",
+                self.serial_number,
+                tn,
+                origin,
+            )
+            if self.on_feed_event:
+                self.on_feed_event("tail_start", origin, layer, after_gap)
+            return
+        self._last_tail_suppressed = None
+        if changed:
+            self.state.tray_change_log.append((tn, layer))
+            logger.info("[%s] Tray change during print: tray=%d at layer=%d", self.serial_number, tn, layer)
+            if self.on_tray_change:
+                self.on_tray_change(tn, layer)
+        self.state.last_loaded_tray = tn
+
+    def journal_generation(self) -> int:
+        """The print this client's journal currently belongs to (see ``seed_usage_journal``)."""
+        with self._journal_lock:
+            return self._journal_generation
+
+    def open_tail(self) -> tuple[int, int] | None:
+        """``(origin tray, opening layer)`` of the runout tail being fed now, or None.
+
+        None also while a joined print waits for its seed: nothing is proven then.
+        """
+        with self._journal_lock:
+            if self._journal_is_held() or self._tail_origin is None:
+                return None
+            return self._tail_origin, self._tail_open_layer
+
+    def seed_usage_journal(
+        self,
+        generation: int,
+        *,
+        log: list,
+        last_loaded_tray: int,
+        tail_origin: int | None,
+        tail_open_layer: int = 0,
+    ) -> bool:
+        """Give a joined print its chronology and open tail back, then replay what was held.
+
+        Called by main.py once the journal was read back (restart recovery). Refused — and
+        nothing replayed — when the seed names another print than the one now held, or the
+        print is no longer held (it started anew under this client). The held observations
+        are processed in arrival order, the one in the packet that started the recovery
+        included; the first of them may close an open tail as a return after the gap.
+        """
+        with self._journal_lock:
+            if generation != self._journal_generation or self._journal_held is not True:
+                return False
+            self.state.tray_change_log = [tuple(entry) for entry in log]
+            self.state.last_loaded_tray = last_loaded_tray
+            self._tail_origin = tail_origin
+            self._tail_open_layer = tail_open_layer
+            self._last_tail_suppressed = (254, tail_origin) if tail_origin is not None else None
+            self._journal_held = False
+            self._journal_after_gap = True
+            pending, self._journal_pending = self._journal_pending, []
+            for tn, layer, empty in pending:
+                self._apply_journal_tray(tn, self.state.layer_num if layer is None else layer, empty)
+            return True
 
     def _ams_unit_ids(self) -> list[int]:
         """Ids of the AMS units currently present, from merged state."""

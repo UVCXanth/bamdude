@@ -12,9 +12,12 @@ the archive hard-delete path, because the FK CASCADE on the table fires on
 PostgreSQL only — this codebase never sets ``PRAGMA foreign_keys``.
 """
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +25,252 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.print_usage_event import PrintUsageEvent
 
 logger = logging.getLogger(__name__)
+
+# One per printer: every journal check-and-append (tray change, runout, the tail facts, an
+# assignment's identity note) runs under it, so two of them never decide on the same rows
+# at once and their rows land in the order they were observed. Taken FIRST by a callback
+# (callbacks are scheduled in arrival order, and the lock is FIFO) and after
+# ``_get_ams_assignment_lock`` by an assignment — never the other way round. The functions
+# below expect the caller to hold it; none takes it itself.
+_journal_locks: dict[int, asyncio.Lock] = {}
+
+
+def journal_lock(printer_id: int) -> asyncio.Lock:
+    """The per-printer journal lock (see above), created on first use."""
+    lock = _journal_locks.get(printer_id)
+    if lock is None:
+        lock = _journal_locks[printer_id] = asyncio.Lock()
+    return lock
+
+
+@dataclass(frozen=True)
+class TailEpisode:
+    """One runout tail of a print (post-rebuild F-R2): its ``tail_start`` and the event that
+    closed it — a ``feed_return`` on the origin, or a feed from another AMS tray — or None
+    while it is still open. Identified by archive, origin tray and the tail_start's id."""
+
+    start: Any
+    close: Any | None
+
+    @property
+    def origin(self) -> int:
+        return self.start.global_tray_id
+
+    def contains(self, event) -> bool:
+        return self.start.id < event.id and (self.close is None or event.id < self.close.id)
+
+
+def _closes_tail(event, origin: int) -> bool:
+    from backend.app.models.print_usage_event import EVENT_FEED_RETURN, EVENT_TRAY_CHANGE
+
+    if event.event == EVENT_FEED_RETURN:
+        return event.global_tray_id == origin
+    tray = event.global_tray_id
+    return event.event == EVENT_TRAY_CHANGE and tray is not None and 0 <= tray < 254 and tray != origin
+
+
+def tail_episodes(events: list, tray: int | None = None) -> list[TailEpisode]:
+    """The print's tail episodes in journal order — of one origin when ``tray`` is given.
+
+    Read by journal id, never by time. One feed has one tail at a time: a ``tail_start``
+    while one is open is a duplicate and ignored, and a tray change onto the external
+    sentinel inside one is noise, not its end.
+    """
+    from backend.app.models.print_usage_event import EVENT_TAIL_START
+
+    episodes: list[TailEpisode] = []
+    current = None
+    for e in sorted(events or [], key=lambda e: e.id):
+        if current is None:
+            if e.event == EVENT_TAIL_START and e.global_tray_id is not None:
+                current = e
+        elif _closes_tail(e, current.global_tray_id):
+            episodes.append(TailEpisode(current, e))
+            current = None
+    if current is not None:
+        episodes.append(TailEpisode(current, None))
+    return [ep for ep in episodes if tray is None or ep.origin == tray]
+
+
+def open_tail_episode(events: list, tray: int | None = None) -> TailEpisode | None:
+    """The print's open tail — of ``tray`` when given — or None."""
+    episodes = tail_episodes(events)
+    last = episodes[-1] if episodes else None
+    if last is None or last.close is not None or (tray is not None and last.origin != tray):
+        return None
+    return last
+
+
+async def _append(db: AsyncSession, **fields) -> PrintUsageEvent:
+    """One journal row, flushed into the caller's transaction (the caller commits)."""
+    row = PrintUsageEvent(
+        **fields, slot_occupied=_slot_occupied_now(fields["printer_id"], fields.get("global_tray_id"))
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def record_tail_start(db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int) -> bool:
+    """Open a tail episode on ``origin``, freezing the reel bound to it now; False when one is open.
+
+    Frozen from the binding as every journal row is — and safe from an assignment that
+    arrives while this callback waits, because every assignment writer records the open
+    tail itself before it rewrites the binding (``ensure_tail_recorded``). Does not commit.
+    """
+    from backend.app.models.print_usage_event import EVENT_TAIL_START
+
+    if open_tail_episode(await load_events(db, printer_id, archive_id)) is not None:
+        return False
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, origin)
+    await _append(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_TAIL_START,
+        global_tray_id=origin,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+    logger.info(
+        "[UsageJournal] Runout tail of tray %d on printer %d from layer %d (spool=%s/%s)",
+        origin,
+        printer_id,
+        layer_num,
+        spool_id,
+        spoolman_spool_id,
+    )
+    return True
+
+
+async def record_feed_return(
+    db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int, after_gap: bool
+) -> bool:
+    """Close the open tail of ``origin``: the feed boundary, with the reel bound at this moment.
+
+    ``after_gap``: the return was first seen after a restart or a new client — the layer is
+    the observed one, and what fed since the tail's last proven layer is not recorded.
+    A return without an open tail is a no-op (False). Does not commit.
+    """
+    from backend.app.models.print_usage_event import EVENT_FEED_RETURN, KIND_GAP
+
+    if open_tail_episode(await load_events(db, printer_id, archive_id), origin) is None:
+        return False
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, origin)
+    await _append(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_FEED_RETURN,
+        kind=KIND_GAP if after_gap else None,
+        global_tray_id=origin,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+    logger.info(
+        "[UsageJournal] Feed back on tray %d on printer %d at layer %d%s (spool=%s/%s)",
+        origin,
+        printer_id,
+        layer_num,
+        " after an observation gap" if after_gap else "",
+        spool_id,
+        spoolman_spool_id,
+    )
+    return True
+
+
+async def active_tail_archive(db: AsyncSession, printer_id: int, subtask_id: str | None):
+    """The archive a tail fact observed now belongs to, or None.
+
+    The newest printing archive — and when the observation and the archive both name a
+    firmware subtask, they must name the same one: a fact of the print before never
+    lands in the next (F-R2).
+    """
+    from backend.app.models.archive import PrintArchive
+
+    archive = (
+        await db.execute(
+            select(PrintArchive.id, PrintArchive.subtask_id)
+            .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+            .order_by(PrintArchive.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if archive is None:
+        return None
+    observed = str(subtask_id or "").strip()
+    recorded = str(archive.subtask_id or "").strip()
+    if observed not in ("", "0") and recorded not in ("", "0") and observed != recorded:
+        return None
+    return archive.id
+
+
+async def handle_feed_event(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    event: str,
+    origin: int,
+    layer_num: int,
+    after_gap: bool,
+    subtask_id: str | None = None,
+) -> bool:
+    """Journal one tail fact the MQTT client observed; the caller holds ``journal_lock``."""
+    archive_id = await active_tail_archive(db, printer_id, subtask_id)
+    if archive_id is None:
+        logger.debug("Tail fact %s on printer %d has no matching active archive, dropped", event, printer_id)
+        return False
+    if event == "tail_start":
+        written = await record_tail_start(
+            db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer_num
+        )
+    elif event == "feed_return":
+        written = await record_feed_return(
+            db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer_num, after_gap=after_gap
+        )
+    else:
+        return False
+    if written:
+        await db.commit()
+    return written
+
+
+async def ensure_tail_recorded(db: AsyncSession, *, printer_id: int, ams_id: int, tray_id: int) -> bool:
+    """Before an assignment rewrites a slot's binding: if that slot's reel is feeding its
+    tail right now, make sure the tail_start exists, frozen with the reel going out.
+
+    The tail is observed on the MQTT thread and journaled by a queued callback; an
+    assignment that commits in between would hand the new reel to the tail. So whoever
+    comes first writes it — this, under the caller's ``journal_lock``, or the callback,
+    which then finds the episode open. Flushed into the caller's transaction, so the
+    tail_start and the new binding commit together.
+    """
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        client = printer_manager.get_client(printer_id)
+        tail = client.open_tail() if client is not None else None
+    except Exception:  # noqa: BLE001 - no reading proves nothing; the callback still records it
+        tail = None
+    if tail is None:
+        return False
+    origin, layer = tail
+    if origin != _global_tray(ams_id, tray_id):
+        return False
+    archive_id = await active_archive_id(db, printer_id)
+    if archive_id is None:
+        return False
+    return await record_tail_start(db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer)
+
+
+def _global_tray(ams_id: int, tray_id: int) -> int:
+    if ams_id >= 254:
+        return 254 + tray_id
+    if ams_id >= 128:
+        return ams_id
+    return ams_id * 4 + tray_id
 
 
 class RunoutResult(StrEnum):
@@ -282,6 +531,7 @@ async def record_runout(
       inheriting recorded lineage is not guessing.
     """
     from backend.app.models.print_usage_event import (
+        EVENT_FEED_RETURN,
         EVENT_RUNOUT,
         EVENT_SPOOL_LOADED,
         EVENT_START,
@@ -290,6 +540,20 @@ async def record_runout(
     )
 
     occupied = _slot_occupied_now(printer_id, global_tray_id)
+    if global_tray_id is not None:
+        # A runout inside an open tail is the tail running dry: the reel the tail_start
+        # froze, never the one put into the slot meanwhile (post-rebuild F-R3).
+        tail = open_tail_episode(await load_events(db, printer_id, archive_id), global_tray_id)
+        if tail is not None and (tail.start.spool_id, tail.start.spoolman_spool_id) != (spool_id, spoolman_spool_id):
+            logger.info(
+                "Runout on tray %s inside its tail: spool %s/%s from the tail's start, not the bound %s/%s",
+                global_tray_id,
+                tail.start.spool_id,
+                tail.start.spoolman_spool_id,
+                spool_id,
+                spoolman_spool_id,
+            )
+            spool_id, spoolman_spool_id = tail.start.spool_id, tail.start.spoolman_spool_id
     if spool_id is None and spoolman_spool_id is None and global_tray_id is not None:
         lineage = (
             await db.execute(
@@ -347,7 +611,7 @@ async def record_runout(
                     select(PrintUsageEvent)
                     .where(
                         PrintUsageEvent.archive_id == archive_id,
-                        PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED]),
+                        PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED, EVENT_FEED_RETURN]),
                         PrintUsageEvent.global_tray_id.is_not(None),
                     )
                     .order_by(PrintUsageEvent.id)
@@ -376,7 +640,7 @@ async def record_runout(
                 select(PrintUsageEvent)
                 .where(
                     PrintUsageEvent.archive_id == archive_id,
-                    PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED]),
+                    PrintUsageEvent.event.in_([EVENT_RUNOUT, EVENT_SPOOL_LOADED, EVENT_FEED_RETURN]),
                     PrintUsageEvent.global_tray_id == global_tray_id,
                 )
                 .order_by(PrintUsageEvent.id)
@@ -387,7 +651,9 @@ async def record_runout(
     )
     last_runout = next((e for e in reversed(rows) if e.event == EVENT_RUNOUT), None)
     if last_runout is not None:
-        closed = any(e.event == EVENT_SPOOL_LOADED and e.id > last_runout.id for e in rows)
+        # A reel loaded after it, or the feed back from its tail: the episode is over, and
+        # a runout now is the next reel's (F06).
+        closed = any(e.event in (EVENT_SPOOL_LOADED, EVENT_FEED_RETURN) and e.id > last_runout.id for e in rows)
         if not closed:
             if _kind_upgrade(last_runout.kind, kind):
                 last_runout.kind = kind
@@ -696,6 +962,12 @@ async def note_assignment_change(
     # The LAST runout on the tray — episodes are closed in order, and a second
     # runout of the same tray (two short reels) needs its own replacement.
     runout = next((e for e in reversed(events) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray), None)
+    # Or the tray's open runout tail, even before any runout (post-rebuild F-R3): the
+    # assignment names the reel now in the slot. That is identity only — the projection
+    # takes the feed boundary from the ``feed_return``, never from this click.
+    tail = open_tail_episode(events, global_tray)
+    if tail is not None and (runout is None or tail.start.id > runout.id):
+        runout = tail.start
     if runout is None:
         return
     already = next(

@@ -117,6 +117,57 @@ def _refill_layers(events: list, tray: int) -> dict[int, int]:
     return layers
 
 
+def tail_owned_ids(events: list, episodes: list) -> set[int]:
+    """Origin rows a tail episode owns: assignments during the tail and the tail's own runout.
+
+    An assignment while the tube still feeds the old reel names the reel now in the slot —
+    identity, not a feed boundary; a runout inside the episode is the tail running dry, not
+    a new reel's. Neither may act as a boundary of its own: the episode supplies the
+    boundary from its ``feed_return`` (post-rebuild F-R3/F-R4).
+    """
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+
+    return {
+        e.id
+        for ep in episodes
+        for e in events
+        if e.global_tray_id == ep.origin and e.event in (EVENT_RUNOUT, EVENT_SPOOL_LOADED) and ep.contains(e)
+    }
+
+
+def tail_identity_changes(episode, events: list) -> list[tuple[int, int | None, int | None, tuple[int, int]]]:
+    """Who fed a tail episode's origin from where: ``(layer, spool_id, spoolman_id, order)``.
+
+    * closed by a ``feed_return`` observed live: the reel bound then, from its layer;
+    * a ``feed_return`` first seen after an observation gap: from the tail's last proven
+      layer (its start, or its own runout) to the return nobody is named — the return's
+      layer is the observed one, not the historical one;
+    * still open after the tail ran dry (its runout): nobody from that runout — no boundary
+      is invented and the old reel is not handed the rest;
+    * still open, or closed by another AMS tray: nothing — the old reel kept feeding, and a
+      backup is the chronology's to say.
+
+    ``order`` sorts the changes into journal order.
+    """
+    from backend.app.models.print_usage_event import EVENT_FEED_RETURN, EVENT_RUNOUT, KIND_GAP
+
+    runouts = [
+        e for e in events if e.event == EVENT_RUNOUT and e.global_tray_id == episode.origin and episode.contains(e)
+    ]
+    close = episode.close
+    if close is not None and close.event == EVENT_FEED_RETURN:
+        changes = []
+        if close.kind == KIND_GAP:
+            last_tail = max([episode.start.layer_num] + [r.layer_num for r in runouts])
+            if last_tail < close.layer_num:
+                changes.append((last_tail, None, None, (close.id, 0)))
+        changes.append((close.layer_num, close.spool_id, close.spoolman_spool_id, (close.id, 1)))
+        return changes
+    if close is None and runouts:
+        return [(runouts[-1].layer_num, None, None, (runouts[-1].id, 0))]
+    return []
+
+
 def _has_spool_boundary(events: list, tray: int) -> bool:
     from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
 
@@ -139,32 +190,48 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
     counts from its runout's layer (``_refill_layers``). A tray the
     journal holds no spool boundary for (no runout, no reel loaded) is left for
     the writer to resolve (``frozen=False``).
+
+    A runout tail of a tray (post-rebuild F-R4) is read as ``journal_boundaries_for_tray``
+    reads it: its assignments and its own runout are not boundaries, and the identity
+    changes at the episode's ``feed_return`` (``tail_identity_changes``).
     """
-    from backend.app.services.print_usage_journal import without_stale_refill_runouts
+    from backend.app.services.print_usage_journal import tail_episodes, without_stale_refill_runouts
 
     chronology = normalize_tray_changes(tray_changes)
     if len(chronology) <= 1:
         return []
-    events = sorted(without_stale_refill_runouts(list(journal_events or [])), key=lambda e: e.id)
+    all_events = sorted(without_stale_refill_runouts(list(journal_events or [])), key=lambda e: e.id)
+    episodes = tail_episodes(all_events)
+    owned = tail_owned_ids(all_events, episodes)
+    events = [e for e in all_events if e.id not in owned]
 
     intervals: list[FeedInterval] = []
     for idx, (tray, start) in enumerate(chronology):
         end = chronology[idx + 1][1] if idx + 1 < len(chronology) else None
-        if not _has_spool_boundary(events, tray):
+        tray_episodes = [ep for ep in episodes if ep.origin == tray]
+        if not _has_spool_boundary(events, tray) and not tray_episodes:
             intervals.append(FeedInterval(start, tray, None, None, False))
             continue
-        identities = _identity_events(events, tray)
         refills = _refill_layers(events, tray)
-        current = None
+        marks = [
+            ((e.id, 0), refills.get(e.id, e.layer_num), e.spool_id, e.spoolman_spool_id)
+            for e in _identity_events(events, tray)
+        ]
+        for ep in tray_episodes:
+            marks.extend(
+                (order, layer, spool, spoolman)
+                for layer, spool, spoolman, order in tail_identity_changes(ep, all_events)
+            )
+        marks.sort(key=lambda mark: mark[0])  # journal order
+        current: tuple[int | None, int | None] | None = None
         changes: list[tuple[int, int | None, int | None]] = []
-        for e in identities:
-            layer = refills.get(e.id, e.layer_num)
+        for _order, layer, spool, spoolman in marks:
             if layer <= start:
-                current = e
+                current = (spool, spoolman)
             elif end is None or layer < end:
-                changes.append((layer, e.spool_id, e.spoolman_spool_id))
+                changes.append((layer, spool, spoolman))
         changes.sort(key=lambda change: change[0])  # stable: journal order within a layer
-        first = (start, current.spool_id, current.spoolman_spool_id) if current is not None else (start, None, None)
+        first = (start, *current) if current is not None else (start, None, None)
         stretch = [first]
         for change in changes:
             if stretch[-1][0] == change[0]:
