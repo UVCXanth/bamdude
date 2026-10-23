@@ -90,6 +90,9 @@ class ClaimResult:
     claimed: bool
     reason: str | None = None
     started_at: datetime | None = None
+    #: The committed failure a refused claim wrote (``budget_exhausted``): its closed class and sentence.
+    failure_code: str | None = None
+    failure_message: str | None = None
 
 
 # Kept as a module-level name because ``auto_queue_eligibility`` imports it from
@@ -2487,27 +2490,34 @@ class PrintScheduler:
             if (spent or 0) >= DISPATCH_MAX_ATTEMPTS:
                 # The cap is asked BEFORE a new claim: a row whose attempts a crash
                 # loop spent fails here, visibly, instead of uploading again.
+                message = (
+                    f"Dispatch budget exhausted after {spent} attempts. Check the printer, then Retry "
+                    "the job and resume the queue."
+                )
                 result = await cdb.execute(
                     update(PrintQueueItem)
                     .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
                     .values(
                         status="failed",
                         error_code=failure_reasons.DISPATCH_INTERNAL_ERROR,
-                        error_message=(
-                            f"Dispatch budget exhausted after {spent} attempts. Check the printer, then Retry "
-                            "the job and resume the queue."
-                        ),
+                        error_message=message,
                         completed_at=now,
                         gate_acknowledged=True,
                     )
                     .execution_options(synchronize_session=False)
                 )
-                if result.rowcount:
-                    await set_queue_error(cdb, queue_id, failed_item_id=item_id)
-                    await update_queue_counters(cdb, queue_id)
-                    await cdb.commit()
+                if not result.rowcount:
+                    return ClaimResult(False, "not_pending")
+                await set_queue_error(cdb, queue_id, failed_item_id=item_id)
+                await update_queue_counters(cdb, queue_id)
+                await cdb.commit()
                 logger.warning("Queue item %s: dispatch budget exhausted (%s attempts)", item_id, spent)
-                return ClaimResult(False, "budget_exhausted")
+                return ClaimResult(
+                    False,
+                    "budget_exhausted",
+                    failure_code=failure_reasons.DISPATCH_INTERNAL_ERROR,
+                    failure_message=message,
+                )
             cas_result = await cdb.execute(
                 update(PrintQueueItem)
                 .where(PrintQueueItem.id == item_id)
@@ -2736,6 +2746,17 @@ class PrintScheduler:
             item_id=item_id, queue_id=item.queue_id, printer_id=printer.id, plan_fields=plan_fields
         )
         if not claim.claimed:
+            if claim.reason == "budget_exhausted":
+                # Committed by the claim: the job failed and its queue halted — said once, like
+                # every refusal before a claim (the row is no longer pending on the next tick).
+                await notification_service.on_queue_job_failed(
+                    job_name=await self._get_job_name(db, item),
+                    printer_id=printer.id,
+                    printer_name=printer.name,
+                    reason=failure_reasons.dispatch_reason_text(claim.failure_code, claim.failure_message),
+                    db=db,
+                )
+                await self._power_off_if_needed(db, item)
             return False
         # The tick's copy follows the claim without becoming a write of its own.
         set_committed_value(item, "status", "printing")
@@ -2956,6 +2977,7 @@ class PrintScheduler:
             if outcome.get("deferred"):
                 from backend.app.services.filament_deferred import defer_claim
 
+                published = outcome.get("send_fact") in ("sent", "accepted")
                 restored = await defer_claim(
                     db,
                     item_id=queue_item_id,
@@ -2968,7 +2990,7 @@ class PrintScheduler:
                     disposition=outcome.get("disposition"),
                     execution_archive_id=outcome.get("execution_archive_id"),
                     swap_start_effect=outcome.get("swap_start_effect"),
-                    published=outcome.get("send_fact") in ("sent", "accepted"),
+                    published=published,
                     failure_code=outcome.get("failure_code"),
                 )
                 await db.commit()
@@ -2979,6 +3001,22 @@ class PrintScheduler:
                         # Only after THIS attempt's CAS sent the job back: a stale refusal never cools a newer one.
                         self._capture_cooldowns[queue_item_id] = time.monotonic() + CAPTURE_RETRY_COOLDOWN_SECONDS
                     await self.release_prepared_dispatch(printer_id)
+                if restored.terminal:
+                    # Committed: THIS attempt's row failed with its class and its queue halted.
+                    # Said once — a lost CAS is no refusal of ours, a waiting row no failure.
+                    await notification_service.on_queue_job_failed(
+                        job_name=job_name_short,
+                        printer_id=printer_id,
+                        printer_name=printer_name,
+                        reason=failure_reasons.dispatch_reason_text(restored.code, restored.message),
+                        db=db,
+                    )
+                    if not published:
+                        # The policy of a refusal before the start; after a sent start the
+                        # printer's state is unknown and no physical action is added.
+                        item = await db.get(PrintQueueItem, queue_item_id)
+                        if item is not None:
+                            await self._power_off_if_needed(db, item)
                 return
 
             if outcome.get("uncertain"):

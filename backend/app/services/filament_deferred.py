@@ -1,6 +1,7 @@
 """Bookkeeping for an attempt refused before MQTT publish; never a failed print."""
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import case, func, update
@@ -22,6 +23,20 @@ DISPOSITION_FAILED = "failed"
 DISPOSITION_RETRY_LATER = "retry_later"
 #: The wait reason of a queued job whose source copy found the spool busy.
 SOURCE_CAPTURE_WAIT_CODE = "source_capture"
+
+
+@dataclass(frozen=True)
+class DeferResult:
+    """What :func:`defer_claim` did. Truthy when THIS attempt's row took the refusal;
+    ``terminal`` when it ended the row as failed with ``code`` / ``message`` (not yet committed)."""
+
+    owned: bool
+    terminal: bool = False
+    code: str | None = None
+    message: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.owned
 
 
 class SourceCaptureDeferred(RoutingDeferred):
@@ -120,6 +135,9 @@ async def defer_claim(
 ):
     """CAS only our active attempt. Cancelled/deleted/reclaimed rows stay untouched.
 
+    Answers a :class:`DeferResult` — truthy when this attempt's row took the refusal, and
+    saying whether it ended the row, so the caller can report it once after its commit.
+
     ``disposition`` is an explicit answer from a refusal that knows what it is (a source copy at dispatch,
     :func:`capture_refusal`): ``failed`` ends the attempt whatever the reason, ``retry_later`` sends a queued job
     back to pending under its own wait reason. Neither is a routing state, so the routing intent is left as it
@@ -160,7 +178,7 @@ async def defer_claim(
     item = await db.get(PrintQueueItem, item_id) if item_id is not None else None
     if item is None or started_at is None:
         await abort_execution_archive(db, execution_archive_id, detail, failed_code=code if swap_started else None)
-        return False
+        return DeferResult(False)
     wait_code = SOURCE_CAPTURE_WAIT_CODE if disposition == DISPOSITION_RETRY_LATER else "filament_unavailable"
     # Only a refusal proven to have had no effect clears the claim time: a row sent back to
     # pending, or one refused before its attempt had an execution archive (nothing reached
@@ -210,7 +228,7 @@ async def defer_claim(
         db, execution_archive_id, detail, failed_code=code if (swap_started or (terminal and owned)) else None
     )
     if not owned:
-        return False
+        return DeferResult(False)
     if halts_queue:
         await set_queue_error(db, item.queue_id, failed_item_id=item_id, expected_item_id=item_id)
     else:
@@ -226,4 +244,4 @@ async def defer_claim(
             .execution_options(synchronize_session=False)
         )
     await update_queue_counters(db, item.queue_id)
-    return True
+    return DeferResult(True, terminal, code if terminal else None, message if terminal else None)

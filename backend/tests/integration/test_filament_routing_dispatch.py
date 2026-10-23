@@ -301,7 +301,7 @@ async def test_defer_cas_never_revives_another_attempt(db_session, printer_facto
     await db_session.commit()
     restored = await defer_claim(db_session, item_id=iid, started_at=started, reason="feed_state_changed")
     await db_session.commit()
-    assert restored == (race == "none")
+    assert bool(restored) is (race == "none")  # a DeferResult is truthy iff this attempt owned the row
     if race != "delete":
         await db_session.refresh(item)
         assert item.status == {"none": "pending", "cancel": "cancelled", "reclaim": "printing"}[race]

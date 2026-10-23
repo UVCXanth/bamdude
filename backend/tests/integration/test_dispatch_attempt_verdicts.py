@@ -348,6 +348,167 @@ async def test_attempts_a_crash_spent_end_in_a_visible_failure_and_a_retry_opens
 
 
 # --------------------------------------------------------------------------- #
+# D09 — a refusal that ends the job and halts its queue tells the operator, once
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def notice(monkeypatch):
+    from backend.app.services.notification_service import notification_service
+
+    sent = AsyncMock()
+    monkeypatch.setattr(notification_service, "on_queue_job_failed", sent)
+    return sent
+
+
+@pytest.fixture
+def power_off(monkeypatch):
+    from backend.app.services.print_scheduler import PrintScheduler
+
+    off = AsyncMock()
+    monkeypatch.setattr(PrintScheduler, "_power_off_if_needed", off)
+    return off
+
+
+def the_reason(notice) -> str:
+    return notice.await_args.kwargs["reason"]
+
+
+async def test_an_exhausted_budget_tells_the_operator_once_with_its_class(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, notice, power_off
+):
+    from backend.app.services.print_scheduler import DISPATCH_MAX_ATTEMPTS
+    from backend.app.utils import failure_reasons
+
+    _queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    row = await db_session.get(PrintQueueItem, item_id)
+    row.dispatch_attempts = DISPATCH_MAX_ATTEMPTS
+    await db_session.commit()
+
+    await one_tick(scheduler, spawned)
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_not_called()
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "failed"
+    notice.assert_awaited_once()
+    assert the_reason(notice) == failure_reasons.dispatch_reason_text(row.error_code, row.error_message)
+    power_off.assert_awaited_once()  # the policy of every refusal before a claim
+
+
+async def test_an_exhausted_budget_that_did_not_commit_tells_nobody(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, notice
+):
+    import backend.app.services.queue_counters as counters
+    from backend.app.services.print_scheduler import DISPATCH_MAX_ATTEMPTS
+
+    _queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    row = await db_session.get(PrintQueueItem, item_id)
+    row.dispatch_attempts = DISPATCH_MAX_ATTEMPTS
+    await db_session.commit()
+    monkeypatch.setattr(counters, "set_queue_error", AsyncMock(side_effect=RuntimeError("database is locked")))
+
+    with pytest.raises(RuntimeError):
+        await scheduler.check_queue()
+
+    notice.assert_not_awaited()
+    assert (await reread(db_session, PrintQueueItem, item_id)).status == "pending"
+
+
+@pytest.mark.parametrize("refusal", ["swap_start_ran", "source_failed"])
+async def test_a_refusal_that_ends_the_job_tells_the_operator_once_with_its_class(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, notice, power_off, refusal
+):
+    import backend.app.services.background_dispatch as bd
+    from backend.app.services.filament_deferred import DISPOSITION_FAILED, SourceCaptureDeferred
+    from backend.app.services.filament_routing import RoutingDeferred
+    from backend.app.utils import failure_reasons
+
+    queue_id, mqtt, item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    if refusal == "swap_start_ran":
+
+        async def the_start_macro_ran(job, printer, event, message, *, record=None):
+            if event == "swap_mode_start":
+                job.swap_start_effect = "fired"
+                if record is not None:
+                    await record("fired")
+
+        monkeypatch.setattr(service, "_run_swap_macro_if_needed", the_start_macro_ran)
+        monkeypatch.setattr(bd, "settle_plan", AsyncMock(side_effect=RoutingDeferred("feed_settle_timeout")))
+    else:
+        failed = SourceCaptureDeferred("source_timeout", disposition=DISPOSITION_FAILED)
+        monkeypatch.setattr(bd, "settle_plan", AsyncMock(side_effect=failed))
+
+    await one_tick(scheduler, spawned)
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_not_called()
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "failed"
+    assert (await db_session.get(PrinterQueue, queue_id)).status == "error"
+    notice.assert_awaited_once()
+    assert the_reason(notice) == failure_reasons.dispatch_reason_text(row.error_code, row.error_message)
+    power_off.assert_awaited_once()  # nothing was published: the policy of a refusal before the start
+
+
+async def test_a_refusal_after_a_sent_start_is_told_but_adds_no_physical_action(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, notice, power_off
+):
+    """A refusal that arrives with the start already sent ends the row and is reported, but
+    the printer's state is unknown: no auto-off is scheduled on top of it."""
+    import backend.app.services.background_dispatch as bd
+
+    _queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    real_run = bd.background_dispatch.run_from_queue_item
+
+    async def a_refusal_after_the_send(*args, **kwargs):
+        outcome = await real_run(*args, **kwargs)
+        return {
+            **outcome,
+            "success": False,
+            "deferred": True,
+            "disposition": None,
+            "reason": {"code": "feed_settle_timeout", "message": "The feed did not settle."},
+            "send_fact": "sent",
+            "failure_code": "dispatchStartRefused",
+        }
+
+    monkeypatch.setattr(bd.background_dispatch, "run_from_queue_item", a_refusal_after_the_send)
+
+    await one_tick(scheduler, spawned)
+
+    assert (await reread(db_session, PrintQueueItem, item_id)).status == "failed"
+    notice.assert_awaited_once()
+    power_off.assert_not_awaited()
+
+
+async def test_a_refusal_that_only_waits_tells_nobody(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, notice, power_off
+):
+    import backend.app.services.background_dispatch as bd
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    _queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    monkeypatch.setattr(bd, "settle_plan", AsyncMock(side_effect=RoutingDeferred("feed_settle_timeout")))
+
+    await one_tick(scheduler, spawned)
+
+    assert (await reread(db_session, PrintQueueItem, item_id)).status == "pending"
+    notice.assert_not_awaited()
+    power_off.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
 # D06 — a shutdown is not a failed print
 # --------------------------------------------------------------------------- #
 
