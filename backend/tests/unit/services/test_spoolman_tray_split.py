@@ -839,3 +839,52 @@ async def test_a_cancelled_multi_colour_print_on_spoolman_keeps_its_slot_mapping
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0, 12: 50.0}
     notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_print_honours_an_unknown_feed_only_the_journal_holds():
+    """Review r5 F5-R1 on the abort writer: the client's memory never heard of the unknown
+    feed the journal stated at 50; the cancelled print's partial grams still go to the start's
+    reel up to 50 and the rest is reported as not recorded — not to the slot's reel now."""
+    from backend.app.services.spoolman_tracking import _report_partial_usage
+
+    events = [
+        SimpleNamespace(id=1, event="start", global_tray_id=0, layer_num=0, spool_id=None, spoolman_spool_id=11,
+                        kind=None, slot_occupied=True),
+        SimpleNamespace(id=2, event="tray_change", global_tray_id=-1, layer_num=50, spool_id=None,
+                        spoolman_spool_id=None, kind=None, slot_occupied=None),
+    ]  # fmt: skip
+    tracking = SimpleNamespace(
+        archive_id=144,
+        filament_usage=[{"slot_id": 1, "used_g": 300.0}],
+        layer_usage=None,
+        filament_properties={},
+        ams_trays={0: {"tray_uuid": "AAAA", "tray_type": "PLA"}},
+        slot_to_tray=[0],
+        tray_remain_start={},
+    )
+    client = AsyncMock()
+    client.find_spool_by_tag = AsyncMock(return_value={"id": 12, "filament": {}})
+    client.use_spool = AsyncMock()
+    printer_manager = MagicMock()
+    printer_manager.get_status.return_value = SimpleNamespace(
+        tray_change_log=[(0, 0)], layer_num=100, total_layers=100, raw_data={}
+    )
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(AsyncMock())),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=client),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch("backend.app.services.printer_manager.printer_manager", printer_manager),
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+    ):
+        await _report_partial_usage(printer_id=1, tracking=tracking)
+
+    assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0}
+    assert notify.await_args.args[1] == [(-1, 150.0)]

@@ -64,6 +64,47 @@ def chronology_splits(tray_changes: list[tuple[int, int]] | None) -> bool:
     return len(entries) > 1 or any(tray == UNKNOWN_FEED for tray, _layer in entries)
 
 
+def chronology_with_journal(
+    tray_changes: list[tuple[int, int]] | None, journal_events: list | None
+) -> list[tuple[int, int]]:
+    """The raw chronology a writer reads, reconciled with the unknown feeds the journal holds
+    (post-rebuild F5).
+
+    The chronology lives in the MQTT client's memory; an unknown feed the journal stated while no
+    client could take it (a restart replay that could not be written) is in the journal only. A
+    persisted ``UNKNOWN_FEED`` row the memory does not hold makes the memory stale from its
+    layer: what came before stays, the unknown feed follows, and after it only what the journal
+    recorded after the marker — the next real feed closes the stretch; what the stale memory says
+    about it is not believed. When the memory holds the marker, the tray changes after it are the
+    memory's and the journal's together: a later feed the journal recorded is never hidden.
+    """
+    from backend.app.models.print_usage_event import EVENT_TRAY_CHANGE
+
+    chronology = [tuple(entry) for entry in (tray_changes or [])]
+    memory = set(chronology)  # what the client's memory itself holds, before any reconciling
+    events = sorted(
+        (e for e in (journal_events or []) if e.event == EVENT_TRAY_CHANGE and e.global_tray_id is not None),
+        key=lambda e: e.id,
+    )
+    for marker in events:
+        if marker.global_tray_id != UNKNOWN_FEED:
+            continue
+        unknown = (UNKNOWN_FEED, marker.layer_num)
+        if unknown in memory:
+            at = len(chronology) - 1 - chronology[::-1].index(unknown)
+            before, remembered = chronology[:at], chronology[at + 1 :]
+        else:  # the memory is stale from the marker's layer
+            before, remembered = [entry for entry in chronology if entry[1] < marker.layer_num], []
+        recorded = [(e.global_tray_id, e.layer_num) for e in events if e.id > marker.id]
+        after = list(remembered)
+        for entry in recorded:
+            if entry not in after:
+                after.append(entry)
+        after.sort(key=lambda entry: entry[1])  # stable: within a layer, the memory's order first
+        chronology = [*before, unknown, *after]
+    return chronology
+
+
 def normalize_tray_changes(tray_changes: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
     """The tray chronology at the resolution the layer number gives.
 

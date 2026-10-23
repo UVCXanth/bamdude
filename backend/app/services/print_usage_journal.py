@@ -93,6 +93,11 @@ class _PendingReplay:
 # leaves it to finish, and the next holder waits for it (post-rebuild F3).
 _pending_replays: dict[int, list[_PendingReplay]] = {}
 _replay_writers: dict[int, asyncio.Task] = {}
+# An unknown feed the journal stated while the printer had no client (post-rebuild F5):
+# ``printer_id → (journal generation, layer)``, told to the client of that print by the next
+# holder of the journal lock that finds one — so the next tray report counts as a feed again.
+# Accounting never waits for it: the journal's marker governs the chronology the writers read.
+_unstated_unknowns: dict[int, tuple[int, int]] = {}
 
 
 def queue_replay(printer_id: int, batches, *, archive_id: int | None = None) -> None:
@@ -129,8 +134,14 @@ async def deliver_pending_replay(printer_id: int) -> None:
     running = _replay_writers.get(printer_id)
     if running is not None and running.get_loop() is loop and not running.done():
         await asyncio.shield(running)
-    client, _generation, _subtask = _observed_print(printer_id)
+    client, generation, _subtask = _observed_print(printer_id)
     if client is not None:
+        unstated = _unstated_unknowns.pop(printer_id, None)
+        if unstated is not None and unstated[0] == generation:
+            try:
+                client.state_feed_unknown_from(*unstated)
+            except Exception:  # noqa: BLE001 - the journal's marker still governs the accounting
+                logger.debug("[UsageJournal] Printer %d: the client could not take the unknown feed", printer_id)
         try:
             queue_replay(printer_id, client.take_replay_batches())
         except Exception:  # noqa: BLE001 - a client that cannot hand them over keeps them
@@ -215,6 +226,10 @@ async def _state_unrecorded(printer_id: int, entry: _PendingReplay, *, reason: s
             stated = client.state_feed_unknown_from(batch.generation, layer) is True
         except Exception:  # noqa: BLE001 - the journal row below still says it
             stated = False
+    elif client is None:
+        # No client to tell now: the journal's marker governs the accounting, and the next
+        # holder of the lock that finds this print's client tells it (post-rebuild F5).
+        _unstated_unknowns[printer_id] = (batch.generation, layer)
     archive_id = entry.archive_id
     try:
         async with database.async_session() as db:
@@ -244,7 +259,7 @@ async def _state_unrecorded(printer_id: int, entry: _PendingReplay, *, reason: s
         archive_id,
         reason,
         layer,
-        "" if stated else " (the print's chronology was no longer this client's)",
+        "" if stated else " in the journal (the printer's client was not this print's)",
     )
 
 
@@ -336,10 +351,12 @@ def forget_tail_state(printer_id: int | None = None) -> None:
         _tail_owners.clear()
         _pending_replays.clear()
         _replay_writers.clear()
+        _unstated_unknowns.clear()
     else:
         _tail_owners.pop(printer_id, None)
         _pending_replays.pop(printer_id, None)
         _replay_writers.pop(printer_id, None)
+        _unstated_unknowns.pop(printer_id, None)
 
 
 def _observed_print(printer_id: int):

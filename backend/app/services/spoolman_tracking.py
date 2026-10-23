@@ -1290,11 +1290,19 @@ async def _report_partial_usage(
     # A one-slot print's stretches follow its tray chronology, as at completion and in the
     # internal writer: an AMS backup's takeover splits the grams, and a stretch nobody saw fed
     # is reported as not recorded — never charged to the mapped reel (post-rebuild F2-R1).
-    from backend.app.utils.usage_attribution import chronology_splits, normalize_tray_changes
+    from backend.app.utils.usage_attribution import chronology_splits, chronology_with_journal, normalize_tray_changes
 
     partial_tray_changes: list[tuple[int, int]] = []
+    partial_journal: list = []
     if state is not None and len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
-        partial_tray_changes = normalize_tray_changes(list(getattr(state, "tray_change_log", []) or []))
+        try:
+            partial_journal = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
+        except Exception as exc:
+            logger.debug("[SPOOLMAN] Journal load failed for partial report: %s", exc)
+        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5).
+        partial_tray_changes = normalize_tray_changes(
+            chronology_with_journal(list(getattr(state, "tray_change_log", []) or []), partial_journal)
+        )
 
     async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
         if not chronology_splits(partial_tray_changes):
@@ -1308,11 +1316,7 @@ async def _report_partial_usage(
                 printer_id=printer_id,
                 cost_out=print_cost,
             )
-        try:
-            journal_events = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
-        except Exception as exc:
-            logger.debug("[SPOOLMAN] Journal load failed for partial split: %s", exc)
-            journal_events = []
+        journal_events = partial_journal
         uncharged: list[tuple[int, float]] = []
         updated, _handled = await _report_spool_usage_split_by_tray_changes(
             client,
@@ -1598,6 +1602,17 @@ async def report_usage(printer_id: int, archive_id: int):
         tray_changes: list[tuple[int, int]] = []
         sole_tray: int | None = None
         _state = None
+
+        # The print's usage journal (m153): runout boundaries + frozen spool
+        # ids, shared with the internal tracker so both backends attribute
+        # identically — read before the chronology, whose unknown feeds it
+        # governs (post-rebuild F5).
+        journal_events: list = []
+        try:
+            journal_events = await _load_journal_events(printer_id, archive_id)
+        except Exception as exc:
+            logger.warning("[SPOOLMAN] Journal load failed for archive %s: %s", archive_id, exc)
+
         if len(nonzero_slots) == 1:
             from backend.app.services.printer_manager import printer_manager as _pm
 
@@ -1605,9 +1620,15 @@ async def report_usage(printer_id: int, archive_id: int):
             if _state is not None:
                 # Normalized the same way as usage_tracker: a same-layer blip
                 # (BMCU tray_now=254 on every load) fed nothing.
-                from backend.app.utils.usage_attribution import normalize_tray_changes, sole_feeding_tray
+                from backend.app.utils.usage_attribution import (
+                    chronology_with_journal,
+                    normalize_tray_changes,
+                    sole_feeding_tray,
+                )
 
-                raw_tray_log = list(getattr(_state, "tray_change_log", []) or [])
+                raw_tray_log = chronology_with_journal(
+                    list(getattr(_state, "tray_change_log", []) or []), journal_events
+                )
                 tray_changes = normalize_tray_changes(raw_tray_log)
                 sole_tray = sole_feeding_tray(raw_tray_log)
         _total_layers = int(getattr(_state, "total_layers", 0) or 0) if _state else 0
@@ -1654,15 +1675,6 @@ async def report_usage(printer_id: int, archive_id: int):
         # Filament read and not charged to any Spoolman spool (audit D4).
         uncharged: list[tuple[int, float]] = []
         spools_updated = 0
-
-        # The print's usage journal (m153): runout boundaries + frozen spool
-        # ids, shared with the internal tracker so both backends attribute
-        # identically.
-        journal_events: list = []
-        try:
-            journal_events = await _load_journal_events(printer_id, archive_id)
-        except Exception as exc:
-            logger.warning("[SPOOLMAN] Journal load failed for archive %s: %s", archive_id, exc)
 
         # Optional emergency-swap purge (grams per autoswitch runout, default 0).
         _purge_str = await get_setting(db, "runout_purge_grams")

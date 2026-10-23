@@ -261,3 +261,60 @@ def test_an_unknown_feed_closes_a_tail_nobody_saw_end():
     episodes = tail_episodes(j.events)
     assert len(episodes) == 1 and episodes[0].close is not None
     assert open_tail_episode(j.events) is None
+
+
+# ── F5-R1 · the journal's unknown feed is authoritative for the chronology (review r5) ──
+
+
+def test_a_chronology_that_holds_the_journals_unknown_feed_is_read_as_it_is():
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_with_journal
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 40, tray=UNKNOWN_FEED)
+    j.add(EVENT_TRAY_CHANGE, 70, tray=3, spool=NEXT)
+    memory = [(T0, 0), (UNKNOWN_FEED, 40), (3, 70)]
+    assert chronology_with_journal(memory, j.events) == memory
+
+
+def test_a_memory_that_missed_the_journals_unknown_feed_is_stale_from_its_layer():
+    """F5-R1: the journal stated the feed unknown from 40 while no client could take it; the
+    chronology in memory still says what the lost replay had applied. What came before stays,
+    the unknown follows, and after it only what the journal recorded after the marker."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_with_journal
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 40, tray=UNKNOWN_FEED)
+    assert chronology_with_journal([(T0, 0), (2, 45)], j.events) == [(T0, 0), (UNKNOWN_FEED, 40)]
+    j.add(EVENT_TRAY_CHANGE, 70, tray=3, spool=NEXT)  # the next real feed, journaled live
+    assert chronology_with_journal([(T0, 0), (2, 45)], j.events) == [(T0, 0), (UNKNOWN_FEED, 40), (3, 70)]
+
+
+def test_a_later_known_feed_the_memory_lost_is_not_hidden_by_the_unknown_feed():
+    """F5-R1: memory holds the unknown feed but lost a later change the journal recorded (the
+    memory was stated unknown after it was journaled); the journal's change still counts."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_with_journal
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 40, tray=UNKNOWN_FEED)
+    j.add(EVENT_TRAY_CHANGE, 70, tray=3, spool=NEXT)
+    assert chronology_with_journal([(T0, 0), (UNKNOWN_FEED, 40)], j.events) == [
+        (T0, 0),
+        (UNKNOWN_FEED, 40),
+        (3, 70),
+    ]
+
+
+def test_each_unknown_feed_of_the_journal_is_reconciled_and_reading_twice_changes_nothing():
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_with_journal
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 20, tray=UNKNOWN_FEED)
+    j.add(EVENT_TRAY_CHANGE, 30, tray=1, spool=NEW).add(EVENT_TRAY_CHANGE, 60, tray=UNKNOWN_FEED)
+    memory = [(T0, 0), (UNKNOWN_FEED, 20), (1, 30), (2, 65)]
+    once = chronology_with_journal(memory, j.events)
+    assert once == [(T0, 0), (UNKNOWN_FEED, 20), (1, 30), (UNKNOWN_FEED, 60)]
+    assert chronology_with_journal(once, j.events) == once
+
+
+def test_a_journal_without_an_unknown_feed_leaves_the_chronology_alone():
+    from backend.app.utils.usage_attribution import chronology_with_journal
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 40, tray=1, spool=NEW)
+    assert chronology_with_journal([(T0, 0), (1, 40), (2, 80)], j.events) == [(T0, 0), (1, 40), (2, 80)]
+    assert chronology_with_journal([(T0, 0)], None) == [(T0, 0)]

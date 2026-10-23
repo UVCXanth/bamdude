@@ -2630,3 +2630,193 @@ async def test_the_closing_sweep_writes_or_states_unknown_a_replay_never_tried(
     else:
         assert seen == [([(TRAY, 0), (UNKNOWN_FEED, 40)], False)]
         assert (EVENT_TRAY_CHANGE, 40, None, None) in await rows(db_session, printer.id, archive.id)
+
+
+# ── F5-R1 · an unknown feed stated without a client still governs the accounting (review r5) ──
+
+
+async def a_replay_settled_while_the_client_is_away(db_session, printer, new, client, monkeypatch):
+    """The replay's write fails at the seed and again at the completion release, while the
+    printer's client is missing: the unknown feed reaches the journal only."""
+    from backend.app.main import _release_unseeded_journal
+
+    failing_replay_writes(monkeypatch, 2)
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+    with every_manager_names(None):
+        await _release_unseeded_journal(printer.id)
+    assert not journal._pending_replays.get(printer.id)
+
+
+def a_client_carrying(prior):
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    successor = BambuMQTTClient(ip_address="1.2.3.4", serial_number="REJOIN", access_code="1")
+    successor.carry_print_lifecycle_from(prior)
+    successor.state.total_layers = prior.state.total_layers
+    successor.state.layer_num = prior.state.layer_num
+    successor.state.raw_data = prior.state.raw_data
+    return successor
+
+
+@pytest.mark.parametrize("which", ["retired", "successor"])
+async def test_an_unknown_feed_journaled_without_a_client_governs_the_internal_writer(
+    db_session, incident, monkeypatch, which
+):
+    """F5-R1: the unknown feed was stated while no client was registered — the memory of the
+    retired client, or of a successor carrying it, still says what the lost replay applied.
+    The journal's marker governs: A keeps the stretch before it, the rest is not recorded."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    await a_replay_settled_while_the_client_is_away(db_session, printer, new, client, monkeypatch)
+    reader = client if which == "retired" else a_client_carrying(client)
+    with every_manager_names(reader):
+        charges, not_recorded = await internal_charges(db_session, printer, archive, reader)
+
+    assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == (2.0, 0.0, 8.0)
+
+
+async def test_an_unknown_feed_journaled_without_a_client_governs_the_spoolman_writer(
+    db_session, printer_factory, monkeypatch
+):
+    """F5-R1 on Spoolman: with the marker in the journal only, Spoolman charges A for the
+    stretch before it and reports the rest as not recorded — not B for the whole print."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.services.spoolman_tracking import report_usage
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+    from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+    printer, archive = await a_print(db_session, printer_factory)
+    await bind_spoolman(db_session, printer.id, 11)
+    await journal.record_event(
+        db_session, printer_id=printer.id, archive_id=archive.id, layer_num=0, event=EVENT_START,
+        global_tray_id=TRAY, spoolman_spool_id=11,
+    )  # fmt: skip
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 2)
+    with every_manager_names(client):
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spoolman_spool_id=12
+            )
+            await bind_spoolman(db_session, printer.id, 12)
+        a_report(client, TRAY, 45, "PLA")
+        assert await seed_through_main(printer.id, client)
+    with every_manager_names(None):
+        await _release_unseeded_journal(printer.id)
+    assert client.state.tray_change_log == [(TRAY, 0)]  # the memory never heard of it
+    db_session.expire_all()
+    events = await journal.load_events(db_session, printer.id, archive.id)
+
+    tracking = SimpleNamespace(
+        filament_usage=[{"slot_id": 1, "used_g": 10.0}],
+        ams_trays={TRAY: {"tray_uuid": "", "tray_type": "PLA"}},
+        slot_to_tray=[TRAY],
+        tray_remain_start={},
+        layer_usage={},
+        filament_properties={},
+    )
+    spoolman = AsyncMock()
+    spoolman.find_spool_by_tag = AsyncMock(return_value=None)
+    spoolman.get_spool = AsyncMock(side_effect=lambda spool_id: {"id": spool_id, "filament": {}})
+    spoolman.use_spool = AsyncMock()
+    status = SimpleNamespace(tray_change_log=client.state.tray_change_log, total_layers=200, layer_num=200, raw_data={})
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(_make_db(tracking))),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=spoolman),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
+        patch("backend.app.services.spoolman_tracking._apply_spool_colors_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch(
+            "backend.app.services.spoolman_tracking._apply_runout_zero_corrections_spoolman",
+            AsyncMock(return_value=0),
+        ),
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+        patch(
+            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+            AsyncMock(return_value=12),
+        ),
+    ):
+        pm.get_status.return_value = status
+        await report_usage(printer_id=printer.id, archive_id=archive.id)
+
+    assert {c.args[0]: c.args[1] for c in spoolman.use_spool.await_args_list} == {11: 2.0}
+    assert notify.await_args.args[1] == [(UNKNOWN_FEED, 8.0)]
+
+
+async def test_the_reconnect_sweep_without_a_client_leaves_an_unknown_feed_the_writer_honours(
+    db_session, incident, monkeypatch
+):
+    """F5-R1 through the sweep: the client is missing when the sweep settles the replay that
+    could not be written; the writer reading the memory a successor carried still honours the
+    marker the sweep journaled."""
+    from backend.app.services import print_reconciliation
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 2)
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    monkeypatch.setattr(print_reconciliation, "_repair_terminal_queue_items", AsyncMock(return_value=[]))
+    monkeypatch.setattr(print_reconciliation, "_reconcile", AsyncMock(return_value=[]))
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+    with every_manager_names(None):
+        await print_reconciliation.reconcile_printer_prints(printer.id, "FINISH", "plate.3mf")
+    successor = a_client_carrying(client)
+    with every_manager_names(successor):
+        charges, not_recorded = await internal_charges(db_session, printer, archive, successor)
+
+    assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == (2.0, 0.0, 8.0)
+
+
+@pytest.mark.parametrize("next_report", ["another_tray", "the_same_tray"])
+async def test_the_next_tray_report_after_an_unknown_feed_stated_without_a_client_closes_it(
+    db_session, incident, monkeypatch, next_report
+):
+    """F5-R1: after the unknown feed was stated without a client, the client comes back
+    (carrying the old memory) and the printer reports a tray at 100. That report is a feed
+    fact again — another tray, or the very tray the memory last named — and from there the
+    print is charged to the reel bound then; only 40–100 stays not recorded."""
+    from backend.app.services.usage_tracker import record_tray_change_event
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_with_journal
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    await a_replay_settled_while_the_client_is_away(db_session, printer, new, client, monkeypatch)
+    successor = a_client_carrying(client)
+    queued = queue_every_callback(successor)
+    with every_manager_names(successor):
+        async with journal.journal_lock(printer.id):  # the next holder: the memory learns it
+            pass
+        slot_reads(successor, TRAY, "PLA")
+        tray = TRAY if next_report == "the_same_tray" else TRAY + 1
+        successor._process_message({"print": {"ams": {"tray_now": str(tray)}, "layer_num": 100}})
+        for kind, args in queued:
+            assert kind == "tray"
+            async with journal.journal_lock(printer.id):
+                await record_tray_change_event(db_session, printer.id, *args)
+        db_session.expire_all()
+        events = await journal.load_events(db_session, printer.id, archive.id)
+        assert chronology_with_journal(successor.state.tray_change_log, events) == [
+            (TRAY, 0),
+            (UNKNOWN_FEED, 40),
+            (tray, 100),
+        ]
+        charges, not_recorded = await internal_charges(db_session, printer, archive, successor)
+
+    if next_report == "the_same_tray":  # B, bound since the held assignment, from 100
+        assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == (2.0, 5.0, 3.0)

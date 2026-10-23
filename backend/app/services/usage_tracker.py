@@ -1885,9 +1885,15 @@ async def _track_from_3mf(
         # the layer number can see (a BMCU reports tray_now=254 for a moment on
         # every load). Read at full resolution, those blips sent a same-tray
         # refill down the tray split and lost the new reel's share.
-        from backend.app.utils.usage_attribution import chronology_splits, normalize_tray_changes, sole_feeding_tray
+        from backend.app.utils.usage_attribution import (
+            chronology_splits,
+            chronology_with_journal,
+            normalize_tray_changes,
+            sole_feeding_tray,
+        )
 
-        raw_tray_log = getattr(state, "tray_change_log", []) or []
+        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5).
+        raw_tray_log = chronology_with_journal(getattr(state, "tray_change_log", []) or [], journal_events)
         tray_changes = normalize_tray_changes(raw_tray_log)
         sole_tray = sole_feeding_tray(raw_tray_log)
     elif len(nonzero_slots) > 1:
