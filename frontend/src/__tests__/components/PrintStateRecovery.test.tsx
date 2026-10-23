@@ -112,3 +112,39 @@ describe('Addressed recovery confirmation', () => {
     expect(screen.getByText(/Estimated end: start/)).toBeInTheDocument();
   });
 });
+
+describe('Interrupted dispatch', () => {
+  const interrupted: PrintStateIssue = { ...issue, code: 'interrupted_dispatch', actions: ['close_interrupted_attempt'] };
+  const closePreview: PrintStatePreview = {
+    preview_token: 'close-preview', action: 'close_interrupted_attempt', archive_preserved: true, expires_in: 300,
+    before: { queue: { status: 'printing', current_item_id: 11 }, item: { status: 'printing' }, archive: { status: 'printing' } },
+    after: {
+      queue: { current_item_id: null, status: 'error' }, item: { status: 'failed', error_code: 'dispatchNoAcknowledgement' },
+      archive: { status: 'failed', failure_reason: 'dispatchNoAcknowledgement' }, delete_item: false,
+    },
+  };
+
+  it('shows why an attempt cannot be closed yet', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({
+      issues: [{ ...interrupted, actions: [], blocked_reasons: ['owner_unknown'] }], next_cursor: null, truncated: false, checked_at: '',
+    });
+    panel();
+    expect(await screen.findByText(/A dispatch was interrupted before the printer was seen printing/)).toBeInTheDocument();
+    expect(screen.getByText(/process that owned this dispatch has ended/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Close the interrupted attempt' })).not.toBeInTheDocument();
+  });
+
+  it('closes the attempt and leaves Retry and Resume to the operator, promising nothing about the plate', async () => {
+    vi.mocked(api.previewPrintState).mockResolvedValue(closePreview);
+    const user = userEvent.setup();
+    render(<PrintStateRecoveryDialog issue={interrupted} action="close_interrupted_attempt" onClose={vi.fn()} onApplied={vi.fn()} />);
+    expect(screen.getByText(/does not prove that nothing was printed/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Preview change' }));
+    expect((await screen.findAllByText('Dispatch: no acknowledgement')).length).toBe(2);
+    expect(screen.getByText(/use Retry on the job, then resume the queue/)).toBeInTheDocument();
+    expect(screen.queryByText(/queue will stay paused/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /I reviewed this change/ }));
+    await user.click(screen.getByRole('button', { name: 'Apply this change' }));
+    expect(api.applyPrintState).toHaveBeenCalledWith(7, 'close-preview');
+  });
+});

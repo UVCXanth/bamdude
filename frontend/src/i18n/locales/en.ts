@@ -78,11 +78,13 @@ export default {
     actions: {
       align_terminal_item: 'Align item with archive', fill_estimated_end_and_align: 'Estimate end and align item',
       release_orphan_header: 'Release stale queue claim', delete_stale_item: 'Remove stale item, keep archive',
+      close_interrupted_attempt: 'Close the interrupted attempt',
     },
     issues: {
       terminal_archive_active_item: 'The archive ended but its queue item is still printing', active_item_missing_archive: 'An active queue item has no execution archive',
       archive_owner_mismatch: 'The queue and archive do not identify the same run', header_without_active_item: 'The queue is busy without an active item',
       multiple_active_items: 'Several queue items claim to be printing', active_archive_without_current_run: 'The archive is printing while the observed printer is inactive',
+      interrupted_dispatch: 'A dispatch was interrupted before the printer was seen printing',
     },
     reasons: {
       live_unknown: 'A fresh, unambiguous printer observation is required.', live_busy: 'A start or dispatch is still in progress.',
@@ -92,10 +94,15 @@ export default {
       outcome_unknown: 'The actual print outcome is unknown.', invalid_run_times: 'The recorded run times do not establish this execution.',
       missing_run_times: 'Required run times or a valid slicer estimate are missing.', delete_has_dependencies: 'Deletion is unavailable because other records refer to this item.',
       estimated_time: 'An estimated completion time cannot justify deleting this item.',
+      owner_alive: 'This BamDude process still owns the dispatch and ends the attempt itself.',
+      owner_unknown: 'It is not proven that the process that owned this dispatch has ended.',
     },
     live: { inactive: 'Fresh inactive printer observation', successor: 'A positively identified newer print is active', unknown: 'Printer state cannot authorize a repair' },
     fields: { queue: 'Queue', item: 'Queue item', archive: 'Archive', status: 'Status', completed_at: 'End time', waiting_reason: 'Waiting reason',
-      current_item_id: 'Current item', is_paused: 'Paused', time_source: 'Time source' },
+      current_item_id: 'Current item', is_paused: 'Paused', time_source: 'Time source',
+      error_code: 'Failure class', failure_reason: 'Failure reason' },
+    interruptedUncertain: 'This dispatch was interrupted when the BamDude process that owned it stopped. Closing the attempt marks the job and its archive failed; it does not prove that nothing was printed. Check the printer and the plate first.',
+    interruptedNext: 'The job stays failed and its queue stops with an error. To print it again, use Retry on the job, then resume the queue.',
   },
   autoEject: {
     badgeUnchecked: 'Auto-eject · no plate check',

@@ -56,4 +56,12 @@ async def resume(data: FarmResumeRequest, creds: RequestCredentials = Depends(re
             await ws_manager.broadcast({"type": "farm_startup_changed"})
         except Exception:
             logging.getLogger(__name__).exception("Farm startup: release invalidation failed")
+        # The pause held every interrupted dispatch back; now each is checked once more,
+        # by its own facts (post-rebuild I-R3). Nothing physical is sent from here.
+        try:
+            from backend.app.services.interrupted_dispatch import recover_after_resume
+
+            await recover_after_resume()
+        except Exception:
+            logging.getLogger(__name__).exception("Farm startup: interrupted-dispatch recheck failed")
     return {"result": result, **farm_startup_guard.status()}

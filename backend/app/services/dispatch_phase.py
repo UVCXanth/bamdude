@@ -30,6 +30,9 @@ SENDING = "sending"
 SENT = "sent"
 ACCEPTED = "accepted"
 
+#: An attempt our dispatch never saw running: nothing but its own owner, or a proof, may end it.
+UNACCEPTED = (PREPARED, SENDING, SENT)
+
 #: Where each phase may be reached from. ``accepted`` also from ``sending``: the
 #: ``sent`` write is bookkeeping, and a failed one must not stop the next fact.
 _FROM: dict[str, tuple[str, ...]] = {

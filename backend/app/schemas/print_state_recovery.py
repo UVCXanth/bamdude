@@ -3,7 +3,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 RecoveryAction = Literal[
-    "align_terminal_item", "fill_estimated_end_and_align", "release_orphan_header", "delete_stale_item"
+    "align_terminal_item",
+    "fill_estimated_end_and_align",
+    "release_orphan_header",
+    "delete_stale_item",
+    "close_interrupted_attempt",
 ]
 
 

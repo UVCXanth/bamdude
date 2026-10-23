@@ -17,7 +17,9 @@ import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
-export type PrintStateAction = 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item';
+export type PrintStateAction =
+  | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
+  | 'close_interrupted_attempt';
 export interface PrintStateIssue {
   printer_id: number; printer_name: string; queue_id: number; kind: 'item' | 'header' | 'archive'; target_id: number;
   item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];

@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services import dispatch_phase
 from backend.app.utils.failure_reasons import NO_STATUS_UPDATE, row_class
 from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
@@ -779,6 +780,20 @@ async def _reconcile(
     closed = 0
     recovered: list[int] = []
     for archive in orphans:
+        if archive.dispatch_phase in dispatch_phase.UNACCEPTED:
+            # I-R1: our dispatch never saw this attempt running. What the printer shows —
+            # often the PREVIOUS print of the same plate, FINISH under the same name —
+            # proves nothing about it, so no filename verdict closes it and nothing of a
+            # completion runs. Its own runner ends it; an ended owner's attempt is for the
+            # interrupted-dispatch recovery and the Info action (``interrupted_dispatch``).
+            logger.info(
+                "reconcile: archive %d on printer %d is a dispatch attempt in phase %s — not closed by the "
+                "printer's state",
+                archive.id,
+                printer_id,
+                archive.dispatch_phase,
+            )
+            continue
         # An accepted terminal is stronger evidence than a filename, but it is
         # not permission to replay an unknown physical effect after restart.
         # A live active printer still wins: the terminal may have been stale A
@@ -1109,6 +1124,15 @@ async def reconcile_printer_prints(
         )
 
     await _load_objects_for_a_print_already_running(printer_id, live_state)
+
+    # The addressed recheck of an ended owner's interrupted dispatch (post-rebuild I-R3): this
+    # printer now reports a fresh state, the one thing the startup classification lacked.
+    try:
+        from backend.app.services.interrupted_dispatch import recover_interrupted_dispatches
+
+        await recover_interrupted_dispatches(printer_id)
+    except Exception:  # noqa: BLE001 — the connect path survives it; Info shows the attempt
+        logger.exception("reconcile: interrupted-dispatch recheck failed for printer %d", printer_id)
 
 
 async def _stranded_swaps(printer_id: int, *, exclude: set[int]) -> tuple[list[int], list[int]]:

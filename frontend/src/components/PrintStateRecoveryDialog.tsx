@@ -4,6 +4,7 @@ import { api, ApiError, type PrintStateAction, type PrintStateIssue, type PrintS
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { formatDateTime } from '../utils/date';
+import { failureText } from '../utils/failureText';
 
 export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: {
   issue: PrintStateIssue; action: PrintStateAction; onClose: () => void; onApplied: () => void;
@@ -16,8 +17,10 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const estimate = action === 'fill_estimated_end_and_align';
+  const close = action === 'close_interrupted_attempt';
   const shown = (key: string, value: unknown): string => {
     if (value === null || value === undefined) return '—';
+    if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null);
     if (key === 'waiting_reason' && value === true) return t('printStateRecovery.recordedReason');
     if (typeof value === 'boolean') return t(value ? 'common.yes' : 'common.no');
     if (key === 'completed_at' && typeof value === 'string') return formatDateTime(value);
@@ -62,6 +65,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       })}</p>
       <p>{t('printStateRecovery.preserved')}</p>
       {estimate && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.estimate')}</p>}
+      {close && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.interruptedUncertain')}</p>}
       {!preview && <>
         {estimate && <label className="flex gap-2 items-start">
           <input type="checkbox" checked={completed} onChange={e => setCompleted(e.target.checked)} />
@@ -88,7 +92,9 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
                 <td>#{issue.item_id}</td><td>{t('printStateRecovery.deleted')}</td></tr>}
             </tbody></table>
         </div>
-        {Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
+        {close
+          ? <p>{t('printStateRecovery.interruptedNext')}</p>
+          : Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
         <label className="flex gap-2 items-start"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
           <span>{t('printStateRecovery.confirm')}</span></label>
         <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}

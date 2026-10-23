@@ -218,10 +218,11 @@ class FarmStartupGuard:
 
         A dispatch stamps it on its execution archive; a later process that holds the
         same lock and reads another boot there knows that attempt's owner has ended.
-        None when the guard is not running or owns nothing — then nothing is proven.
+        None when the guard is not running, owns nothing or could not record its state —
+        then nothing is proven.
         """
         with self._mutex:
-            if self._lock_file is None:
+            if self._lock_file is None or self.storage_error:
                 return None
             boot = self.state.get("boot_id")
             return boot if isinstance(boot, str) else None

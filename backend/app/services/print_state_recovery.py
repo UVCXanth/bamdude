@@ -16,7 +16,16 @@ OUTCOMES = {
     "aborted": "cancelled",
     "stopped": "cancelled",
 }
-ACTIONS = ("align_terminal_item", "fill_estimated_end_and_align", "release_orphan_header", "delete_stale_item")
+ACTIONS = (
+    "align_terminal_item",
+    "fill_estimated_end_and_align",
+    "release_orphan_header",
+    "delete_stale_item",
+    "close_interrupted_attempt",
+)
+#: Dispatch phases our dispatch never saw running (``services/dispatch_phase.UNACCEPTED``).
+UNACCEPTED_PHASES = ("prepared", "sending", "sent")
+_INTERRUPTED = "The dispatch was interrupted"
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,10 @@ class RecoveryFacts:
     archive_users: int = 0
     references: tuple[str, ...] = ()
     now: datetime | None = None
+    #: Whether the attempt's owner process has ended: True only while this process holds the
+    #: installation's owner lock and the archive names another boot; False for this boot; None
+    #: when nothing proves either (no lock held, no boot recorded) — post-rebuild I-R2.
+    owner_ended: bool | None = None
 
 
 def utc(value):
@@ -39,7 +52,13 @@ def utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def effects_pending(archive: dict | None) -> bool:
+def effects_pending(archive: dict | None, *, intents: bool = True) -> bool:
+    """An unfinished effect recorded on the archive — a veto, never permission to erase it.
+
+    ``intents=False`` leaves out the pending swap-macro list: for an attempt that never
+    started that list is only what was asked, and the swap start's own fact is read
+    through ``swap_terminal.cycle_state`` (post-rebuild I-R3).
+    """
     if archive is None:
         return False
     extra = archive.get("extra_data")
@@ -48,7 +67,7 @@ def effects_pending(archive: dict | None) -> bool:
     if not isinstance(extra, dict):
         return True
     pending = extra.get("swap_macro_events_pending")
-    if pending is not None and (not isinstance(pending, list) or bool(pending)):
+    if intents and pending is not None and (not isinstance(pending, list) or bool(pending)):
         return True
     # This generation does not own newer completion carriers. Until its accessor
     # is integrated, seeing one is a veto, never permission to erase it.
@@ -78,8 +97,85 @@ def estimated_end(f: RecoveryFacts):
     return result if claim and claim < result <= utc(f.now) else None
 
 
+def interrupted_close(a: dict) -> tuple[str, str]:
+    """The failure code and detail an Info close writes for this attempt (post-rebuild I-R4).
+
+    A ``prepared`` attempt never sent its start; from ``sending`` on the command may have
+    reached the printer, and nothing acknowledged it — the detail says so and promises nothing.
+    """
+    from backend.app.services import swap_terminal
+    from backend.app.utils import failure_reasons
+
+    if a.get("dispatch_phase") == "prepared":
+        code = failure_reasons.DISPATCH_PREPARATION_ERROR
+        detail = f"{_INTERRUPTED} before the start command was sent."
+    else:
+        code = failure_reasons.DISPATCH_NO_ACKNOWLEDGEMENT
+        detail = (
+            f"{_INTERRUPTED} after the start command may have been sent; the printer's answer was never "
+            "observed. Check the printer before Retry."
+        )
+    if swap_terminal.cycle_state(a.get("extra_data")) != swap_terminal.CYCLE_NOT_STARTED:
+        detail += " The swap start macro ran or may have: check the plate."
+    return code, detail
+
+
+def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
+    """An attempt our dispatch never saw running, on a job still claimed for it (I-R4).
+
+    Only an operator closes it here — never a filename, a timer or a guess. The close needs the
+    proof the automatic requeue needs, for every phase: an owner proven ended, a fresh idle
+    printer, no other running archive or claim, no other unfinished effect.
+    """
+    q, i, a = f.queue, f.item, f.archive
+    if not (
+        i
+        and a
+        and i.get("status") == "printing"
+        and a.get("status") == "printing"
+        and a.get("dispatch_phase") in UNACCEPTED_PHASES
+        and a.get("printer_id") == f.printer_id
+        and a.get("queue_id") == q["id"]
+    ):
+        return None
+    reasons = []
+    if f.owner_ended is not True:
+        reasons.append("owner_alive" if f.owner_ended is False else "owner_unknown")
+    if f.live.get("mode") != "inactive":
+        reasons.append("live_unknown")
+    if f.live.get("busy"):
+        reasons.append("live_busy")
+    # A pending swap-macro list is only what was asked; the start's own fact is in the detail.
+    if effects_pending(a, intents=False) or f.live.get("effects"):
+        reasons.append("effects_pending")
+    if not q.get("recovery_identity") or not i.get("recovery_identity") or not a.get("recovery_identity"):
+        reasons.append("identity_missing")
+    if (
+        i.get("archive_id") != a.get("id")
+        or i.get("queue_id") != q["id"]
+        or q.get("printer_id") != f.printer_id
+        or a.get("deleted_at") is not None
+        or f.archive_users != 1
+    ):
+        reasons.append("execution_unproven")
+    if (
+        len(f.printing_archive_ids) != 1
+        or len(f.active_item_ids) != 1
+        or q.get("current_item_id") not in (None, i["id"])
+    ):
+        reasons.append("ambiguous_owner")
+    return {
+        "code": "interrupted_dispatch",
+        "actions": [] if reasons else ["close_interrupted_attempt"],
+        "blocked_reasons": sorted(set(reasons)),
+    }
+
+
 def classify(f: RecoveryFacts) -> dict | None:
     q, i, a = f.queue, f.item, f.archive
+    interrupted = _interrupted_dispatch(f)
+    if interrupted is not None:
+        return interrupted
     if i is None and a and a.get("status") == "printing":
         if f.live.get("stable_inactive"):
             return {"code": "active_archive_without_current_run", "actions": [], "blocked_reasons": ["outcome_unknown"]}
@@ -207,6 +303,13 @@ def plan_action(f: RecoveryFacts, action: str, *, confirmed_completed=False) -> 
         raise ValueError("recovery_not_allowed")
     q, i, a = f.queue, f.item, f.archive
     plan = {"item": {}, "archive": {}, "queue": {}, "delete_item": False}
+    if action == "close_interrupted_attempt":
+        # The end time is the apply's own clock, outside the plan, so the preview's plan hash holds.
+        code, detail = interrupted_close(a)
+        plan["archive"] = {"close": True, "status": "failed", "failure_reason": code, "error_message": detail}
+        plan["item"] = {"close": True, "status": "failed", "error_code": code, "error_message": detail}
+        plan["queue"] = {"current_item_id": None, "status": "error"}
+        return plan
     if action == "fill_estimated_end_and_align":
         if confirmed_completed is not True:
             raise ValueError("recovery_not_allowed")

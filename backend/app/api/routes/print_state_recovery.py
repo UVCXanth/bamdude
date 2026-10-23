@@ -39,6 +39,7 @@ WRITE_PERMISSIONS = {
         Permission.ARCHIVES_UPDATE_ALL,
     ),
     "delete_stale_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL, Permission.QUEUE_DELETE_ALL),
+    "close_interrupted_attempt": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
 }
 WRITE = {name: tuple(require_permission(p) for p in perms) for name, perms in WRITE_PERMISSIONS.items()}
 

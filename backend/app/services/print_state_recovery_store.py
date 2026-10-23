@@ -23,7 +23,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services import print_state_recovery_preview as previews, queue_sources
+from backend.app.services import dispatch_phase, print_state_recovery_preview as previews, queue_sources
 from backend.app.services.archive_write_scope import load_active_archive_for_write
 from backend.app.services.print_state_recovery import RecoveryFacts, classify, plan_action, utc
 from backend.app.services.queue_ops import claim_lanes
@@ -61,6 +61,9 @@ _ARCHIVE_FIELDS = (
     "deleted_at",
     "print_time_seconds",
     "extra_data",
+    "dispatch_phase",
+    "dispatch_boot_id",
+    "failure_reason",
 )
 _QUEUE_FIELDS = ("id", "recovery_identity", "printer_id", "status", "is_paused", "current_item_id")
 
@@ -203,6 +206,8 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
         for value in (await db.scalars(select(col).where(col.in_(needed)))).all():
             refs[value].add(reason)
     unknown_ref = unknown_inbound_refs()
+    # Read once for the page: a boot is proof only while this process holds the owner lock (I-R2).
+    current_boot = dispatch_phase.current_boot_id()
     result = {}
     now = datetime.now(timezone.utc)
     for pid, kind, key in targets:
@@ -282,8 +287,17 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             users.get(item.archive_id, 0) if item else 0,
             tuple(sorted(references)),
             now,
+            owner_ended=owner_ended(current_boot, archive),
         )
     return result, qs, (items, archives)
+
+
+def owner_ended(current_boot: str | None, archive) -> bool | None:
+    """True when the attempt names another boot than the one holding the lock; None proves nothing."""
+    boot = getattr(archive, "dispatch_boot_id", None) if archive is not None else None
+    if current_boot is None or boot is None:
+        return None
+    return boot != current_boot
 
 
 def revision(f: RecoveryFacts) -> str:
@@ -447,7 +461,7 @@ async def make_preview(db, printer_id, kind, target_id, action, actor, *, confir
             "duration_seconds": f.archive["print_time_seconds"],
             "completed_at": plan["archive"]["completed_at"],
         }
-        if plan["archive"]
+        if plan["archive"] and not plan["archive"].get("close")
         else None,
         "archive_preserved": True,
         "expires_in": previews.TTL,
@@ -459,6 +473,12 @@ def public_plan(plan):
     if not plan["archive"]:
         return plan
     archive = plan["archive"]
+    if archive.get("close"):
+        return {
+            **plan,
+            "item": {"status": plan["item"]["status"], "error_code": plan["item"]["error_code"]},
+            "archive": {"status": archive["status"], "failure_reason": archive["failure_reason"]},
+        }
     return {**plan, "archive": {"completed_at": archive["completed_at"], "time_source": "slicer_estimate"}}
 
 
@@ -509,19 +529,36 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
             # Explicit allowlists, no setattr loop over client fields.
             item = items.get(f.item["id"]) if f.item else None
             archive = archives.get(archive_id)
-            if plan["archive"]:
+            if plan["archive"].get("close"):
+                # An interrupted attempt ends failed, with no completion, usage, swap or command
+                # (I-R4); the job waits for the operator's Retry, the queue for its Resume.
+                ended_at = datetime.now(timezone.utc)
+                archive.status = plan["archive"]["status"]
+                archive.failure_reason = plan["archive"]["failure_reason"]
+                archive.error_message = plan["archive"]["error_message"]
+                archive.completed_at = ended_at
+                item.status = plan["item"]["status"]
+                item.error_code = plan["item"]["error_code"]
+                item.error_message = plan["item"]["error_message"]
+                item.completed_at = ended_at
+                item.waiting_reason = None
+                q = queues[key[0]]
+                q.current_item_id = None
+                q.status = plan["queue"]["status"]
+                q.last_activity_at = ended_at
+            elif plan["archive"]:
                 archive.completed_at = plan["archive"]["completed_at"]
                 extra = plan["archive"]["extra_data"]
                 extra["operator_recovery_end"]["action_id"] = nonce
                 archive.extra_data = json.loads(previews.canonical(extra))
-            if plan["item"]:
+            if plan["item"] and not plan["item"].get("close"):
                 item.status = plan["item"]["status"]
                 item.completed_at = plan["item"]["completed_at"]
                 item.waiting_reason = None
                 item.error_code = row_class(item.status, archive.failure_reason if archive is not None else None)
             if plan["delete_item"]:
                 await db.delete(item)
-            if plan["queue"]:
+            if plan["queue"] and not plan["archive"].get("close"):
                 q = queues[key[0]]
                 q.current_item_id = None
                 q.status = plan["queue"]["status"]
@@ -553,7 +590,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                             "started_at": (f.archive or {}).get("started_at"),
                             "duration": (f.archive or {}).get("print_time_seconds"),
                         }
-                        if plan["archive"]
+                        if plan["archive"] and not plan["archive"].get("close")
                         else None,
                     }
                 )
