@@ -48,6 +48,109 @@ def journal_lock(printer_id: int) -> asyncio.Lock:
     return entry[1]
 
 
+# The one local owner of a print's tail facts (post-rebuild F-R2): the archive the run
+# lifecycle bound to the client's journal generation — the print the MQTT client observed
+# the facts in. Both tail writers, the queued callback and an assignment writer, resolve
+# through it (``tail_archive``). Accounting only: it gates no command and no completion.
+_tail_owners: dict[int, tuple[int, int]] = {}
+# The reel going out at the first assignment of a tray made while a joined print's journal
+# waited for its restart seed (F-R3): ``printer_id → (generation, {tray: (spool_id,
+# spoolman_spool_id)})``. Taken only by a tail the seed replayed — one seen before that
+# assignment could record it, whose binding the assignment has since replaced.
+_held_outgoing: dict[int, tuple[int, dict[int, tuple[int | None, int | None]]]] = {}
+
+
+def bind_tail_owner(printer_id: int, archive_id: int, generation) -> None:
+    """The run lifecycle bound ``archive_id`` to the print the client is on (its journal generation)."""
+    if isinstance(generation, int) and not isinstance(generation, bool):
+        _tail_owners[printer_id] = (generation, archive_id)
+
+
+def bind_tail_owner_to_client(printer_id: int, archive_id: int) -> None:
+    """``bind_tail_owner`` for the print the printer's client is on now (the run lifecycle's bind)."""
+    _client, generation, _subtask = _observed_print(printer_id)
+    bind_tail_owner(printer_id, archive_id, generation)
+
+
+def forget_tail_state(printer_id: int | None = None) -> None:
+    """Drop the in-process tail owners and held captures — of one printer, or all."""
+    if printer_id is None:
+        _tail_owners.clear()
+        _held_outgoing.clear()
+    else:
+        _tail_owners.pop(printer_id, None)
+        _held_outgoing.pop(printer_id, None)
+
+
+def _observed_print(printer_id: int):
+    """``(client, journal generation, device subtask)`` of the print the printer's client is on now.
+
+    Unknown evidence is None — never a value made up from a client that cannot say.
+    """
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        client = printer_manager.get_client(printer_id)
+    except Exception:  # noqa: BLE001 - no client proves nothing
+        return None, None, None
+    if client is None:
+        return None, None, None
+    try:
+        generation = client.journal_generation()
+    except Exception:  # noqa: BLE001
+        generation = None
+    if not isinstance(generation, int) or isinstance(generation, bool):
+        generation = None
+    subtask = getattr(getattr(client, "state", None), "subtask_id", None)
+    return client, generation, subtask if isinstance(subtask, str) else None
+
+
+def _subtasks_contradict(observed, recorded) -> bool:
+    """Two positive device subtask ids that differ — missing or ``0`` proves nothing."""
+    observed = str(observed or "").strip()
+    recorded = str(recorded or "").strip()
+    return observed not in ("", "0") and recorded not in ("", "0") and observed != recorded
+
+
+async def _capture_outgoing(db: AsyncSession, printer_id: int, generation: int | None, tray: int) -> None:
+    """Remember the reel bound to ``tray`` before the first assignment of the hold rewrites it."""
+    if generation is None:
+        return
+    entry = _held_outgoing.get(printer_id)
+    if entry is None or entry[0] != generation:
+        entry = _held_outgoing[printer_id] = (generation, {})
+    if tray in entry[1]:
+        return
+    entry[1][tray] = await freeze_spool_ids(db, printer_id, tray)
+    logger.info(
+        "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
+        "the reel going out is %s/%s",
+        tray,
+        printer_id,
+        *entry[1][tray],
+    )
+
+
+def _take_held_outgoing(printer_id: int, origin: int, layer_num: int) -> tuple[int | None, int | None] | None:
+    """The reel going out at a held assignment of ``origin`` — for the tail the seed replayed only."""
+    client, generation, _subtask = _observed_print(printer_id)
+    entry = _held_outgoing.get(printer_id)
+    if client is None or entry is None or entry[0] != generation or origin not in entry[1]:
+        return None
+    try:
+        replayed = client.replayed_tail(origin, layer_num) is True
+    except Exception:  # noqa: BLE001
+        replayed = False
+    return entry[1].pop(origin) if replayed else None
+
+
+def _drop_held_outgoing(printer_id: int, origin: int) -> None:
+    """The feed came back to ``origin``: from here its binding names the reel feeding it."""
+    entry = _held_outgoing.get(printer_id)
+    if entry is not None:
+        entry[1].pop(origin, None)
+
+
 @dataclass(frozen=True)
 class TailEpisode:
     """One runout tail of a print (post-rebuild F-R2): its ``tail_start`` and the event that
@@ -117,17 +220,32 @@ async def _append(db: AsyncSession, **fields) -> PrintUsageEvent:
 
 
 async def record_tail_start(db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int) -> bool:
-    """Open a tail episode on ``origin``, freezing the reel bound to it now; False when one is open.
+    """Open a tail episode on ``origin``, freezing the reel running out; False when one is open.
 
     Frozen from the binding as every journal row is — and safe from an assignment that
     arrives while this callback waits, because every assignment writer records the open
-    tail itself before it rewrites the binding (``ensure_tail_recorded``). Does not commit.
+    tail itself before it rewrites the binding (``ensure_tail_recorded``). A tail the restart
+    seed replayed was seen while no writer could record it: when an assignment replaced the
+    binding in that window, the reel going out at it is frozen instead (F-R3). Does not commit.
     """
     from backend.app.models.print_usage_event import EVENT_TAIL_START
 
     if open_tail_episode(await load_events(db, printer_id, archive_id)) is not None:
         return False
     spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, origin)
+    outgoing = _take_held_outgoing(printer_id, origin, layer_num)
+    if outgoing is not None:
+        if outgoing != (spool_id, spoolman_spool_id):
+            logger.info(
+                "[UsageJournal] Tail of tray %d on printer %d was seen before the seed: the reel going out "
+                "at the assignment (%s/%s), not the one bound now (%s/%s)",
+                origin,
+                printer_id,
+                *outgoing,
+                spool_id,
+                spoolman_spool_id,
+            )
+        spool_id, spoolman_spool_id = outgoing
     await _append(
         db,
         printer_id=printer_id,
@@ -203,13 +321,38 @@ async def active_tail_archive(db: AsyncSession, printer_id: int, subtask_id: str
             .limit(1)
         )
     ).first()
-    if archive is None:
-        return None
-    observed = str(subtask_id or "").strip()
-    recorded = str(archive.subtask_id or "").strip()
-    if observed not in ("", "0") and recorded not in ("", "0") and observed != recorded:
+    if archive is None or _subtasks_contradict(subtask_id, archive.subtask_id):
         return None
     return archive.id
+
+
+async def tail_archive(db: AsyncSession, printer_id: int, *, generation: int | None, subtask_id: str | None):
+    """The archive a tail fact of the client's print ``generation`` belongs to, or None.
+
+    The one owner both tail writers ask (F-R2). A fact of an earlier print — the client has
+    moved on — never opens an episode in the next archive, whether it carries device ids or
+    not. The archive the run lifecycle bound to this print takes it while still printing;
+    before that bind, the newest printing archive, unless it is bound to another print. A
+    device subtask that contradicts the archive's names no owner either.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    _client, current, _subtask = _observed_print(printer_id)
+    if generation is not None and current is not None and generation != current:
+        return None
+    observed = generation if generation is not None else current
+    owner = _tail_owners.get(printer_id)
+    if owner is not None and observed is not None and owner[0] == observed:
+        row = (
+            await db.execute(select(PrintArchive.status, PrintArchive.subtask_id).where(PrintArchive.id == owner[1]))
+        ).first()
+        if row is None or row.status != "printing" or _subtasks_contradict(subtask_id, row.subtask_id):
+            return None
+        return owner[1]
+    candidate = await active_tail_archive(db, printer_id, subtask_id)
+    if candidate is not None and owner is not None and observed is not None and owner[1] == candidate:
+        return None  # the newest printing archive belongs to another print of this client
+    return candidate
 
 
 async def handle_feed_event(
@@ -221,9 +364,16 @@ async def handle_feed_event(
     layer_num: int,
     after_gap: bool,
     subtask_id: str | None = None,
+    generation: int | None = None,
 ) -> bool:
-    """Journal one tail fact the MQTT client observed; the caller holds ``journal_lock``."""
-    archive_id = await active_tail_archive(db, printer_id, subtask_id)
+    """Journal one tail fact the MQTT client observed; the caller holds ``journal_lock``.
+
+    ``subtask_id`` and ``generation`` are the print the client was on when it observed the
+    fact (``tail_archive``).
+    """
+    if event == "feed_return":
+        _drop_held_outgoing(printer_id, origin)
+    archive_id = await tail_archive(db, printer_id, generation=generation, subtask_id=subtask_id)
     if archive_id is None:
         logger.debug("Tail fact %s on printer %d has no matching active archive, dropped", event, printer_id)
         return False
@@ -250,21 +400,29 @@ async def ensure_tail_recorded(db: AsyncSession, *, printer_id: int, ams_id: int
     assignment that commits in between would hand the new reel to the tail. So whoever
     comes first writes it — this, under the caller's ``journal_lock``, or the callback,
     which then finds the episode open. Flushed into the caller's transaction, so the
-    tail_start and the new binding commit together.
+    tail_start and the new binding commit together. The archive is the one the callback
+    would pick (``tail_archive``). While a joined print waits for its restart seed no tail is
+    proven, so nothing is written — but the reel going out is remembered for a tail the seed
+    may replay (F-R3).
     """
+    client, generation, subtask = _observed_print(printer_id)
     try:
-        from backend.app.services.printer_manager import printer_manager
-
-        client = printer_manager.get_client(printer_id)
         tail = client.open_tail() if client is not None else None
     except Exception:  # noqa: BLE001 - no reading proves nothing; the callback still records it
         tail = None
+    tray = _global_tray(ams_id, tray_id)
     if tail is None:
+        try:
+            held = client is not None and client.journal_held() is True
+        except Exception:  # noqa: BLE001
+            held = False
+        if held:
+            await _capture_outgoing(db, printer_id, generation, tray)
         return False
     origin, layer = tail
-    if origin != _global_tray(ams_id, tray_id):
+    if origin != tray:
         return False
-    archive_id = await active_archive_id(db, printer_id)
+    archive_id = await tail_archive(db, printer_id, generation=generation, subtask_id=subtask)
     if archive_id is None:
         return False
     return await record_tail_start(db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer)

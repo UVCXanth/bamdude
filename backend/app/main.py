@@ -3773,6 +3773,11 @@ def _bind_print_file_analysis_context(
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
         origin=origin,
     )
+    # The usage journal's runout-tail facts of the print the client is on go to this
+    # archive (post-rebuild F-R2) — accounting only, it gates nothing.
+    from backend.app.services.print_usage_journal import bind_tail_owner_to_client
+
+    bind_tail_owner_to_client(printer_id, archive.id)
 
     pending = take_pending_terminal(
         printer_manager,
@@ -11311,7 +11316,13 @@ async def _application_lifespan(app: FastAPI):
     printer_manager.set_usage_event_callback(on_usage_event)
 
     async def on_feed_event(
-        printer_id: int, event: str, origin: int, layer_num: int, after_gap: bool, subtask_id: str | None
+        printer_id: int,
+        event: str,
+        origin: int,
+        layer_num: int,
+        after_gap: bool,
+        subtask_id: str | None,
+        generation: int | None = None,
     ):
         """Journal a runout tail's start or the feed's return to its tray (post-rebuild F-R2)."""
         try:
@@ -11326,6 +11337,7 @@ async def _application_lifespan(app: FastAPI):
                     layer_num=layer_num,
                     after_gap=after_gap,
                     subtask_id=subtask_id,
+                    generation=generation,
                 )
         except Exception as e:
             logging.getLogger(__name__).warning(

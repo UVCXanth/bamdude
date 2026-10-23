@@ -2401,6 +2401,11 @@ class BambuMQTTClient:
         self._journal_generation: int = 0
         # The next tray observation of a print is the first after joining it or reconnecting.
         self._journal_after_gap: bool = False
+        # ``(origin, layer)`` of every runout tail the seed replayed for this print: a tail seen
+        # while the journal was held, so an assignment in that window could not record it first
+        # (the journal then freezes the reel going out at that assignment, not the binding).
+        self._replayed_tails: set[tuple[int, int]] = set()
+        self._journal_replaying = False
         # The routing code of the last ``start_print`` that published nothing (None after one that did).
         self.last_start_refusal: str | None = None
         self._last_message_time: float = 0.0  # Track when we last received a message
@@ -2609,6 +2614,7 @@ class BambuMQTTClient:
             self._journal_held = prior._journal_held
             self._journal_pending = list(prior._journal_pending)
             self._journal_generation = prior._journal_generation
+            self._replayed_tails = set(prior._replayed_tails)
         self._journal_after_gap = True
 
     @property
@@ -7181,6 +7187,7 @@ class BambuMQTTClient:
                 self._journal_generation += 1
                 self._journal_after_gap = False
                 self._tail_origin = None
+                self._replayed_tails.clear()
             # Initialize timelapse tracking based on current state
             # NOTE: xcam data is parsed BEFORE this code runs in _process_message,
             # so self.state.timelapse may already be set from this message.
@@ -7224,6 +7231,7 @@ class BambuMQTTClient:
                 self._journal_held = True
                 self._journal_generation += 1
                 self._journal_after_gap = True
+                self._replayed_tails.clear()
                 journal_generation = self._journal_generation
             # Restart-recovery hook (#1485 follow-up): BamDude started mid-
             # print, so the #1304 first-push guard suppressed on_print_start,
@@ -7782,6 +7790,8 @@ class BambuMQTTClient:
                 tn,
                 origin,
             )
+            if self._journal_replaying:
+                self._replayed_tails.add((origin, layer))
             if self.on_feed_event:
                 self.on_feed_event("tail_start", origin, layer, after_gap)
             return
@@ -7797,6 +7807,16 @@ class BambuMQTTClient:
         """The print this client's journal currently belongs to (see ``seed_usage_journal``)."""
         with self._journal_lock:
             return self._journal_generation
+
+    def journal_held(self) -> bool:
+        """A joined print is running and its journal waits for the restart seed."""
+        with self._journal_lock:
+            return self._journal_held is True
+
+    def replayed_tail(self, origin: int, layer: int) -> bool:
+        """Was the tail opening on ``origin`` at ``layer`` held and replayed by this print's seed?"""
+        with self._journal_lock:
+            return (origin, layer) in self._replayed_tails
 
     def open_tail(self) -> tuple[int, int] | None:
         """``(origin tray, opening layer)`` of the runout tail being fed now, or None.
@@ -7836,14 +7856,18 @@ class BambuMQTTClient:
             self._journal_held = False
             self._journal_after_gap = True
             pending, self._journal_pending = self._journal_pending, []
-            for index, (tn, layer, empty) in enumerate(pending):
-                if layer is None:
-                    # Seen before any layer was reported: its boundary is the next one observed
-                    # (never a later fact's layer run backwards), recorded as a gap boundary.
-                    later = next((known for _tn, known, _empty in pending[index + 1 :] if known is not None), None)
-                    layer = self.state.layer_num if later is None else later
-                    self._journal_after_gap = True
-                self._apply_journal_tray(tn, layer, empty)
+            self._journal_replaying = True
+            try:
+                for index, (tn, layer, empty) in enumerate(pending):
+                    if layer is None:
+                        # Seen before any layer was reported: its boundary is the next one observed
+                        # (never a later fact's layer run backwards), recorded as a gap boundary.
+                        later = next((known for _tn, known, _empty in pending[index + 1 :] if known is not None), None)
+                        layer = self.state.layer_num if later is None else later
+                        self._journal_after_gap = True
+                    self._apply_journal_tray(tn, layer, empty)
+            finally:
+                self._journal_replaying = False
             return True
 
     def _ams_unit_ids(self) -> list[int]:
