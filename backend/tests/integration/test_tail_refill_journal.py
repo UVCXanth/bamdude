@@ -1492,3 +1492,108 @@ async def test_two_assignments_of_one_tray_on_one_layer_leave_the_later_reel(db_
     assert [spool for _layer, spool, _sm in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [
         third
     ]
+
+
+def queue_every_callback(client):
+    """main's journal callbacks, queued in the order the client calls them."""
+    queued = []
+    client.on_feed_event = lambda *args: queued.append(("feed", args))
+    client.on_tray_change = lambda *args: queued.append(("tray", args))
+    return queued
+
+
+async def drain_every_callback(db, printer_id, client, queued):
+    from backend.app.services.usage_tracker import record_tray_change_event
+
+    for kind, args in queued:
+        async with journal.journal_lock(printer_id):
+            if kind == "feed":
+                event, origin, layer, after_gap = args
+                await journal.handle_feed_event(
+                    db, printer_id=printer_id, event=event, origin=origin, layer_num=layer, after_gap=after_gap,
+                    generation=client.journal_generation(),
+                )  # fmt: skip
+            else:
+                await record_tray_change_event(db, printer_id, *args)
+    queued.clear()
+
+
+def a_joined_client_on_tray(tray, layer):
+    """A client that joined a running print whose first report is ``tray`` feeding at ``layer``."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="HOLD1", access_code="1")
+    client.on_print_running_observed = MagicMock()
+    client._previous_gcode_state = "RUNNING"
+    client._previous_gcode_file = "plate.3mf"
+    slot_reads(client, TRAY, "PLA")
+    client._process_message(
+        {"print": {"ams": {"tray_now": str(tray)}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf",
+                   "layer_num": layer, "total_layer_num": 200}}
+    )  # fmt: skip
+    assert client.journal_held()
+    return client
+
+
+async def test_a_held_tray_change_keeps_the_reel_bound_when_it_was_seen(db_session, incident):
+    """Review r2 F2-R3 through the ordinary tray change: the print moved from tray 1 to TRAY at
+    40 and TRAY ran dry at 60, both while the journal waited; the new reel was assigned after
+    that. The tray change at 40 is the old reel's — the reel the slot held when it was seen —
+    and the writers charge 40→60 to it, never to the reel assigned later, which never fed."""
+    from backend.app.models.print_usage_event import EVENT_TRAY_CHANGE
+    from backend.app.utils.usage_attribution import feed_intervals
+
+    printer, archive, old, new = incident
+    client = a_joined_client_on_tray(1, 30)
+    queued = queue_every_callback(client)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        a_report(client, TRAY, 40, "PLA")
+        a_report(client, 254, 60, "")
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        assert client.seed_usage_journal(
+            client.journal_generation(), log=[(1, 0)], last_loaded_tray=1, tail_origin=None
+        )
+        await drain_every_callback(db_session, printer.id, client, queued)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TRAY_CHANGE) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(60, old.id, None)]
+    events = await journal.load_events(db_session, printer.id, archive.id)
+    stretch = next(iv for iv in feed_intervals(client.state.tray_change_log, events) if iv.start_layer == 40)
+    assert (stretch.tray, stretch.spool_id) == (TRAY, old.id)
+
+
+async def test_tray_changes_kept_after_an_overflow_keep_the_reel_bound_when_each_was_seen(
+    db_session, incident, monkeypatch
+):
+    """F2-R3 with overflow, through the ordinary tray change: a report kept after the unknown
+    stretch is a plain tray change — the one at 43 is the old reel's, as it was bound then,
+    never the reel assigned last."""
+    import backend.app.services.bambu_mqtt as mqtt
+    from backend.app.models.print_usage_event import EVENT_TRAY_CHANGE
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    third = await a_spool(db_session, "third")
+    monkeypatch.setattr(mqtt, "_JOURNAL_PENDING_LIMIT", 3)
+    client = a_joined_client_feeding_a_tail(layer=40)
+    queued = queue_every_callback(client)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        a_report(client, TRAY, 41, "PLA")
+        a_report(client, 254, 42, "")
+        a_report(client, TRAY, 43, "PLA")
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, 254, 50, "")
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, third.id))
+        assert client.seed_usage_journal(
+            client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
+        )
+        await drain_every_callback(db_session, printer.id, client, queued)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TRAY_CHANGE) == [
+        (40, None, None),
+        (43, old.id, None),
+    ]
+    rows = await journal.load_events(db_session, printer.id, archive.id)
+    assert [e.global_tray_id for e in rows if e.event == EVENT_TRAY_CHANGE] == [UNKNOWN_FEED, TRAY]

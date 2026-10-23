@@ -1287,6 +1287,56 @@ async def _report_partial_usage(
         logger.warning("[SPOOLMAN] Not reachable for partial usage reporting")
         return
 
+    # A one-slot print's stretches follow its tray chronology, as at completion and in the
+    # internal writer: an AMS backup's takeover splits the grams, and a stretch nobody saw fed
+    # is reported as not recorded — never charged to the mapped reel (post-rebuild F2-R1).
+    from backend.app.utils.usage_attribution import chronology_splits, normalize_tray_changes
+
+    partial_tray_changes: list[tuple[int, int]] = []
+    if state is not None and len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
+        partial_tray_changes = normalize_tray_changes(list(getattr(state, "tray_change_log", []) or []))
+
+    async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
+        if not chronology_splits(partial_tray_changes):
+            return await _report_spool_usage_for_slots(
+                client,
+                usage_items,
+                ams_trays,
+                slot_to_tray,
+                label,
+                printer_serial,
+                printer_id=printer_id,
+                cost_out=print_cost,
+            )
+        try:
+            journal_events = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
+        except Exception as exc:
+            logger.debug("[SPOOLMAN] Journal load failed for partial split: %s", exc)
+            journal_events = []
+        uncharged: list[tuple[int, float]] = []
+        updated, _handled = await _report_spool_usage_split_by_tray_changes(
+            client,
+            [{"slot_id": slot_id, "used_g": grams} for slot_id, grams in usage_items],
+            partial_tray_changes,
+            ams_trays,
+            split_layer_usage,
+            filament_properties,
+            int(total_layers or 0),
+            int(current_layer),
+            label,
+            printer_serial,
+            printer_id=printer_id,
+            journal_events=journal_events,
+            cost_out=print_cost,
+            uncharged_out=uncharged,
+        )
+        if uncharged:
+            from backend.app.services import spool_assignment_notifications
+
+            async with async_session() as notify_db:
+                await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, notify_db, logger)
+        return updated
+
     # No-3MF aborted print (#1820 mirror of the completion path): nothing in
     # filament_usage or layer_usage to base partial estimates on, but the
     # remain%-delta snapshot we captured at start still describes consumption
@@ -1353,16 +1403,7 @@ async def _report_partial_usage(
                 grams_used = round(mm_to_grams(mm_used, diameter, density), 2)
                 usage_items.append((slot_id, grams_used))
 
-            spools_updated = await _report_spool_usage_for_slots(
-                client,
-                usage_items,
-                ams_trays,
-                slot_to_tray,
-                "Partial (G-code)",
-                printer_serial,
-                printer_id=printer_id,
-                cost_out=print_cost,
-            )
+            spools_updated = await _charge(usage_items, "Partial (G-code)", layer_usage_int)
             if spools_updated > 0:
                 logger.info("[SPOOLMAN] Reported partial usage to %s spool(s) using G-code data", spools_updated)
             await _settle_archive()
@@ -1393,16 +1434,7 @@ async def _report_partial_usage(
             partial_used_g = round(total_used_g * progress_ratio, 2)
             usage_items.append((slot_id, partial_used_g))
 
-    spools_updated = await _report_spool_usage_for_slots(
-        client,
-        usage_items,
-        ams_trays,
-        slot_to_tray,
-        "Partial (linear)",
-        printer_serial,
-        printer_id=printer_id,
-        cost_out=print_cost,
-    )
+    spools_updated = await _charge(usage_items, "Partial (linear)", None)
     if spools_updated > 0:
         logger.info("[SPOOLMAN] Reported partial usage to %s spool(s) using linear interpolation", spools_updated)
     await _settle_archive()

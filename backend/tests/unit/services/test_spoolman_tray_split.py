@@ -730,3 +730,112 @@ async def test_an_explicit_unknown_feed_is_not_recorded_on_spoolman_and_no_fallb
     client.use_spool.assert_not_awaited()
     notify.assert_awaited_once()
     assert notify.await_args.args[1] == [(-1, 300.0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log, charged, not_recorded",
+    [
+        ([(-1, 0)], {}, [(-1, 150.0)]),  # only an unknown feed
+        ([(0, 0), (-1, 0)], {}, [(-1, 150.0)]),  # known, then unknown on the same layer
+        ([(0, 0), (1, 50)], "split", []),  # an AMS backup took over at 50
+        ([], {11: 150.0}, []),  # no chronology at all: the slot's mapping, as before
+    ],
+)
+async def test_a_cancelled_print_on_spoolman_is_split_by_the_feed_as_the_internal_writer_does(
+    log, charged, not_recorded
+):
+    """Review r2 F2-R1 on the abort writer: a cancelled one-slot print's partial grams follow
+    the tray chronology as the completion writer and the internal inventory do — a stretch
+    nobody saw fed is reported as not recorded, never charged to the mapped reel; a backup's
+    takeover is split by the same function, with the same arguments, as the internal writer."""
+    from backend.app.services.spoolman_tracking import _report_partial_usage
+    from backend.app.utils.tray_split import compute_layer_segment_grams
+
+    tracking = SimpleNamespace(
+        archive_id=144,
+        filament_usage=[{"slot_id": 1, "used_g": 300.0}],
+        layer_usage=None,
+        filament_properties={},
+        ams_trays={0: {"tray_uuid": "AAAA", "tray_type": "PLA"}, 1: {"tray_uuid": "BBBB", "tray_type": "PLA"}},
+        slot_to_tray=[0],
+        tray_remain_start={},
+    )
+    reels = {"AAAA": {"id": 11, "filament": {"color_hex": "000000"}}, "BBBB": {"id": 12, "filament": {}}}
+    client = AsyncMock()
+    client.find_spool_by_tag = AsyncMock(side_effect=lambda tag: reels.get(tag))
+    client.use_spool = AsyncMock()
+    printer_manager = MagicMock()
+    printer_manager.get_status.return_value = SimpleNamespace(
+        tray_change_log=log, layer_num=100, total_layers=200, raw_data={}
+    )
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(AsyncMock())),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=client),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._resolve_spool_tag", lambda tray, *_a: tray.get("tray_uuid")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=[])),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch("backend.app.services.printer_manager.printer_manager", printer_manager),
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+    ):
+        await _report_partial_usage(printer_id=1, tracking=tracking)
+
+    if charged == "split":  # the partial 150 g, layer 100 of 200, no G-code: the internal writer's call
+        first, second = compute_layer_segment_grams([0, 50], 150.0, 1, None, 1.24, 1.75, 200, 100)
+        charged = {11: round(first, 2), 12: round(second, 2)}
+    assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == charged
+    if not_recorded:
+        notify.assert_awaited_once()
+        assert notify.await_args.args[1] == not_recorded
+    else:
+        notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_multi_colour_print_on_spoolman_keeps_its_slot_mapping():
+    """The abort writer asks the chronology only of a one-slot print, as the completion writer
+    and the internal inventory do: a multi-colour print changes trays at every colour, so its
+    slots stay on the dispatched mapping whatever the chronology says."""
+    from backend.app.services.spoolman_tracking import _report_partial_usage
+
+    tracking = SimpleNamespace(
+        archive_id=144,
+        filament_usage=[{"slot_id": 1, "used_g": 300.0}, {"slot_id": 2, "used_g": 100.0}],
+        layer_usage=None,
+        filament_properties={},
+        ams_trays={0: {"tray_uuid": "AAAA", "tray_type": "PLA"}, 1: {"tray_uuid": "BBBB", "tray_type": "PLA"}},
+        slot_to_tray=[0, 1],
+        tray_remain_start={},
+    )
+    reels = {"AAAA": {"id": 11, "filament": {}}, "BBBB": {"id": 12, "filament": {}}}
+    client = AsyncMock()
+    client.find_spool_by_tag = AsyncMock(side_effect=lambda tag: reels.get(tag))
+    client.use_spool = AsyncMock()
+    printer_manager = MagicMock()
+    printer_manager.get_status.return_value = SimpleNamespace(
+        tray_change_log=[(-1, 0)], layer_num=100, total_layers=200, raw_data={}
+    )
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(AsyncMock())),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=client),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._resolve_spool_tag", lambda tray, *_a: tray.get("tray_uuid")),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch("backend.app.services.printer_manager.printer_manager", printer_manager),
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+    ):
+        await _report_partial_usage(printer_id=1, tracking=tracking)
+
+    assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0, 12: 50.0}
+    notify.assert_not_awaited()

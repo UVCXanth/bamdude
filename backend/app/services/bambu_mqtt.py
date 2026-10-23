@@ -7835,6 +7835,7 @@ class BambuMQTTClient:
             self.state.tray_change_log.append((tn, layer))
             logger.info("[%s] Tray change during print: tray=%d at layer=%d", self.serial_number, tn, layer)
             if self.on_tray_change:
+                self._name_replayed("tray_change", tn, layer)
                 self.on_tray_change(tn, layer)
         self.state.last_loaded_tray = tn
 

@@ -382,7 +382,7 @@ async def record_tray_change_event(db: AsyncSession, printer_id: int, tray_globa
     change this callback is reporting).
     """
     from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE, PrintUsageEvent
-    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_event
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_fact_ids, record_event
 
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
@@ -406,7 +406,8 @@ async def record_tray_change_event(db: AsyncSession, printer_id: int, tray_globa
     if last is not None and last.global_tray_id == tray_global and last.layer_num == layer_num:
         return
 
-    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray_global)
+    # A change the restart seed replayed names the reel bound when it was seen (post-rebuild F-R3).
+    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "tray_change", tray_global, layer_num)
     await record_event(
         db,
         printer_id=printer_id,

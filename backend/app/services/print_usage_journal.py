@@ -126,8 +126,10 @@ def _replayed_identity(
     return named
 
 
-async def _frozen_for(db: AsyncSession, printer_id: int, event: str, origin: int, layer_num: int):
-    """The ids a journal row of this fact freezes: the replay's name for it, else the binding now."""
+async def freeze_fact_ids(db: AsyncSession, printer_id: int, event: str, origin: int, layer_num: int):
+    """The ids a journal row of this observed fact freezes: the reel the restart seed's replay
+    names for it (``tail_start``, ``feed_return``, ``tray_change``, ``held_assignment``), else the
+    binding now."""
     named = _replayed_identity(printer_id, event, origin, layer_num)
     if named is not None:
         return named
@@ -218,7 +220,7 @@ async def record_tail_start(db: AsyncSession, *, printer_id: int, archive_id: in
 
     if open_tail_episode(await load_events(db, printer_id, archive_id)) is not None:
         return False
-    spool_id, spoolman_spool_id = await _frozen_for(db, printer_id, "tail_start", origin, layer_num)
+    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "tail_start", origin, layer_num)
     await _append(
         db,
         printer_id=printer_id,
@@ -254,7 +256,7 @@ async def record_feed_return(
 
     if open_tail_episode(await load_events(db, printer_id, archive_id), origin) is None:
         return False
-    spool_id, spoolman_spool_id = await _frozen_for(db, printer_id, "feed_return", origin, layer_num)
+    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "feed_return", origin, layer_num)
     await _append(
         db,
         printer_id=printer_id,
@@ -361,7 +363,7 @@ async def handle_feed_event(
             db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer_num, after_gap=after_gap
         )
     elif event == "held_assignment":
-        spool_id, spoolman_spool_id = await _frozen_for(db, printer_id, event, origin, layer_num)
+        spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, event, origin, layer_num)
         ams_id, tray_id = _global_tray_to_ams_slot(origin)
         await note_assignment_change(
             db,
