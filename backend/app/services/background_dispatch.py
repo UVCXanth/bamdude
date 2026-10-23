@@ -3998,11 +3998,15 @@ class BackgroundDispatchService:
                                     printer_id=job.printer_id,
                                     exact_model=job.routing_guard.exact_model,
                                 )
-                        cleanup_disk_paths = [Path(settings.base_dir) / library_path]
+                        cleanup_disk_paths = [
+                            Path(settings.base_dir) / library_path
+                        ]  # SEC-PATH-OK: the transient library row's own stored file path.
                         if library_thumbnail:
                             thumb_path = Path(library_thumbnail)
                             if not thumb_path.is_absolute():
-                                thumb_path = Path(settings.base_dir) / library_thumbnail
+                                thumb_path = (
+                                    Path(settings.base_dir) / library_thumbnail
+                                )  # SEC-PATH-OK: the transient library row's own stored thumbnail path.
                             cleanup_disk_paths.append(thumb_path)
                         # The ORM clears ``product_files`` for us, but nothing
                         # clears ``product_plates`` — it has no cascade from the
