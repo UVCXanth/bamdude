@@ -104,6 +104,8 @@ def live_snapshot(printer_id: int) -> dict:
         repr(resolutions.get(printer_id)) if isinstance(resolutions, dict) else "unknown",
     )
     mode = "unknown"
+    # A fresh, idle printer with nothing of ours in flight — whatever run is still bound.
+    idle = bool(fresh and not busy and not effects and state.state in {"IDLE", "FINISH", "FAILED"})
     if fresh and not busy and not effects:
         if state.state in {"IDLE", "FINISH", "FAILED"} and run is None:
             mode = "inactive"
@@ -118,6 +120,7 @@ def live_snapshot(printer_id: int) -> dict:
         "identity": identity,
         "busy": busy,
         "effects": effects,
+        "idle": idle,
         "item_id": run.queue_item_id if run else None,
         "archive_id": run.archive_id if run else None,
         "started_at": run.claim_started_at if run else None,
@@ -137,6 +140,8 @@ def unknown_inbound_refs() -> bool:
 
 async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, int]], *, locked=False):
     """One page, fixed query count; never load terminal archive history."""
+    from backend.app.services.background_dispatch import attempt_unobserved
+
     if not printer_ids:
         return {}, {}, {}
     queues = list(
@@ -288,6 +293,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             tuple(sorted(references)),
             now,
             owner_ended=owner_ended(current_boot, archive),
+            unobserved=attempt_unobserved(archive.id) if archive is not None else False,
         )
     return result, qs, (items, archives)
 

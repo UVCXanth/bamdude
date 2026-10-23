@@ -44,6 +44,10 @@ class RecoveryFacts:
     #: installation's owner lock and the archive names another boot; False for this boot; None
     #: when nothing proves either (no lock held, no boot recorded) — post-rebuild I-R2.
     owner_ended: bool | None = None
+    #: This process's own runner stopped watching the attempt's sent start without the
+    #: printer's verdict (``background_dispatch.attempt_unobserved``, D-R4). The live owner
+    #: says so itself; it is not a proof that any owner ended.
+    unobserved: bool = False
 
 
 def utc(value):
@@ -141,9 +145,13 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
     if f.owner_ended is False and f.live.get("busy"):
         return None  # this process's dispatch, still in flight: its runner ends it
     reasons = []
-    if f.owner_ended is not True:
+    # This process's runner gave up watching the sent start (D-R4): no restart is needed for
+    # the operator to end it, on a fresh idle printer whose only bound run is its own.
+    given_up = f.owner_ended is False and f.unobserved
+    if f.owner_ended is not True and not given_up:
         reasons.append("owner_alive" if f.owner_ended is False else "owner_unknown")
-    if f.live.get("mode") != "inactive":
+    own_run_idle = given_up and f.live.get("idle") is True and f.live.get("archive_id") in (None, a.get("id"))
+    if f.live.get("mode") != "inactive" and not own_run_idle:
         reasons.append("live_unknown")
     if f.live.get("busy"):
         reasons.append("live_busy")

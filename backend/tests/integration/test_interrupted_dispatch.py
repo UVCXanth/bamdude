@@ -518,6 +518,69 @@ async def test_info_closes_an_interrupted_attempt_and_leaves_retry_to_the_operat
     assert await db_session.scalar(select(func.count()).select_from(PrintStateRecoveryAction)) == 1
 
 
+def watched_no_more(printer_id, archive_id):
+    """What a runner of THIS process leaves when it stops watching a sent start without the
+    printer's answer: its prepared run still bound, and the attempt marked unobserved."""
+    from backend.app.services import background_dispatch as bd
+    from backend.app.services.print_run_binding import bind_prepared_print_run
+    from backend.app.services.printer_manager import printer_manager
+
+    assert bind_prepared_print_run(printer_manager, printer_id=printer_id, archive_id=archive_id) is not None
+    bd.mark_unobserved(archive_id)
+
+
+@pytest.mark.asyncio
+async def test_info_closes_an_attempt_this_process_stopped_watching(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, owner, no_physical_commands
+):
+    """D-R4 / I08: the owner is alive — this process — and says itself that no runner watches
+    the sent start any more; on a fresh idle printer whose only run is this attempt's own,
+    the operator may close it without a restart. The owner is never called ended."""
+    printer, queue, archive, item, _ = await an_interrupted_job(
+        db_session, printer_factory, archive_factory, phase="sent", boot="this-boot"
+    )
+    watched_no_more(printer.id, archive.id)
+
+    page = await store.list_issues(db_session, None)
+    issue = next(row for row in page["issues"] if row["kind"] == "item" and row["target_id"] == item.id)
+    assert issue["code"] == "interrupted_dispatch"
+    assert issue["actions"] == ["close_interrupted_attempt"] and issue["blocked_reasons"] == []
+
+    await close_through_info(db_session, test_engine, printer, item)
+    await reread(db_session, archive, item, queue)
+    assert archive.status == "failed" and archive.failure_reason == failure_reasons.DISPATCH_NO_ACKNOWLEDGEMENT
+    assert item.status == "failed" and queue.status == "error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["printer_running", "another_run", "still_watched"])
+async def test_info_offers_no_close_of_an_unwatched_attempt_without_an_idle_printer(
+    db_session, printer_factory, archive_factory, telemetry, owner, case
+):
+    """The unwatched attempt still needs a fresh idle printer whose only run is its own, and an
+    attempt no runner has given up keeps its owner's reason."""
+    from backend.app.services import background_dispatch as bd
+    from backend.app.services.print_run_binding import bind_print_run
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue, archive, item, _ = await an_interrupted_job(
+        db_session, printer_factory, archive_factory, phase="sent", boot="this-boot"
+    )
+    if case == "still_watched":
+        bind_print_run(printer_manager, printer_id=printer.id, archive_id=archive.id, origin="dispatch")
+    elif case == "another_run":
+        bind_print_run(printer_manager, printer_id=printer.id, archive_id=archive.id + 1000, origin="external")
+        bd.mark_unobserved(archive.id)
+    else:
+        watched_no_more(printer.id, archive.id)
+        telemetry.state = "RUNNING"
+
+    page = await store.list_issues(db_session, None)
+    issue = next(row for row in page["issues"] if row["kind"] == "item" and row["target_id"] == item.id)
+    assert issue["actions"] == []
+    assert ("owner_alive" if case == "still_watched" else "live_unknown") in issue["blocked_reasons"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case, reason",

@@ -251,6 +251,28 @@ RESPONSE_FILE_RECEIVED = "file_received"
 #: (c) Phase A (the printer echoed our submission) and never an active state (#1678).
 RESPONSE_STALLED = "stalled_after_accept"
 
+#: Our own observer failing after a sent start is no verdict of the printer's (D-R4): the runner
+#: looks again with the same claim, at most this many looks in all, then stops watching
+#: visibly — the start is never sent again and the attempt is never called unsent.
+OBSERVER_MAX_ATTEMPTS = 3
+OBSERVER_RETRY_SECONDS = 5.0
+
+#: Execution archives whose sent start no runner of THIS process watches any more: the runner
+#: ended without the printer's verdict. The live owner says so itself (it is never called
+#: ended), so Info may offer the operator its close without a restart. Process memory: after
+#: a restart the ended owner's own proof takes over.
+_unobserved_attempts: set[int] = set()
+
+
+def mark_unobserved(archive_id: int | None) -> None:
+    if archive_id is not None:
+        _unobserved_attempts.add(archive_id)
+
+
+def attempt_unobserved(archive_id: int | None) -> bool:
+    return archive_id is not None and archive_id in _unobserved_attempts
+
+
 #: Where an attempt's untyped failure happened, read by :func:`dispatch_failure_code`.
 STAGE_PREPARING = "preparing"
 
@@ -294,6 +316,14 @@ class SourceRejected(RuntimeError):
 
 class DispatchPhaseLost(RuntimeError):
     """The ``sending`` mark could not be committed, so nothing may be sent."""
+
+
+class DispatchObservationLost(RuntimeError):
+    """Every bounded look at the printer after the sent start failed: its outcome is unknown.
+
+    Not a verdict (``_ends_after_publish``): the attempt is left as the printer may have it,
+    marked unobserved for the operator.
+    """
 
 
 def dispatch_failure_code(exc: BaseException | None, *, stage: str | None = None) -> str:
@@ -1362,6 +1392,7 @@ class BackgroundDispatchService:
             if _published(job) and not _ends_after_publish(e):
                 # The start may be on the printer: neither a failure nor a refusal.
                 job.outcome["uncertain"] = True
+                mark_unobserved(job.execution_archive_id)
                 logger.error("Dispatch %s: outcome unknown after the start was sent: %s", job.id, e, exc_info=True)
             else:
                 job.outcome.setdefault("failure_code", dispatch_failure_code(e, stage=job.stage))
@@ -1846,6 +1877,7 @@ class BackgroundDispatchService:
                 # The start may be running on the printer. Releasing the claim, or
                 # closing its archive, would hand the printer to the next job over it.
                 job.outcome["uncertain"] = True
+                mark_unobserved(job.execution_archive_id)
                 logger.error(
                     "Background dispatch job %s: outcome unknown after the start was sent: %s", job.id, e, exc_info=True
                 )
@@ -2563,6 +2595,7 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
                 job.execution_archive_id = archive.id
+                _unobserved_attempts.discard(archive.id)  # a reused id names this attempt now
                 # The durable half of the send fact, in the transaction that inserts the row (D-R3).
                 job.dispatch_boot_id = dispatch_phase.stamp_prepared(archive)
 
@@ -3151,6 +3184,7 @@ class BackgroundDispatchService:
         message = str(exc) or exc.__class__.__name__
         if _published(job) and not _ends_after_publish(exc):
             logger.error("Dispatch %s: outcome unknown after the start was sent: %s", job.id, exc, exc_info=True)
+            mark_unobserved(job.execution_archive_id)
             job.outcome = {
                 "success": False,
                 "archive_id": job.execution_archive_id,
@@ -3209,31 +3243,65 @@ class BackgroundDispatchService:
         await self._secondary(db, job, f"the {to} phase", write)
 
     async def _require_running(self, db, job: PrintDispatchJob, printer_name: str, pre_state: str, **verify) -> None:
-        """The printer's answer to the published start: ``accepted`` when seen running, else the attempt ends."""
+        """The printer's answer to the published start: ``accepted`` when seen running, else the attempt ends.
+
+        Only the printer's own answers decide (D-R4). A look that fails — our observer raised,
+        or answered something that is no verdict — is looked at again with the same claim and
+        the job still active, at most ``OBSERVER_MAX_ATTEMPTS`` looks; then the watch ends
+        visibly (``DispatchObservationLost``), never with a second start.
+        """
         from backend.app.services import dispatch_phase
         from backend.app.utils.failure_reasons import DISPATCH_ACCEPTED_NOT_STARTED, DISPATCH_NO_ACKNOWLEDGEMENT
 
-        answer = await self._await_print_response(job.printer_id, printer_name, pre_state, **verify)
-        if answer == RESPONSE_ACCEPTED:
-            job.send_fact = SEND_ACCEPTED
-            await self._record_phase(db, job, dispatch_phase.ACCEPTED)
-            return
-        if answer == RESPONSE_STALLED:
-            raise DispatchNotStarted(
-                DISPATCH_ACCEPTED_NOT_STARTED,
-                "The printer accepted the file but never started printing. Check its screen for a prompt "
-                "or an error before you retry.",
+        for look in range(1, OBSERVER_MAX_ATTEMPTS + 1):
+            try:
+                answer = await self._await_print_response(job.printer_id, printer_name, pre_state, **verify)
+                failure = None
+            except (asyncio.CancelledError, PrintCommandRejectedError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - our own observer failing is no verdict of the printer's
+                answer, failure = None, exc
+            if answer == RESPONSE_ACCEPTED:
+                job.send_fact = SEND_ACCEPTED
+                await self._record_phase(db, job, dispatch_phase.ACCEPTED)
+                return
+            if answer == RESPONSE_STALLED:
+                raise DispatchNotStarted(
+                    DISPATCH_ACCEPTED_NOT_STARTED,
+                    "The printer accepted the file but never started printing. Check its screen for a prompt "
+                    "or an error before you retry.",
+                )
+            if answer == RESPONSE_FILE_RECEIVED:
+                raise DispatchNotStarted(
+                    DISPATCH_ACCEPTED_NOT_STARTED,
+                    "The printer received the file but had not started printing when the wait ended — it may "
+                    "still be reading it. Check the printer before you retry.",
+                )
+            if answer == RESPONSE_NO_ACKNOWLEDGEMENT:
+                raise DispatchNotStarted(
+                    DISPATCH_NO_ACKNOWLEDGEMENT,
+                    f"Printer did not acknowledge print command — state still {pre_state}. Check the printer for a "
+                    "pending error (HMS code, plate-clear prompt, SD card) and try again.",
+                )
+            why = (
+                f"{type(failure).__name__}: {failure}"
+                if failure is not None
+                else f"no verdict in the answer {answer!r}"
             )
-        if answer == RESPONSE_FILE_RECEIVED:
-            raise DispatchNotStarted(
-                DISPATCH_ACCEPTED_NOT_STARTED,
-                "The printer received the file but had not started printing when the wait ended — it may "
-                "still be reading it. Check the printer before you retry.",
+            logger.error(
+                "Dispatch %s: watching printer %s after the start was sent failed (look %d of %d): %s",
+                job.id,
+                job.printer_id,
+                look,
+                OBSERVER_MAX_ATTEMPTS,
+                why,
+                exc_info=failure is not None,
             )
-        raise DispatchNotStarted(
-            DISPATCH_NO_ACKNOWLEDGEMENT,
-            f"Printer did not acknowledge print command — state still {pre_state}. Check the printer for a "
-            "pending error (HMS code, plate-clear prompt, SD card) and try again.",
+            if look < OBSERVER_MAX_ATTEMPTS:
+                await asyncio.sleep(OBSERVER_RETRY_SECONDS)
+        raise DispatchObservationLost(
+            f"BamDude could not watch {printer_name}'s answer to the start command ({why}). The print may be "
+            "running: check the printer, then close the attempt in Info."
         )
 
     @staticmethod
@@ -3488,6 +3556,7 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create archive")
                 job.execution_archive_id = archive.id
+                _unobserved_attempts.discard(archive.id)  # a reused id names this attempt now
                 archive_file_path = archive.file_path
                 # The durable half of the send fact, in the transaction that inserts the row (D-R3).
                 job.dispatch_boot_id = dispatch_phase.stamp_prepared(archive)

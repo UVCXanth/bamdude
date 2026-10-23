@@ -239,6 +239,111 @@ async def test_a_terminal_refusal_without_a_swap_start_keeps_its_claim_time(
 
 
 # --------------------------------------------------------------------------- #
+# D-R4 — the observer after the send: never dropped by its own failure
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def quick_observer(monkeypatch):
+    import backend.app.services.background_dispatch as bd
+
+    monkeypatch.setattr(bd, "OBSERVER_RETRY_SECONDS", 0, raising=False)
+
+
+@pytest.mark.parametrize("glitch", [RuntimeError("the status read raised"), "running"], ids=["exception", "no_verdict"])
+async def test_a_transient_observer_failure_keeps_watching_until_the_printer_answers(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, quick_observer, glitch
+):
+    """The first look after the send fails (an exception, or an answer that is no verdict of
+    the printer's); the runner looks again with the same claim, and the printer's answer ends
+    the attempt — sent once, never left unwatched."""
+    import backend.app.services.background_dispatch as bd
+
+    _queue_id, mqtt, item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    verdict = AsyncMock(side_effect=[glitch, bd.RESPONSE_ACCEPTED])
+    monkeypatch.setattr(service, "_await_print_response", verdict)
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_called_once()
+    assert verdict.await_count == 2
+    row = await reread(db_session, PrintQueueItem, item_id)
+    archive = await db_session.get(PrintArchive, row.archive_id)
+    assert row.status == "printing" and archive.dispatch_phase == "accepted"
+
+
+async def test_a_transient_observer_failure_then_a_negative_answer_ends_the_attempt_with_its_class(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, quick_observer
+):
+    import backend.app.services.background_dispatch as bd
+
+    queue_id, mqtt, item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    verdict = AsyncMock(side_effect=[RuntimeError("the status read raised"), bd.RESPONSE_NO_ACKNOWLEDGEMENT])
+    monkeypatch.setattr(service, "_await_print_response", verdict)
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_called_once()
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "failed" and row.error_code == "dispatchNoAcknowledgement"
+    assert (await db_session.get(PrinterQueue, queue_id)).status == "error"
+
+
+async def test_a_persistent_observer_failure_ends_the_watch_visibly_and_keeps_the_claim(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, quick_observer
+):
+    """Every look fails: the watch ends after a bounded number of tries, the start is not
+    sent again, the claim and the archive stay as the printer may have them, and this
+    process records that nothing watches the attempt any more (Info offers its close)."""
+    import backend.app.services.background_dispatch as bd
+
+    queue_id, mqtt, item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    verdict = AsyncMock(side_effect=RuntimeError("the observer keeps failing"))
+    monkeypatch.setattr(service, "_await_print_response", verdict)
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_called_once()
+    assert verdict.await_count == bd.OBSERVER_MAX_ATTEMPTS
+    row = await reread(db_session, PrintQueueItem, item_id)
+    archive = await db_session.get(PrintArchive, row.archive_id)
+    assert row.status == "printing" and archive.status == "printing" and archive.dispatch_phase == "sent"
+    assert (await db_session.get(PrinterQueue, queue_id)).status == "printing"
+    assert bd.attempt_unobserved(archive.id)
+    assert not service._active_jobs
+
+    await one_tick(scheduler, spawned)
+    mqtt._client.publish.assert_called_once()  # the claim holds: never sent again by itself
+
+
+async def test_a_new_attempt_on_a_reused_archive_id_is_not_taken_for_an_unwatched_one(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """SQLite hands a deleted newest id out again: the new attempt that gets it is watched."""
+    from sqlalchemy import func
+
+    import backend.app.services.background_dispatch as bd
+
+    _queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    next_id = (await db_session.scalar(select(func.max(PrintArchive.id))) or 0) + 1
+    bd.mark_unobserved(next_id)
+
+    await one_tick(scheduler, spawned)
+
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.archive_id == next_id
+    assert not bd.attempt_unobserved(next_id)
+
+
+# --------------------------------------------------------------------------- #
 # D07 — the phase: a ``sending`` mark that cannot be written forbids the send
 # --------------------------------------------------------------------------- #
 
