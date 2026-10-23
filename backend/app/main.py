@@ -5948,7 +5948,9 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger) -> None:
         )
 
 
-async def _restore_usage_tracking_session(printer_id: int, state, db, logger, *, generation: int | None = None) -> None:
+async def _restore_usage_tracking_session(
+    printer_id: int, state, db, logger, *, generation: int | None = None, retry: bool = True
+) -> bool:
     """Put the filament-attribution context back after a restart mid-print.
 
     ``usage_tracker._active_sessions`` and ``PrinterState.tray_change_log`` both
@@ -5966,8 +5968,10 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger, *,
     runout tail the journal still holds open, else the chronology's last tray —
     and that tail. It then replays, in order, the tray reports it held. The seed
     names the print it was computed for (``generation``), so a client that has
-    moved on to another print refuses it. A failure here leaves the journal held:
-    nothing is journaled against an invented clean state.
+    moved on to another print refuses it. A failure here leaves the journal held —
+    nothing is journaled against an invented clean state — and is retried from the
+    same evidence (``_retry_usage_seed``); one that keeps failing ends the hold with
+    the feed stated unknown (``abandon_journal_hold``). True when it ran through.
     """
     try:
         from backend.app.api.routes.settings import get_setting
@@ -6064,11 +6068,51 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger, *,
             state.tray_change_log = log
             if 0 <= tray_now <= 254:
                 state.last_loaded_tray = tray_now
+        return True
     except Exception:
         # Never let attribution recovery cost the caller its timelapse baseline —
         # that capture has to happen before the printer uploads the in-flight MP4
         # and there is no second chance at it.
         logger.exception("[RESTART] Failed to restore usage-tracking session for printer %s", printer_id)
+        if retry and generation is not None:
+            spawn_background_task(
+                _retry_usage_seed(printer_id, generation), name=f"usage-journal-seed-retry-{printer_id}"
+            )
+        return False
+
+
+#: Waits before each retry of a joined print's usage-journal seed that failed (post-rebuild
+#: F-R4). Each reads the same evidence again — the persisted journal and session and the
+#: reports the client holds; after the last one the hold ends with the feed stated unknown.
+_USAGE_SEED_RETRY_DELAYS = (5.0, 30.0, 120.0)
+
+
+async def _retry_usage_seed(printer_id: int, generation: int) -> None:
+    """Seed the held journal of print ``generation`` again; give up visibly, never silently."""
+    logger = logging.getLogger(__name__)
+
+    def still_held():
+        client = printer_manager.get_client(printer_id)
+        return client is not None and client.journal_generation() == generation and client.journal_held()
+
+    for delay in _USAGE_SEED_RETRY_DELAYS:
+        await asyncio.sleep(delay)
+        if not still_held():
+            return  # seeded meanwhile, or the printer is on another print
+        state = printer_manager.get_status(printer_id)
+        if state is None:
+            continue
+        async with async_session() as db:
+            if await _restore_usage_tracking_session(printer_id, state, db, logger, generation=generation, retry=False):
+                return
+    client = printer_manager.get_client(printer_id)
+    if client is not None and client.abandon_journal_hold(generation):
+        logger.error(
+            "[RESTART] Printer %s: the usage journal could not be restored after %d retries; the feed before "
+            "the first observed tray report is recorded as unknown",
+            printer_id,
+            len(_USAGE_SEED_RETRY_DELAYS),
+        )
 
 
 @dataclass(frozen=True, slots=True)

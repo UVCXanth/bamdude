@@ -27,6 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: A tray chronology entry for a stretch nobody observed (post-rebuild F-R4): tray reports
+#: lost while a joined print's journal waited for its seed, or a seed that never came. From
+#: its layer to the next entry the feed is unknown — an explicitly unattributed interval,
+#: never the tray the chronology named before it.
+UNKNOWN_FEED = -1
+
 
 @dataclass(frozen=True)
 class FeedInterval:
@@ -81,7 +87,7 @@ def sole_feeding_tray(tray_changes: list[tuple[int, int]] | None) -> int | None:
     if len(entries) < 2:
         return None
     normalized = normalize_tray_changes(entries)
-    return normalized[0][0] if len(normalized) == 1 else None
+    return normalized[0][0] if len(normalized) == 1 and normalized[0][0] != UNKNOWN_FEED else None
 
 
 def _identity_events(events: list, tray: int) -> list:
@@ -250,6 +256,10 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
     intervals: list[FeedInterval] = []
     for idx, (tray, start) in enumerate(chronology):
         end = chronology[idx + 1][1] if idx + 1 < len(chronology) else None
+        if tray == UNKNOWN_FEED:
+            # Nobody observed this stretch: frozen as nobody's, never filled from a live slot.
+            intervals.append(FeedInterval(start, tray, None, None, True))
+            continue
         tray_episodes = [ep for ep in episodes if ep.origin == tray]
         if not _has_spool_boundary(events, tray) and not tray_episodes:
             intervals.append(FeedInterval(start, tray, None, None, False))

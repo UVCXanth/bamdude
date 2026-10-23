@@ -207,3 +207,38 @@ def test_a_journal_without_tail_events_reads_as_before():
         .add(EVENT_SPOOL_LOADED, 45, spool=NEW)
     )
     assert boundaries(j) == [(0, OLD), (42, NEW)]
+
+
+# ── F-R4 / M2 · a stretch nobody observed is unrecorded, never the old chronology's ──
+
+
+def test_an_unknown_feed_is_an_unrecorded_interval_between_known_ones():
+    """M2: the chronology says the feed is unknown from layer 40 (lost observations); the
+    tray observed again at 60 is charged from there, the stretch between goes unrecorded —
+    not to the tray the old chronology ended on."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 60, tray=3, spool=NEXT)
+    intervals = feed_intervals([(T0, 0), (UNKNOWN_FEED, 40), (3, 60)], j.events)
+    assert intervals == [
+        FeedInterval(0, T0, None, None, False),  # no boundary of its own: the writer resolves it
+        FeedInterval(40, UNKNOWN_FEED, None, None, True),  # explicitly nobody's
+        FeedInterval(60, 3, None, None, False),
+    ]
+    grams = compute_layer_segment_grams(
+        boundary_layers=[iv.start_layer for iv in intervals],
+        total_weight=100.0,
+        slot_id=1,
+        layer_usage=None,
+        density=1.24,
+        diameter=1.75,
+        total_layers=100,
+        last_layer_num=100,
+    )
+    assert round(sum(grams), 6) == 100.0 and all(g > 0 for g in grams)
+
+
+def test_an_unknown_feed_is_never_the_tray_that_fed_the_whole_print():
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED, sole_feeding_tray
+
+    assert sole_feeding_tray([(T0, 40), (UNKNOWN_FEED, 40)]) is None

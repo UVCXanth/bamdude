@@ -313,6 +313,67 @@ def test_a_live_tray_change_is_logged_at_its_own_packets_layer(client):
     assert client.state.tray_change_log == [(ORIGIN, 0), (3, 26)]
 
 
+# ── F-R4 · lost observations become an explicit unknown, never the old chronology ──
+
+
+def test_held_reports_lost_to_the_bound_leave_an_unknown_feed_from_the_first_lost_layer(joined, monkeypatch):
+    """M2: more tray reports than the hold keeps — the oldest go, and the replay says the
+    feed is unknown from the first lost layer instead of joining the kept ones to the old
+    chronology."""
+    import backend.app.services.bambu_mqtt as mqtt
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    monkeypatch.setattr(mqtt, "_JOURNAL_PENDING_LIMIT", 3)
+    first_packet(joined, 0, layer=10)
+    for layer, tray in ((12, 1), (14, 0), (16, 1), (18, 0)):
+        packet(joined, tray, layer=layer)
+
+    assert joined.seed_usage_journal(
+        joined.journal_generation(), log=[(ORIGIN, 0)], last_loaded_tray=ORIGIN, tail_origin=None
+    )
+
+    assert joined.state.tray_change_log == [(ORIGIN, 0), (UNKNOWN_FEED, 10), (0, 14), (1, 16), (0, 18)]
+    assert [c.args for c in joined.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 10), (0, 14), (1, 16), (0, 18)]
+
+
+def test_a_journal_that_never_got_its_seed_is_released_with_an_unknown_feed(joined):
+    """M2: the seed failed for good — the hold ends with the feed unknown from the start
+    (nothing before the restart could be read back) and the held reports journaled in order."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    first_packet(joined, 1, layer=40)
+    packet(joined, 3, layer=45)
+
+    assert joined.abandon_journal_hold(joined.journal_generation())
+
+    assert joined.state.tray_change_log == [(UNKNOWN_FEED, 0), (1, 40), (3, 45)]
+    assert not joined.journal_held()
+    packet(joined, 1, layer=50)  # observed live from here
+    assert joined.state.tray_change_log[-1] == (1, 50)
+
+
+def test_a_release_with_nothing_held_names_the_feed_seen_now(joined):
+    """M2: no tray report was held — the feed the printer names now is the first observed one."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    joined._process_message(
+        {"print": {"gcode_state": "RUNNING", "gcode_file": "plate.3mf", "layer_num": 40, "total_layer_num": 200}}
+    )
+    joined.state.tray_now = 2
+
+    assert joined.abandon_journal_hold(joined.journal_generation())
+
+    assert joined.state.tray_change_log == [(UNKNOWN_FEED, 0), (2, 40)]
+
+
+def test_a_release_is_refused_for_another_print_or_a_seeded_one(joined):
+    first_packet(joined, 1, layer=40)
+    stale = joined.journal_generation()
+    assert joined.seed_usage_journal(stale, log=[(1, 0)], last_loaded_tray=1, tail_origin=None)
+    assert not joined.abandon_journal_hold(stale)  # already seeded
+    assert not joined.abandon_journal_hold(stale + 1)  # not the print it is on
+
+
 def test_without_a_seed_the_journal_stays_held(joined):
     """F04: a failed seed opens nothing with an invented clean state."""
     first_packet(joined, 254)

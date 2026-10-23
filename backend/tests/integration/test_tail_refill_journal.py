@@ -496,6 +496,133 @@ async def test_the_restart_seed_gives_the_joined_client_its_open_tail_back(db_se
     assert client.state.last_loaded_tray == TRAY
 
 
+def a_restarted_client_seeing_the_origin(layer=50):
+    """The restarted client's first status: a print running, the feed already back on the origin."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="SEED2", access_code="1")
+    client.on_feed_event = MagicMock()
+    client.on_tray_change = MagicMock()
+    client.on_print_running_observed = MagicMock()
+    client._previous_gcode_state = "RUNNING"
+    client._previous_gcode_file = "plate.3mf"
+    client.state.raw_data = {"ams": {"ams": [{"id": AMS, "tray": [{"id": SLOT, "tray_type": "PLA"}]}]}}
+    client._process_message(
+        {"print": {"ams": {"tray_now": str(TRAY)}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf",
+                   "layer_num": layer, "total_layer_num": 200, "subtask_name": "plate"}}
+    )  # fmt: skip
+    return client
+
+
+@pytest.fixture
+def seed_retries(monkeypatch, test_engine):
+    """The retries run at once, on this database, and the test awaits the one it spawned."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app import main
+
+    spawned = []
+    monkeypatch.setattr(main, "_USAGE_SEED_RETRY_DELAYS", (0, 0, 0))
+    monkeypatch.setattr(main, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
+    monkeypatch.setattr(main, "spawn_background_task", lambda coroutine, **_: spawned.append(coroutine))
+    return spawned
+
+
+def a_flaky_read(monkeypatch, failures):
+    """The restore's first database read fails ``failures`` times (a locked database), then works."""
+    from backend.app.services import usage_tracker
+
+    real = usage_tracker.get_persisted_print_name
+    calls = []
+
+    async def read(db, printer_id):
+        calls.append(printer_id)
+        if len(calls) <= failures:
+            raise RuntimeError("database is locked")
+        return await real(db, printer_id)
+
+    monkeypatch.setattr(usage_tracker, "get_persisted_print_name", read)
+    return calls
+
+
+async def test_a_failed_seed_is_retried_from_the_same_evidence(db_session, incident, monkeypatch, seed_retries):
+    """M2: the restore's first read failed; the retry reads the journal and the held report
+    again and seeds the print — the open tail closes at the observed return, nothing lost."""
+    import logging
+
+    from backend.app.main import _restore_usage_tracking_session
+
+    printer, archive, old, new = incident
+    await tail_fact(db_session, printer, "tail_start", 40)
+    client = a_restarted_client_seeing_the_origin()
+    a_flaky_read(monkeypatch, failures=1)
+
+    with patch("backend.app.main.printer_manager") as pm:
+        pm.get_client.return_value = client
+        pm.get_status.return_value = client.state
+        assert not await _restore_usage_tracking_session(
+            printer.id, client.state, db_session, logging.getLogger(__name__), generation=client.journal_generation()
+        )
+        assert client.journal_held() and len(seed_retries) == 1
+        await seed_retries.pop()
+
+    assert not client.journal_held()
+    assert client.on_feed_event.call_args_list[-1].args == ("feed_return", TRAY, 50, True)
+
+
+async def test_a_seed_that_keeps_failing_ends_the_hold_with_the_feed_unknown(
+    db_session, incident, monkeypatch, seed_retries
+):
+    """M2: every read fails — the hold ends visibly: the feed is unknown until the held
+    report, which is journaled, instead of the completion reading the old chronology."""
+    import logging
+
+    from backend.app.main import _restore_usage_tracking_session
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_restarted_client_seeing_the_origin()
+    calls = a_flaky_read(monkeypatch, failures=100)
+
+    with patch("backend.app.main.printer_manager") as pm:
+        pm.get_client.return_value = client
+        pm.get_status.return_value = client.state
+        await _restore_usage_tracking_session(
+            printer.id, client.state, db_session, logging.getLogger(__name__), generation=client.journal_generation()
+        )
+        await seed_retries.pop()
+
+    assert len(calls) == 4  # the first try and three retries, then no more
+    assert not client.journal_held()
+    assert client.state.tray_change_log == [(UNKNOWN_FEED, 0), (TRAY, 50)]
+    assert [c.args for c in client.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 0), (TRAY, 50)]
+
+
+async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incident, monkeypatch, seed_retries):
+    import logging
+
+    from backend.app.main import _restore_usage_tracking_session
+
+    printer, archive, old, new = incident
+    client = a_restarted_client_seeing_the_origin()
+    generation = client.journal_generation()
+    calls = a_flaky_read(monkeypatch, failures=100)
+
+    with patch("backend.app.main.printer_manager") as pm:
+        pm.get_client.return_value = client
+        pm.get_status.return_value = client.state
+        await _restore_usage_tracking_session(
+            printer.id, client.state, db_session, logging.getLogger(__name__), generation=generation
+        )
+        client._previous_gcode_state, client._was_running = "IDLE", False
+        client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        await seed_retries.pop()
+
+    assert len(calls) == 1  # the retry of the old print read nothing
+    assert client.journal_generation() != generation
+    assert client.journal_held()  # the next print's own hold, not ended by the old print's retry
+
+
 # ── F-R3 / F-R4 · an assignment while the journal waits for its seed ─────────
 
 
@@ -661,6 +788,32 @@ async def test_a_held_tail_the_journal_lost_leaves_the_reel_going_out_to_no_late
 
     assert rest[0][0] == "feed_return"
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(60, new.id, None)]
+
+
+async def test_a_seed_that_comes_late_journals_every_held_transition_at_its_own_layer(db_session, incident):
+    """M2: a long wait for the seed — three tails and their returns held while the print ran
+    on; the late seed journals them in order, each at the layer its report carried, and the
+    completion boundaries split the tray at the returns."""
+    from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail(layer=40)
+    for back, out in ((45, 60), (66, 80), (85, 99)):
+        slot_reads(client, TRAY, "PLA")
+        client._process_message({"print": {"ams": {"tray_now": str(TRAY)}, "layer_num": back}})
+        slot_reads(client, TRAY, "")
+        client._process_message({"print": {"ams": {"tray_now": "254"}, "layer_num": out}})
+    client.state.layer_num = 120  # the seed lands long after
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await seed_and_replay(db_session, printer.id, client)
+
+    tails = await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START)
+    returns = await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN)
+    assert [t[0] for t in tails] == [40, 60, 80, 99]
+    assert [r[0] for r in returns] == [45, 66, 85]
+    events = await journal.load_events(db_session, printer.id, archive.id)
+    assert [layer for layer, _spool, _ in journal_boundaries_for_tray(events, TRAY)] == [0, 45, 66, 85]
 
 
 async def test_an_assignment_held_without_a_tail_leaves_a_later_live_tail_to_the_binding(db_session, incident):
