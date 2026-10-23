@@ -215,15 +215,16 @@ def test_a_journal_without_tail_events_reads_as_before():
 def test_an_unknown_feed_is_an_unrecorded_interval_between_known_ones():
     """M2: the chronology says the feed is unknown from layer 40 (lost observations); the
     tray observed again at 60 is charged from there, the stretch between goes unrecorded —
-    not to the tray the old chronology ended on."""
+    not to the tray the old chronology ended on. With part of the feed unknown, the known
+    stretches take their reels from the journal, never from the slots now (F4)."""
     from backend.app.utils.usage_attribution import UNKNOWN_FEED
 
     j = Journal().add(EVENT_START, 0, spool=OLD).add(EVENT_TRAY_CHANGE, 60, tray=3, spool=NEXT)
     intervals = feed_intervals([(T0, 0), (UNKNOWN_FEED, 40), (3, 60)], j.events)
     assert intervals == [
-        FeedInterval(0, T0, None, None, False),  # no boundary of its own: the writer resolves it
+        FeedInterval(0, T0, OLD, OLD + 1000, True),  # the start's reel, not the slot's now
         FeedInterval(40, UNKNOWN_FEED, None, None, True),  # explicitly nobody's
-        FeedInterval(60, 3, None, None, False),
+        FeedInterval(60, 3, NEXT, NEXT + 1000, True),  # the reel the tray change froze
     ]
     grams = compute_layer_segment_grams(
         boundary_layers=[iv.start_layer for iv in intervals],

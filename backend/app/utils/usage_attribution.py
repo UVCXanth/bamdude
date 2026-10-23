@@ -249,7 +249,10 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
     it — in journal order, so a later event on the same layer wins; a refill
     counts from its runout's layer (``_refill_layers``). A tray the
     journal holds no spool boundary for (no runout, no reel loaded) is left for
-    the writer to resolve (``frozen=False``).
+    the writer to resolve (``frozen=False``) — unless part of the print's feed is
+    stated unknown: the binding now may then hold a change nobody recorded, so a
+    known stretch takes its reel from the journal's identity events, and nothing
+    when there are none (post-rebuild F4).
 
     A runout tail of a tray (post-rebuild F-R4) is read as ``journal_boundaries_for_tray``
     reads it: its assignments and its own runout are not boundaries, and the identity
@@ -264,6 +267,7 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
     episodes = tail_episodes(all_events)
     owned = tail_owned_ids(all_events, episodes)
     events = [e for e in all_events if e.id not in owned]
+    history_lost = any(tray == UNKNOWN_FEED for tray, _layer in chronology)
 
     intervals: list[FeedInterval] = []
     for idx, (tray, start) in enumerate(chronology):
@@ -273,7 +277,7 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
             intervals.append(FeedInterval(start, tray, None, None, True))
             continue
         tray_episodes = [ep for ep in episodes if ep.origin == tray]
-        if not _has_spool_boundary(events, tray) and not tray_episodes:
+        if not _has_spool_boundary(events, tray) and not tray_episodes and not history_lost:
             intervals.append(FeedInterval(start, tray, None, None, False))
             continue
         refills = _refill_layers(events, tray)

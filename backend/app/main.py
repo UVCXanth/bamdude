@@ -6089,7 +6089,7 @@ async def _restore_usage_tracking_session_locked(
                 tail_open_layer=tail.start.layer_num if tail is not None else 0,
                 bindings=bindings,
             ):
-                queue_replay(printer_id, client.take_replay_batches())
+                queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
                 await deliver_pending_replay(printer_id)
                 if tail is not None:
                     logger.info(
@@ -6142,7 +6142,11 @@ async def _retry_usage_seed(printer_id: int, generation: int) -> None:
         async with async_session() as db:
             if await _restore_usage_tracking_session(printer_id, state, db, logger, generation=generation, retry=False):
                 return
-    if await _abandon_held_journal(printer_id, generation):
+    from backend.app.services.print_usage_journal import journal_lock
+
+    async with journal_lock(printer_id):
+        abandoned = await _abandon_held_journal_locked(printer_id, generation)
+    if abandoned:
         logger.error(
             "[RESTART] Printer %s: the usage journal could not be restored after %d retries; the feed before "
             "the first observed tray report is recorded as unknown",
@@ -6151,37 +6155,37 @@ async def _retry_usage_seed(printer_id: int, generation: int) -> None:
         )
 
 
-async def _abandon_held_journal(printer_id: int, generation: int) -> bool:
+async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool:
     """End the hold of print ``generation`` whose seed never came, and write what it releases.
 
     Under the journal lock, as the seed itself (post-rebuild F3): the bindings the released
     reports are named with are read there — no snapshot, and the write reads them in the same
     hold of the lock — and the replay is written before the lock lets anything else through.
-    The hold ended is the one of the client registered then: a reconnect while this waited
-    carried it to a new client.
+    The hold ended is the one of the client registered then: a reconnect while the caller
+    waited for the lock carried it to a new client. The caller holds the journal lock.
     """
     from backend.app.core import database
     from backend.app.services.print_usage_journal import (
+        active_archive_id,
         binding_snapshot,
         deliver_pending_replay,
-        journal_lock,
         queue_replay,
     )
 
-    async with journal_lock(printer_id):
-        bindings = None
-        try:
-            # The factory the journal writes with, looked up now (as ``deliver_pending_replay`` does).
-            async with database.async_session() as db:
-                bindings = await binding_snapshot(db, printer_id)
-        except Exception:  # noqa: BLE001 - the write then reads them, still under this lock
-            logging.getLogger(__name__).exception("Binding snapshot for printer %s failed", printer_id)
-        client = printer_manager.get_client(printer_id)
-        if client is None or not client.abandon_journal_hold(generation, bindings=bindings):
-            return False
-        queue_replay(printer_id, client.take_replay_batches())
-        await deliver_pending_replay(printer_id)
-        return True
+    bindings = archive_id = None
+    try:
+        # The factory the journal writes with, looked up now (as ``deliver_pending_replay`` does).
+        async with database.async_session() as db:
+            bindings = await binding_snapshot(db, printer_id)
+            archive_id = await active_archive_id(db, printer_id)
+    except Exception:  # noqa: BLE001 - the write then reads them, still under this lock
+        logging.getLogger(__name__).exception("Binding snapshot for printer %s failed", printer_id)
+    client = printer_manager.get_client(printer_id)
+    if client is None or not client.abandon_journal_hold(generation, bindings=bindings):
+        return False
+    queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
+    await deliver_pending_replay(printer_id)
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -10014,19 +10018,19 @@ async def _release_unseeded_journal(printer_id: int) -> None:
     raises but for cancellation.
     """
     try:
-        from backend.app.services.print_usage_journal import journal_lock
+        from backend.app.services.print_usage_journal import journal_lock, settle_pending_replay
 
-        client = printer_manager.get_client(printer_id)
-        if client is not None and client.journal_held() is True:
-            if await _abandon_held_journal(printer_id, client.journal_generation()):
-                logging.getLogger(__name__).warning(
-                    "Printer %s completed before its usage journal was seeded; its feed before the first "
-                    "observed tray report is recorded as unknown",
-                    printer_id,
-                )
-        else:
-            async with journal_lock(printer_id):
-                pass  # entering it writes a replay still waiting
+        async with journal_lock(printer_id):  # entering it writes a replay still waiting
+            client = printer_manager.get_client(printer_id)
+            if client is not None and client.journal_held() is True:
+                if await _abandon_held_journal_locked(printer_id, client.journal_generation()):
+                    logging.getLogger(__name__).warning(
+                        "Printer %s completed before its usage journal was seeded; its feed before the first "
+                        "observed tray report is recorded as unknown",
+                        printer_id,
+                    )
+            # What the completion reads never misses a replay: written, or stated unknown (F4).
+            await settle_pending_replay(printer_id)
     except Exception:  # noqa: BLE001 - the completion goes on; its attribution stays as observed
         logging.getLogger(__name__).exception("Could not release the unseeded usage journal of printer %s", printer_id)
 

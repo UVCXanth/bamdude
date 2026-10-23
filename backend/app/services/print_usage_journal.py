@@ -78,20 +78,40 @@ class JournalLock:
         self._lock.release()
 
 
+@dataclass
+class _PendingReplay:
+    """A replay waiting for its write: the batch, the archive it was seeded for (when the seed
+    knew it) and how many of its writes failed."""
+
+    batch: Any
+    archive_id: int | None = None
+    failures: int = 0
+
+
 # The replays restart seeds built that no transaction has written yet, per printer, in the
 # order they were built; and the writer running now — a holder cancelled while it waited
 # leaves it to finish, and the next holder waits for it (post-rebuild F3).
-_pending_replays: dict[int, list] = {}
+_pending_replays: dict[int, list[_PendingReplay]] = {}
 _replay_writers: dict[int, asyncio.Task] = {}
 
 
-def queue_replay(printer_id: int, batches) -> None:
-    """Take over the replays a client built (``ReplayBatch``); the journal lock writes them first."""
+def queue_replay(printer_id: int, batches, *, archive_id: int | None = None) -> None:
+    """Take over the replays a client built (``ReplayBatch``) for the print of ``archive_id``;
+    the journal lock writes them first."""
     from backend.app.services.bambu_mqtt import ReplayBatch
 
     kept = [b for b in (batches if isinstance(batches, list) else []) if isinstance(b, ReplayBatch) and b.facts]
     if kept:
-        _pending_replays.setdefault(printer_id, []).extend(kept)
+        _pending_replays.setdefault(printer_id, []).extend(_PendingReplay(b, archive_id) for b in kept)
+
+
+async def settle_pending_replay(printer_id: int) -> None:
+    """Before a completion — or the sweep that may close the print — reads the chronology or the
+    journal: write what waits, else state it unknown; nothing of the print is left waiting
+    (post-rebuild F4). The caller holds ``journal_lock`` and entered it (or the release it
+    makes wrote) just before, so this is each waiting batch's second try at least — and a
+    second failure states it unknown."""
+    await deliver_pending_replay(printer_id)
 
 
 async def deliver_pending_replay(printer_id: int) -> None:
@@ -100,7 +120,10 @@ async def deliver_pending_replay(printer_id: int) -> None:
     Each batch goes in one transaction of its own and leaves the queue only once committed: a
     write that fails or rolls back leaves it to the next holder of the lock, whole. The writer
     is shielded, so a holder cancelled while it waits never cuts a batch between its commit and
-    its removal — a batch is written exactly once. Raises only on cancellation.
+    its removal — a batch is written exactly once. A batch whose write fails a second time is
+    not left behind a holder that would write past it or a completion that would charge
+    without it: the feed from its first fact is stated unknown (``_state_unrecorded``,
+    post-rebuild F4). Raises only on cancellation.
     """
     loop = asyncio.get_running_loop()
     running = _replay_writers.get(printer_id)
@@ -124,38 +147,105 @@ async def _write_pending_replays(printer_id: int) -> None:
 
     pending = _pending_replays.get(printer_id, [])
     while pending:
-        batch = pending[0]
+        entry = pending[0]
         try:
             async with database.async_session() as db:
-                written = await _write_replay_batch(db, printer_id, batch)
-                await db.commit()
-                pending.pop(0)
+                written = await _write_replay_batch(db, printer_id, entry.batch)
+                if written is not None:
+                    await db.commit()
+                    pending.pop(0)
         except Exception:
+            entry.failures += 1
+            if entry.failures < 2:
+                logger.exception(
+                    "[UsageJournal] The restart replay of printer %d (%d facts) could not be written; "
+                    "the next holder of the journal lock writes it",
+                    printer_id,
+                    len(entry.batch.facts),
+                )
+                return
             logger.exception(
-                "[UsageJournal] The restart replay of printer %d (%d facts) could not be written; "
-                "the next holder of the journal lock writes it",
+                "[UsageJournal] The restart replay of printer %d (%d facts) could not be written again",
                 printer_id,
-                len(batch.facts),
+                len(entry.batch.facts),
             )
-            return
+            await _state_unrecorded(printer_id, entry, reason="write_failed")
+            pending.pop(0)
+            continue
+        if written is None:
+            # No printing archive of its print takes it any more: whatever its accounting was, it
+            # ran without these facts — say so in that print's journal, never drop it silently.
+            await _state_unrecorded(printer_id, entry, reason="print_not_printing")
+            pending.pop(0)
+            continue
         logger.info(
-            "[UsageJournal] Printer %d: restart replay written (%d of %d facts)", printer_id, written, len(batch.facts)
+            "[UsageJournal] Printer %d: restart replay written (%d of %d facts)",
+            printer_id,
+            written,
+            len(entry.batch.facts),
         )
     _pending_replays.pop(printer_id, None)
 
 
-async def _write_replay_batch(db: AsyncSession, printer_id: int, batch) -> int:
-    """Every fact of ``batch``, in order, into the archive of the print it ran for; no commit."""
+async def _write_replay_batch(db: AsyncSession, printer_id: int, batch) -> int | None:
+    """Every fact of ``batch``, in order, into the archive of the print it ran for; no commit.
+    None when no printing archive of that print takes it."""
     archive_id = await tail_archive(db, printer_id, generation=batch.generation, subtask_id=batch.subtask_id)
     if archive_id is None:
-        logger.info(
-            "[UsageJournal] Restart replay of printer %d belongs to no printing archive of its print, dropped",
-            printer_id,
-        )
-        return 0
+        return None
     for fact in batch.facts:
         await _write_replay_fact(db, printer_id, archive_id, fact)
     return len(batch.facts)
+
+
+async def _state_unrecorded(printer_id: int, entry: _PendingReplay, *, reason: str) -> None:
+    """A replay that never reached the journal (post-rebuild F4): what it observed from its first
+    fact is stated unknown — in the chronology the completion's writers read (the client, when
+    it is still on that print) and in the print's journal — so no writer charges those grams to
+    a reel by the binding of the moment; what came before keeps its reels. Never raises."""
+    from backend.app.core import database
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    batch = entry.batch
+    layer = min(fact.layer for fact in batch.facts)
+    client, generation, _subtask = _observed_print(printer_id)
+    stated = False
+    if client is not None and generation == batch.generation:
+        try:
+            stated = client.state_feed_unknown_from(batch.generation, layer) is True
+        except Exception:  # noqa: BLE001 - the journal row below still says it
+            stated = False
+    archive_id = entry.archive_id
+    try:
+        async with database.async_session() as db:
+            if archive_id is None:
+                archive_id = await tail_archive(
+                    db, printer_id, generation=batch.generation, subtask_id=batch.subtask_id
+                )
+            if archive_id is not None:
+                await record_tray_change(
+                    db,
+                    printer_id=printer_id,
+                    archive_id=archive_id,
+                    tray=UNKNOWN_FEED,
+                    layer_num=layer,
+                    ids=(None, None),
+                )
+                await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[UsageJournal] Printer %d: the unknown feed from layer %d was not journaled", printer_id, layer
+        )
+    logger.warning(
+        "[UsageJournal] Printer %d: the restart replay (%d facts, archive %s) was not written (%s); the feed "
+        "from layer %d is recorded as unknown%s",
+        printer_id,
+        len(batch.facts),
+        archive_id,
+        reason,
+        layer,
+        "" if stated else " (the print's chronology was no longer this client's)",
+    )
 
 
 async def _write_replay_fact(db: AsyncSession, printer_id: int, archive_id: int, fact) -> None:

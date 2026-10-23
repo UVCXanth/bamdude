@@ -1243,7 +1243,7 @@ async def test_the_internal_writer_charges_no_reel_for_a_feed_nobody_saw(
     result = await _track_from_3mf(
         printer_id=printer.id, archive_id=archive.id, status="completed", print_name="plate", handled_trays=handled,
         printer_manager=pm, db=db_session, ams_mapping=[TRAY], file_analysis=analysis, analysis_attempted=True,
-        uncharged=uncharged,
+        uncharged=uncharged, journal_events=await journal.load_events(db_session, printer.id, archive.id),
     )  # fmt: skip
 
     charged = sum(r["weight_used"] for r in result)
@@ -2216,3 +2216,417 @@ async def test_the_reconnect_sweep_writes_a_waiting_replay_before_it_closes_the_
         await print_reconciliation.reconcile_printer_prints(printer.id, "FINISH", "plate.3mf")
 
     assert seen_when_closing == [[(40, old.id, None)]]
+
+
+# ── F4-R1 · a replay that cannot be written is never charged as if it had been (review r4) ──
+
+
+def failing_replay_writes(monkeypatch, failures):
+    """The replay's first ``failures`` fact writes fail; later ones work."""
+    real, calls = journal._write_replay_fact, []
+
+    async def write(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= failures:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", write)
+    return calls
+
+
+async def a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client):
+    """A's tail at 40 held; B assigned during the hold; the feed back at 45 — then seeded."""
+    async with journal.journal_lock(printer.id):
+        await journal.ensure_tail_recorded(
+            db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+        )
+        await bind(db_session, printer.id, new.id)
+    a_report(client, TRAY, 45, "PLA")
+    assert await seed_through_main(printer.id, client)
+
+
+async def internal_charges(db_session, printer, archive, client):
+    """The internal writer at completion, as Codex's r4 probe runs it: grams per reel, not recorded."""
+    from backend.app.services.usage_tracker import _track_from_3mf
+
+    archived = await db_session.get(PrintArchive, archive.id)
+    archived.status = "completed"
+    await db_session.commit()
+    db_session.expire_all()
+    events = await journal.load_events(db_session, printer.id, archive.id)
+    uncharged = []
+    result = await _track_from_3mf(
+        printer_id=printer.id, archive_id=archive.id, status="completed", print_name="plate", handled_trays=set(),
+        printer_manager=SimpleNamespace(get_status=lambda _pid: client.state), db=db_session, ams_mapping=[TRAY],
+        file_analysis=SimpleNamespace(
+            filament_usage=[{"slot_id": 1, "used_g": 10.0}], layer_usage=None, filament_properties={}
+        ),
+        analysis_attempted=True, uncharged=uncharged, journal_events=events,
+    )  # fmt: skip
+    charges = {}
+    for row in result:
+        charges[row["spool_id"]] = round(charges.get(row["spool_id"], 0) + row["weight_used"], 1)
+    return charges, round(sum(grams for _tray, grams in uncharged), 1)
+
+
+@pytest.mark.parametrize(
+    "failures, expected",
+    [
+        (0, ("split", 2.2, 7.8, 0.0)),  # control: written at the seed
+        (1, ("split", 2.2, 7.8, 0.0)),  # the seed's write failed, the completion's worked: the same split
+        (2, ("unknown", 2.0, 0.0, 8.0)),  # it failed again at the completion: from layer 40 not recorded
+        (5, ("unknown", 2.0, 0.0, 8.0)),  # however often it fails
+    ],
+)
+async def test_a_completion_never_charges_a_replay_it_could_not_write(
+    db_session, incident, monkeypatch, failures, expected
+):
+    """F4-R1: the completion either writes the replay it was left and splits A/B correctly, or —
+    when the write fails again — states the feed unknown from the replay's first fact: what
+    came before stays A's, nothing goes to B by the binding of the moment, the rest is not
+    recorded. No replay is left waiting after the completion, and none is dropped silently."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, failures)
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+        await _release_unseeded_journal(printer.id)
+        assert not journal._pending_replays.get(printer.id)
+        charges, not_recorded = await internal_charges(db_session, printer, archive, client)
+
+    kind, a_grams, b_grams, unknown_grams = expected
+    assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == (a_grams, b_grams, unknown_grams)
+    if kind == "unknown":
+        assert client.state.tray_change_log == [(TRAY, 0), (UNKNOWN_FEED, 40)]
+        assert (EVENT_TRAY_CHANGE, 40, None, None) in await rows(db_session, printer.id, archive.id)
+
+
+async def test_spoolman_charges_no_reel_for_a_replay_the_completion_could_not_write(
+    db_session, printer_factory, monkeypatch
+):
+    """F4-R1 on Spoolman: the same failure leaves the same chronology and journal, and the
+    Spoolman writer charges A for the stretch before the replay and reports the rest as not
+    recorded — never B for the whole print."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.services.spoolman_tracking import report_usage
+    from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+    printer, archive = await a_print(db_session, printer_factory)
+    await bind_spoolman(db_session, printer.id, 11)
+    await journal.record_event(
+        db_session, printer_id=printer.id, archive_id=archive.id, layer_num=0, event=EVENT_START,
+        global_tray_id=TRAY, spoolman_spool_id=11,
+    )  # fmt: skip
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 2)
+    with every_manager_names(client):
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spoolman_spool_id=12
+            )
+            await bind_spoolman(db_session, printer.id, 12)
+        a_report(client, TRAY, 45, "PLA")
+        assert await seed_through_main(printer.id, client)
+        await _release_unseeded_journal(printer.id)
+    db_session.expire_all()
+    events = await journal.load_events(db_session, printer.id, archive.id)
+
+    tracking = SimpleNamespace(
+        filament_usage=[{"slot_id": 1, "used_g": 10.0}],
+        ams_trays={TRAY: {"tray_uuid": "", "tray_type": "PLA"}},
+        slot_to_tray=[TRAY],
+        tray_remain_start={},
+        layer_usage={},
+        filament_properties={},
+    )
+    spoolman = AsyncMock()
+    spoolman.find_spool_by_tag = AsyncMock(return_value=None)
+    spoolman.get_spool = AsyncMock(side_effect=lambda spool_id: {"id": spool_id, "filament": {}})
+    spoolman.use_spool = AsyncMock()
+    status = SimpleNamespace(tray_change_log=client.state.tray_change_log, total_layers=200, layer_num=200, raw_data={})
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(_make_db(tracking))),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=spoolman),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
+        patch("backend.app.services.spoolman_tracking._apply_spool_colors_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch(
+            "backend.app.services.spoolman_tracking._apply_runout_zero_corrections_spoolman",
+            AsyncMock(return_value=0),
+        ),
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+        # The slot's binding now is B: what a writer without the replay would charge.
+        patch(
+            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+            AsyncMock(return_value=12),
+        ),
+    ):
+        pm.get_status.return_value = status
+        await report_usage(printer_id=printer.id, archive_id=archive.id)
+
+    assert {c.args[0]: c.args[1] for c in spoolman.use_spool.await_args_list} == {11: 2.0}
+    assert notify.await_args.args[1] == [(UNKNOWN_FEED_ID, 8.0)]
+
+
+UNKNOWN_FEED_ID = -1
+
+
+async def test_the_reconnect_sweep_states_a_replay_it_could_not_write_unknown_before_it_closes_the_print(
+    db_session, incident, monkeypatch
+):
+    """F4-R1 through the connect-edge sweep: the replay's write failed at the seed and fails
+    again when the sweep would close the print — the sweep states the feed unknown from the
+    replay's first fact before it closes the archive and books its usage; nothing waits after."""
+    from backend.app.services import print_reconciliation
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 2)
+    seen = []
+
+    async def close(db, printer_id, *args):
+        seen.append((list(client.state.tray_change_log), bool(journal._pending_replays.get(printer_id))))
+        return []
+
+    monkeypatch.setattr(print_reconciliation, "_repair_terminal_queue_items", AsyncMock(return_value=[]))
+    monkeypatch.setattr(print_reconciliation, "_reconcile", close)
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+        await print_reconciliation.reconcile_printer_prints(printer.id, "FINISH", "plate.3mf")
+
+    assert seen == [([(TRAY, 0), (UNKNOWN_FEED, 40)], False)]
+    assert (EVENT_TRAY_CHANGE, 40, None, None) in await rows(db_session, printer.id, archive.id)
+
+
+async def test_a_replay_whose_commit_keeps_failing_is_stated_unknown_once(db_session, incident, monkeypatch):
+    """F4-R1 with the COMMIT failing (every fact flushed): the second failure states the feed
+    unknown from the replay's first fact — once — and a later holder of the journal lock, with
+    the storage back, writes none of the replay twice nor the unknown twice."""
+    import logging
+
+    from backend.app.core import database
+    from backend.app.main import _release_unseeded_journal, _restore_usage_tracking_session
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    factory, commits = database.async_session, []
+
+    def sessions_whose_commits_fail_twice():
+        session = factory()
+        commit = session.commit
+
+        async def failing():
+            commits.append(1)
+            if len(commits) <= 2:
+                raise RuntimeError("database is locked")
+            await commit()
+
+        session.commit = failing
+        return session
+
+    with every_manager_names(client):
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+            )
+            await bind(db_session, printer.id, new.id)
+        a_report(client, TRAY, 45, "PLA")
+        seed_db = factory()  # the seed's own session works; only the replay's commits fail
+        monkeypatch.setattr(database, "async_session", sessions_whose_commits_fail_twice)
+        assert await _restore_usage_tracking_session(
+            printer.id, client.state, seed_db, logging.getLogger(__name__), generation=client.journal_generation()
+        )
+        await seed_db.close()
+        await _release_unseeded_journal(printer.id)
+        monkeypatch.setattr(database, "async_session", factory)
+        for _ in range(2):
+            async with journal.journal_lock(printer.id):
+                pass
+
+    events = [r for r in await rows(db_session, printer.id, archive.id) if r[0] != EVENT_START]
+    assert events == [(EVENT_TRAY_CHANGE, 40, None, None)]
+
+
+async def test_a_replay_written_on_its_second_try_is_charged_once(db_session, incident, monkeypatch):
+    """The seed's write failed; the next holder of the lock wrote it. Later holders and the
+    completion write nothing of it again, and the completion charges the split once."""
+    from backend.app.main import _release_unseeded_journal
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 1)
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+        for _ in range(3):
+            async with journal.journal_lock(printer.id):
+                pass
+        await _release_unseeded_journal(printer.id)
+        charges, not_recorded = await internal_charges(db_session, printer, archive, client)
+
+    assert (charges.get(old.id), charges.get(new.id), not_recorded) == (2.2, 7.8, 0.0)
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, new.id, None)]
+
+
+@pytest.mark.parametrize("second_try", ["works", "fails"])
+async def test_a_live_fact_never_lands_ahead_of_a_replay_still_waiting(db_session, incident, monkeypatch, second_try):
+    """F4-R1, order: the seed's write failed; a live tray change arrives at 70. Its holder of
+    the journal lock first writes the replay — or, when that fails again, states the feed
+    unknown from the replay's first fact — and only then writes the live fact, after it."""
+    from backend.app.services.usage_tracker import record_tray_change_event
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 1 if second_try == "works" else 2)
+    with every_manager_names(client):
+        await a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, printer, new, client)
+        async with journal.journal_lock(printer.id):  # main's live tray-change callback
+            await record_tray_change_event(db_session, printer.id, 0, 70)
+
+    events = [(e, layer) for e, layer, _s, _k in await rows(db_session, printer.id, archive.id) if e != EVENT_START]
+    if second_try == "works":
+        assert events == [
+            (EVENT_TAIL_START, 40),
+            (EVENT_SPOOL_LOADED, 40),
+            (EVENT_FEED_RETURN, 45),
+            (EVENT_TRAY_CHANGE, 70),
+        ]
+    else:
+        assert events == [(EVENT_TRAY_CHANGE, 40), (EVENT_TRAY_CHANGE, 70)]
+        assert client.state.tray_change_log[:2] == [(TRAY, 0), (UNKNOWN_FEED, 40)]
+
+
+async def test_the_print_completes_whatever_the_replay_handoff_does(monkeypatch):
+    """F4-R1: accounting failure is never a reason to hold the physical completion — with the
+    replay's write failing and the unknown statement failing too, the completion runs."""
+    from backend.app import main
+
+    ran = []
+    client = MagicMock()
+    client.journal_held.return_value = False
+    client.journal_generation.return_value = 4
+
+    async def completion(printer_id, data, analysis):
+        ran.append(printer_id)
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("database is gone")
+
+    monkeypatch.setattr(main.printer_manager, "get_client", lambda _pid: client)
+    monkeypatch.setattr(main, "_on_print_complete_impl", completion)
+    monkeypatch.setattr(journal, "deliver_pending_replay", broken)
+
+    await main.on_print_complete(7, {})
+
+    assert ran == [7]
+
+
+async def test_a_replay_whose_print_was_closed_meanwhile_is_stated_unknown_in_that_print(
+    db_session, incident, monkeypatch
+):
+    """F4-R1: the replay's write failed once and its print's archive was closed by a path that
+    never took the journal lock. The next holder does not drop it for the archive's status: it
+    states the feed unknown from the replay's first fact in that print's own journal."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    failing_replay_writes(monkeypatch, 1)
+    with every_manager_names(client):
+        assert await seed_through_main(printer.id, client)
+        closed = await db_session.get(PrintArchive, archive.id)
+        closed.status = "completed"
+        await db_session.commit()
+        async with journal.journal_lock(printer.id):
+            pass
+
+    assert not journal._pending_replays.get(printer.id)
+    assert [r for r in await rows(db_session, printer.id, archive.id) if r[0] != EVENT_START] == [
+        (EVENT_TRAY_CHANGE, 40, None, None)
+    ]
+
+
+async def test_a_completion_before_the_seed_settles_the_replay_it_released_but_could_not_write(
+    db_session, incident, monkeypatch
+):
+    """F4-R1: the print completes before its seed, with B assigned during the hold; the release's
+    own write of what it released fails, and fails again — the completion does not charge the
+    print by a chronology whose reels nobody wrote: the feed is unknown from the start, nothing
+    goes to A or B, and nothing is left waiting."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    failing_replay_writes(monkeypatch, 2)
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    with every_manager_names(client):
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+            )
+            await bind(db_session, printer.id, new.id)
+        a_report(client, TRAY, 45, "PLA")
+        await _release_unseeded_journal(printer.id)
+        assert not journal._pending_replays.get(printer.id)
+        charges, not_recorded = await internal_charges(db_session, printer, archive, client)
+
+    assert client.state.tray_change_log == [(UNKNOWN_FEED, 0)]
+    assert (charges, not_recorded) == ({}, 10.0)
+
+
+@pytest.mark.parametrize("failures, written", [(1, True), (2, False)])
+async def test_the_closing_sweep_writes_or_states_unknown_a_replay_never_tried(
+    db_session, incident, monkeypatch, failures, written
+):
+    """F4-R1: a replay nobody has tried to write yet (the client was seeded and nothing took the
+    journal lock since); the sweep that may close the print tries it, and tries once more before
+    it closes — written, or stated unknown from its first fact; never left waiting."""
+    from backend.app.services import print_reconciliation
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_report(client, TRAY, 45, "PLA")
+    failing_replay_writes(monkeypatch, failures)
+    seen = []
+
+    async def close(db, printer_id, *args):
+        seen.append((list(client.state.tray_change_log), bool(journal._pending_replays.get(printer_id))))
+        return []
+
+    monkeypatch.setattr(print_reconciliation, "_repair_terminal_queue_items", AsyncMock(return_value=[]))
+    monkeypatch.setattr(print_reconciliation, "_reconcile", close)
+    with every_manager_names(client):
+        assert client.seed_usage_journal(
+            client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
+        )
+        await print_reconciliation.reconcile_printer_prints(printer.id, "FINISH", "plate.3mf")
+
+    if written:
+        assert seen == [([(TRAY, 0)], False)]
+        assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+    else:
+        assert seen == [([(TRAY, 0), (UNKNOWN_FEED, 40)], False)]
+        assert (EVENT_TRAY_CHANGE, 40, None, None) in await rows(db_session, printer.id, archive.id)

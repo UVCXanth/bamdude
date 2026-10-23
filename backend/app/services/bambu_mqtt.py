@@ -7893,6 +7893,22 @@ class BambuMQTTClient:
             )
             return True
 
+    def state_feed_unknown_from(self, generation: int, layer: int) -> bool:
+        """The journal could not write this print's restart replay (post-rebuild F4): what the
+        replay observed from ``layer`` is no longer known. The chronology keeps what came before
+        and states the feed unknown from there; the next tray report starts afresh. Refused for
+        another print."""
+        with self._journal_lock:
+            if generation != self._journal_generation:
+                return False
+            log = [tuple(entry) for entry in self.state.tray_change_log if entry[1] < layer]
+            log.append((UNKNOWN_FEED, layer))
+            self.state.tray_change_log = log
+            self.state.last_loaded_tray = UNKNOWN_FEED
+            self._tail_origin = None
+            self._last_tail_suppressed = None
+            return True
+
     def take_replay_batches(self) -> list[ReplayBatch]:
         """Hand over the replays this client built that nobody has taken yet (post-rebuild F3)."""
         with self._journal_lock:
