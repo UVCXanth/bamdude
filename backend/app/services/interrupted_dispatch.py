@@ -151,18 +151,19 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
     from backend.app.services.queue_counters import set_queue_error, update_queue_counters
     from backend.app.services.queue_ops import claim_lanes
 
-    # Archive before lane before rows, the order every archive + queue writer keeps.
+    # Archive before lane before rows, the order every archive + queue writer keeps; the rows
+    # archive → queue → job, as operator print-state recovery takes them.
     async with database.async_session() as db, claim_lanes(db, [queue_id], archive_id=archive_id):
         archive = await load_active_archive_for_write(db, archive_id)
-        item = await db.scalar(
-            select(PrintQueueItem)
-            .where(PrintQueueItem.id == item_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
         queue = await db.scalar(
             select(PrinterQueue)
             .where(PrinterQueue.id == queue_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        item = await db.scalar(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == item_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
@@ -243,6 +244,13 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
         archive_id,
         outcome,
     )
+    try:
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.send_queue_changed(printer_id)
+        await ws_manager.send_archive_updated({"id": archive_id})
+    except Exception:  # noqa: BLE001 - committed; the next refresh shows it
+        logger.warning("Interrupted dispatch settled; event delivery failed for printer %s", printer_id)
     return outcome
 
 

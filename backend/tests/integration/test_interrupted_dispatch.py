@@ -210,6 +210,60 @@ async def test_a_prepared_attempt_of_an_ended_owner_goes_back_to_the_queue(
 
 
 @pytest.mark.asyncio
+async def test_a_requeued_attempt_carries_no_stale_wait_and_the_change_is_announced(
+    db_session, printer_factory, archive_factory, telemetry, owner, monkeypatch
+):
+    """The requeued job waits for nothing it waited for before the crash, and the open queue
+    and archive views learn of the move without a reload."""
+    from backend.app.core.websocket import ws_manager
+
+    printer, queue, archive, item, _ = await an_interrupted_job(db_session, printer_factory, archive_factory)
+    item.waiting_reason, item.waiting_reason_code = "An old wait", "filament_unavailable"
+    item.waiting_reason_checked_at = AN_HOUR_AGO
+    await db_session.commit()
+    queue_changed, archive_updated = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(ws_manager, "send_queue_changed", queue_changed)
+    monkeypatch.setattr(ws_manager, "send_archive_updated", archive_updated)
+
+    assert await interrupted_dispatch.recover_interrupted_dispatches(printer.id) == [interrupted_dispatch.REQUEUED]
+
+    await reread(db_session, item)
+    assert item.waiting_reason is None and item.waiting_reason_code is None
+    assert item.waiting_reason_checked_at is None
+    queue_changed.assert_awaited_once_with(printer.id)
+    archive_updated.assert_awaited_once_with({"id": archive.id})
+
+
+@pytest.mark.asyncio
+async def test_the_requeue_locks_the_queue_before_the_job_as_every_recovery_writer_does(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, owner
+):
+    """Archive → queue → job, the row order of operator print-state recovery."""
+    import re
+
+    from sqlalchemy import event
+
+    printer, queue, archive, item, _ = await an_interrupted_job(db_session, printer_factory, archive_factory)
+    statements = []
+
+    def seen(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", seen)
+    try:
+        assert await interrupted_dispatch.recover_interrupted_dispatches(printer.id) == [interrupted_dispatch.REQUEUED]
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", seen)
+
+    def first(pattern):
+        return next(i for i, s in enumerate(statements) if re.search(pattern, s, re.S))
+
+    assert first(r"FROM printer_queues\s+WHERE printer_queues\.id =") < first(
+        r"FROM print_queue\s+WHERE print_queue\.id ="
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_unexecuted_start_intent_does_not_block_the_requeue(
     db_session, printer_factory, archive_factory, telemetry, owner
 ):
