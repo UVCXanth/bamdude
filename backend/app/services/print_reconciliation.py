@@ -1041,9 +1041,15 @@ async def reconcile_printer_prints(
     """Entry point — runs on the first full MQTT status after each fresh
     connect. Opens its own session and commits."""
     from backend.app.core.database import async_session
+    from backend.app.services.print_usage_journal import journal_lock
 
     recovered: list[int] = []
     try:
+        # A restart replay still waiting is written first, while its archive is still the
+        # printing one — before this sweep may close that archive and book its usage, under a
+        # writer it then holds (post-rebuild F3). Entering the lock writes it.
+        async with journal_lock(printer_id):
+            pass
         # Separate transaction: already-terminal archives must never enter the
         # recovery list below (energy, usage and swaps would be replayed).
         async with async_session() as preflight:

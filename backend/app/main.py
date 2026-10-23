@@ -6076,6 +6076,11 @@ async def _restore_usage_tracking_session_locked(
             # this session's own work ends, so the replay's write never waits for its writer.
             bindings = await binding_snapshot(db, printer_id)
             await db.commit()
+            # A reconnect during those awaits replaced the client and carried the hold to the new
+            # one: seed the client registered now, never a retired one (a missing one is retried).
+            client = printer_manager.get_client(printer_id)
+            if client is None:
+                raise RuntimeError("the printer's client went away while the seed read its bindings")
             if client.seed_usage_journal(
                 generation,
                 log=log,
@@ -6137,8 +6142,7 @@ async def _retry_usage_seed(printer_id: int, generation: int) -> None:
         async with async_session() as db:
             if await _restore_usage_tracking_session(printer_id, state, db, logger, generation=generation, retry=False):
                 return
-    client = printer_manager.get_client(printer_id)
-    if client is not None and await _abandon_held_journal(printer_id, client, generation):
+    if await _abandon_held_journal(printer_id, generation):
         logger.error(
             "[RESTART] Printer %s: the usage journal could not be restored after %d retries; the feed before "
             "the first observed tray report is recorded as unknown",
@@ -6147,13 +6151,16 @@ async def _retry_usage_seed(printer_id: int, generation: int) -> None:
         )
 
 
-async def _abandon_held_journal(printer_id: int, client, generation: int) -> bool:
+async def _abandon_held_journal(printer_id: int, generation: int) -> bool:
     """End the hold of print ``generation`` whose seed never came, and write what it releases.
 
     Under the journal lock, as the seed itself (post-rebuild F3): the bindings the released
     reports are named with are read there — no snapshot, and the write reads them in the same
     hold of the lock — and the replay is written before the lock lets anything else through.
+    The hold ended is the one of the client registered then: a reconnect while this waited
+    carried it to a new client.
     """
+    from backend.app.core import database
     from backend.app.services.print_usage_journal import (
         binding_snapshot,
         deliver_pending_replay,
@@ -6164,11 +6171,13 @@ async def _abandon_held_journal(printer_id: int, client, generation: int) -> boo
     async with journal_lock(printer_id):
         bindings = None
         try:
-            async with async_session() as db:
+            # The factory the journal writes with, looked up now (as ``deliver_pending_replay`` does).
+            async with database.async_session() as db:
                 bindings = await binding_snapshot(db, printer_id)
         except Exception:  # noqa: BLE001 - the write then reads them, still under this lock
             logging.getLogger(__name__).exception("Binding snapshot for printer %s failed", printer_id)
-        if not client.abandon_journal_hold(generation, bindings=bindings):
+        client = printer_manager.get_client(printer_id)
+        if client is None or not client.abandon_journal_hold(generation, bindings=bindings):
             return False
         queue_replay(printer_id, client.take_replay_batches())
         await deliver_pending_replay(printer_id)
@@ -10009,7 +10018,7 @@ async def _release_unseeded_journal(printer_id: int) -> None:
 
         client = printer_manager.get_client(printer_id)
         if client is not None and client.journal_held() is True:
-            if await _abandon_held_journal(printer_id, client, client.journal_generation()):
+            if await _abandon_held_journal(printer_id, client.journal_generation()):
                 logging.getLogger(__name__).warning(
                     "Printer %s completed before its usage journal was seeded; its feed before the first "
                     "observed tray report is recorded as unknown",

@@ -2073,3 +2073,146 @@ async def test_a_change_noted_before_the_seed_but_written_after_it_names_its_own
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
     assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, new.id, None)]
     assert [s for _l, s, _m in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [new.id]
+
+
+@contextmanager
+def every_manager_reconnectable(client):
+    """Both printer managers naming ``client``; ``reconnect()`` swaps in a new client carrying
+    its state, as ``printer_manager.connect_printer`` does."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    with ExitStack() as stack:
+        managers = []
+        for target in ("backend.app.main.printer_manager", "backend.app.services.printer_manager.printer_manager"):
+            pm = stack.enter_context(patch(target))
+            pm.get_client.return_value = client
+            pm.get_status.return_value = client.state
+            managers.append(pm)
+
+        def reconnect():
+            fresh = BambuMQTTClient(ip_address="1.2.3.4", serial_number="HOLD1", access_code="1")
+            fresh.carry_print_lifecycle_from(managers[0].get_client.return_value)
+            for pm in managers:
+                pm.get_client.return_value = fresh
+                pm.get_status.return_value = fresh.state
+            return fresh
+
+        yield reconnect
+
+
+async def test_a_seed_whose_client_was_replaced_meanwhile_seeds_the_live_one(db_session, incident, monkeypatch):
+    """Review of F3: a reconnect replaced the client while the seed read its binding snapshot.
+    The seed applies to the client now registered — which carried the hold — never to the
+    retired one; the live client is released, and the completion later restates nothing."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    retired = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(retired)
+    real, live = journal.binding_snapshot, {}
+    with every_manager_reconnectable(retired) as reconnect:
+
+        async def snapshot_during_a_reconnect(db, printer_id):
+            live["client"] = reconnect()
+            return await real(db, printer_id)
+
+        monkeypatch.setattr(journal, "binding_snapshot", snapshot_during_a_reconnect)
+        assert await seed_through_main(printer.id, retired)
+        monkeypatch.setattr(journal, "binding_snapshot", real)
+        client = live["client"]
+        assert not client.journal_held()
+        await _release_unseeded_journal(printer.id)
+
+    assert client.state.tray_change_log[0] != (UNKNOWN_FEED, 0)
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+    assert (EVENT_TRAY_CHANGE, 0, None, None) not in await rows(db_session, printer.id, archive.id)
+
+
+async def test_a_completion_releases_the_client_registered_when_it_gets_the_lock(db_session, incident):
+    """Review of F3: the completion saw a held journal and waited for the journal lock; a
+    reconnect replaced the client meanwhile. The hold it ends is the live client's: the feed is
+    unknown until the first held report (the sentinel at 40 proves no tail), then the return."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    retired = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(retired)
+    with every_manager_reconnectable(retired) as reconnect:
+        lock = journal.journal_lock(printer.id)
+        await lock.__aenter__()  # another holder: a live callback, an assignment
+        release = asyncio.create_task(_release_unseeded_journal(printer.id))
+        await queued_on_the_lock(printer.id, release)
+        client = reconnect()
+        await lock.__aexit__(None, None, None)
+        await release
+
+    assert not client.journal_held()
+    assert client.state.tray_change_log == [(UNKNOWN_FEED, 0), (TRAY, 45)]
+    db_session.expire_all()
+    assert [
+        (e.global_tray_id, e.layer_num)
+        for e in await journal.load_events(db_session, printer.id, archive.id)
+        if e.event == EVENT_TRAY_CHANGE
+    ] == [(UNKNOWN_FEED, 0), (TRAY, 45)]
+
+
+async def test_the_completion_release_names_the_replay_with_its_binding_snapshot(db_session, incident, monkeypatch):
+    """The release at completion reads its binding snapshot on the database the journal uses —
+    the replay is named with it, not left to be read when it is written."""
+    from backend.app.main import _release_unseeded_journal
+
+    printer, archive, old, new = incident
+    real, snapshots = journal.binding_snapshot, []
+
+    async def recorded(db, printer_id):
+        snapshot = await real(db, printer_id)
+        snapshots.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(journal, "binding_snapshot", recorded)
+    client = a_joined_client_on_tray(TRAY, 30)
+    with every_manager_names(client):
+        a_report(client, 254, 40, "")
+        await _release_unseeded_journal(printer.id)
+
+    assert snapshots == [{TRAY: (old.id, None)}]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+
+
+async def test_the_reconnect_sweep_writes_a_waiting_replay_before_it_closes_the_print(
+    db_session, incident, monkeypatch
+):
+    """A replay whose write failed waits; the printer reconnects with the print over, and the
+    sweep that would close its archive and book its usage writes the replay first, while the
+    archive is still the printing one."""
+    from backend.app.services import print_reconciliation
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    real, calls = journal._write_replay_fact, []
+
+    async def first_write_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
+    seen_when_closing = []
+
+    async def close(db, printer_id, *args):
+        seen_when_closing.append(await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START))
+        return []
+
+    monkeypatch.setattr(print_reconciliation, "_repair_terminal_queue_items", AsyncMock(return_value=[]))
+    monkeypatch.setattr(print_reconciliation, "_reconcile", close)
+    with every_manager_names(client):
+        assert await seed_through_main(printer.id, client)
+        assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []  # it waits
+        await print_reconciliation.reconcile_printer_prints(printer.id, "FINISH", "plate.3mf")
+
+    assert seen_when_closing == [[(40, old.id, None)]]
