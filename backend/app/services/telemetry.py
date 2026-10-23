@@ -154,12 +154,23 @@ async def _build_payload(db) -> dict | None:
     vp_model_rows = await db.execute(select(VirtualPrinter.model).where(VirtualPrinter.model.isnot(None)).distinct())
     vp_models = sorted({m for (m,) in vp_model_rows.all() if m})
 
+    from backend.app.services.statistics.outcomes import dispatch_failure, not_dispatch_failure
+
+    # The outcome classes every statistic asks (post-rebuild D-R7): an attempt that never
+    # started printing is a dispatch error, counted apart — never a failed print.
     usage = {
         "prints_completed": await _count(
             db, PrintArchive, PrintArchive.status == "completed", PrintArchive.created_at >= start_of_today
         ),
         "prints_failed": await _count(
-            db, PrintArchive, PrintArchive.status.in_(failure_states), PrintArchive.created_at >= start_of_today
+            db,
+            PrintArchive,
+            PrintArchive.status.in_(failure_states),
+            not_dispatch_failure(),
+            PrintArchive.created_at >= start_of_today,
+        ),
+        "dispatch_errors": await _count(
+            db, PrintArchive, dispatch_failure(), PrintArchive.created_at >= start_of_today
         ),
     }
 

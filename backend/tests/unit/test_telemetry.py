@@ -85,3 +85,38 @@ async def test_send_once_skips_when_disabled(monkeypatch):
     monkeypatch.setattr(telemetry, "_build_payload", fake_build)
     assert await telemetry.send_telemetry_once() is False
     assert called["build"] is False
+
+
+async def test_the_usage_counts_a_dispatch_error_apart_from_a_failed_print(db_session, printer_factory, monkeypatch):
+    """Post-rebuild D-R7 / M3: telemetry asks the same outcome predicates as Statistics — an
+    attempt that never started printing is a dispatch error, not a failed print."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.utils.failure_reasons import DISPATCH_NO_ACKNOWLEDGEMENT
+
+    monkeypatch.setattr(telemetry, "get_install_id", lambda: "install")
+    monkeypatch.setattr(telemetry, "_ams_unit_count", lambda: 0)
+    printer = await printer_factory()
+    for status, reason in (
+        ("completed", None),
+        ("failed", None),  # a legacy physical failure with no class
+        ("failed", "spaghetti"),
+        ("cancelled", None),
+        ("failed", DISPATCH_NO_ACKNOWLEDGEMENT),
+        ("aborted", DISPATCH_NO_ACKNOWLEDGEMENT),
+    ):
+        db_session.add(
+            PrintArchive(
+                printer_id=printer.id,
+                filename="p.3mf",
+                print_name="p",
+                file_path="",
+                file_size=1,
+                status=status,
+                failure_reason=reason,
+            )
+        )
+    await db_session.commit()
+
+    payload = await telemetry._build_payload(db_session)
+
+    assert payload["usage"] == {"prints_completed": 1, "prints_failed": 3, "dispatch_errors": 2}
