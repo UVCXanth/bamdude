@@ -242,3 +242,21 @@ def test_an_unknown_feed_is_never_the_tray_that_fed_the_whole_print():
     from backend.app.utils.usage_attribution import UNKNOWN_FEED, sole_feeding_tray
 
     assert sole_feeding_tray([(T0, 40), (UNKNOWN_FEED, 40)]) is None
+
+
+def test_an_unknown_feed_closes_a_tail_nobody_saw_end():
+    """Review r1 #2: the latch was dropped for lost reports — the journal's open episode closes
+    at the unknown feed, so a later tail of the tray opens its own and a later runout is not
+    handed the stale reel."""
+    from backend.app.services.print_usage_journal import open_tail_episode, tail_episodes
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    j = (
+        Journal()
+        .add(EVENT_START, 0, spool=OLD)
+        .add(EVENT_TAIL_START, 40, spool=OLD)
+        .add(EVENT_TRAY_CHANGE, 45, tray=UNKNOWN_FEED)
+    )
+    episodes = tail_episodes(j.events)
+    assert len(episodes) == 1 and episodes[0].close is not None
+    assert open_tail_episode(j.events) is None

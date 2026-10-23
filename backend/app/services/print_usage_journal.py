@@ -55,9 +55,9 @@ def journal_lock(printer_id: int) -> asyncio.Lock:
 _tail_owners: dict[int, tuple[int, int]] = {}
 # The reel going out at the first assignment of a tray made while a joined print's journal
 # waited for its restart seed (F-R3): ``printer_id → (generation, {tray: (spool_id,
-# spoolman_spool_id)})``. Taken only by a tail the seed replayed — one seen before that
-# assignment could record it, whose binding the assignment has since replaced.
-_held_outgoing: dict[int, tuple[int, dict[int, tuple[int | None, int | None]]]] = {}
+# spoolman_spool_id, layer the client was on)})``. Taken only by a tail the seed replayed that
+# was seen no later than that assignment — one it could not record, whose binding it replaced.
+_held_outgoing: dict[int, tuple[int, dict[int, tuple[int | None, int | None, int | None]]]] = {}
 
 
 def bind_tail_owner(printer_id: int, archive_id: int, generation) -> None:
@@ -112,8 +112,11 @@ def _subtasks_contradict(observed, recorded) -> bool:
     return observed not in ("", "0") and recorded not in ("", "0") and observed != recorded
 
 
-async def _capture_outgoing(db: AsyncSession, printer_id: int, generation: int | None, tray: int) -> None:
-    """Remember the reel bound to ``tray`` before the first assignment of the hold rewrites it."""
+async def _capture_outgoing(
+    db: AsyncSession, printer_id: int, generation: int | None, tray: int, layer: int | None
+) -> None:
+    """Remember the reel bound to ``tray`` — and the layer the print was on — before the first
+    assignment of the hold rewrites it."""
     if generation is None:
         return
     entry = _held_outgoing.get(printer_id)
@@ -121,18 +124,22 @@ async def _capture_outgoing(db: AsyncSession, printer_id: int, generation: int |
         entry = _held_outgoing[printer_id] = (generation, {})
     if tray in entry[1]:
         return
-    entry[1][tray] = await freeze_spool_ids(db, printer_id, tray)
+    spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tray)
+    entry[1][tray] = (spool_id, spoolman_spool_id, layer)
     logger.info(
-        "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
+        "[UsageJournal] Tray %d on printer %d re-linked at layer %s while its journal waits for the seed; "
         "the reel going out is %s/%s",
         tray,
         printer_id,
-        *entry[1][tray],
+        layer,
+        spool_id,
+        spoolman_spool_id,
     )
 
 
 def _take_held_outgoing(printer_id: int, origin: int, layer_num: int) -> tuple[int | None, int | None] | None:
-    """The reel going out at a held assignment of ``origin`` — for the tail the seed replayed only."""
+    """The reel going out at a held assignment of ``origin`` — for a tail the seed replayed that
+    was seen no later than the assignment; a later tail is the assigned reel's own."""
     client, generation, _subtask = _observed_print(printer_id)
     entry = _held_outgoing.get(printer_id)
     if client is None or entry is None or entry[0] != generation or origin not in entry[1]:
@@ -141,7 +148,11 @@ def _take_held_outgoing(printer_id: int, origin: int, layer_num: int) -> tuple[i
         replayed = client.replayed_tail(origin, layer_num) is True
     except Exception:  # noqa: BLE001
         replayed = False
-    return entry[1].pop(origin) if replayed else None
+    spool_id, spoolman_spool_id, assigned_at = entry[1][origin]
+    if not replayed or (assigned_at is not None and layer_num > assigned_at):
+        return None
+    del entry[1][origin]
+    return spool_id, spoolman_spool_id
 
 
 def _drop_held_outgoing(printer_id: int, origin: int) -> None:
@@ -170,10 +181,13 @@ class TailEpisode:
 
 def _closes_tail(event, origin: int) -> bool:
     from backend.app.models.print_usage_event import EVENT_FEED_RETURN, EVENT_TRAY_CHANGE
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
 
     if event.event == EVENT_FEED_RETURN:
         return event.global_tray_id == origin
     tray = event.global_tray_id
+    if event.event == EVENT_TRAY_CHANGE and tray == UNKNOWN_FEED:
+        return True  # nobody saw how the tail went on: the chronology says unknown from here
     return event.event == EVENT_TRAY_CHANGE and tray is not None and 0 <= tray < 254 and tray != origin
 
 
@@ -417,7 +431,14 @@ async def ensure_tail_recorded(db: AsyncSession, *, printer_id: int, ams_id: int
         except Exception:  # noqa: BLE001
             held = False
         if held:
-            await _capture_outgoing(db, printer_id, generation, tray)
+            layer = getattr(getattr(client, "state", None), "layer_num", None)
+            await _capture_outgoing(
+                db,
+                printer_id,
+                generation,
+                tray,
+                layer if isinstance(layer, int) and not isinstance(layer, bool) else None,
+            )
         return False
     origin, layer = tail
     if origin != tray:

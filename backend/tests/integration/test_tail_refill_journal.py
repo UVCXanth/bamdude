@@ -845,6 +845,77 @@ async def test_an_assignment_held_without_a_tail_leaves_a_later_live_tail_to_the
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(80, new.id, None)]
 
 
+async def test_a_tail_held_after_the_held_assignment_is_the_new_reels(db_session, incident):
+    """Review r1: the reel assigned while the journal waited runs out itself before the seed —
+    its tail (seen after the assignment) is the new reel's, not the one the assignment replaced."""
+    printer, archive, old, new = incident
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="HOLD3", access_code="1")
+    client.on_feed_event = MagicMock()
+    client.on_print_running_observed = MagicMock()
+    client._previous_gcode_state = "RUNNING"
+    client._previous_gcode_file = "plate.3mf"
+    slot_reads(client, TRAY, "PLA")
+    client._process_message(
+        {"print": {"ams": {"tray_now": str(TRAY)}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf",
+                   "layer_num": 40, "total_layer_num": 200}}
+    )  # fmt: skip
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT)
+            await bind(db_session, printer.id, new.id)
+        slot_reads(client, TRAY, "")
+        client._process_message({"print": {"ams": {"tray_now": "254"}, "layer_num": 60}})
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(60, new.id, None)]
+
+
+async def test_a_runout_after_an_unknown_feed_is_not_handed_the_stale_tails_reel(db_session, incident):
+    """Review r1 #2: the latch was dropped for lost reports; the unknown-feed row closes the
+    journal's open episode, so a later runout of that tray keeps the reel bound to it."""
+    from backend.app.services.usage_tracker import record_tray_change_event
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    await tail_fact(db_session, printer, "tail_start", 40)
+    async with journal.journal_lock(printer.id):
+        await record_tray_change_event(db_session, printer.id, UNKNOWN_FEED, 50)
+    await bind(db_session, printer.id, new.id)
+    async with journal.journal_lock(printer.id):
+        await journal.record_runout(
+            db_session, printer_id=printer.id, archive_id=archive.id, layer_num=90, kind=KIND_PAUSE,
+            global_tray_id=TRAY, spool_id=new.id, spoolman_spool_id=None,
+        )  # fmt: skip
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_RUNOUT) == [(90, new.id, None)]
+
+
+async def test_a_print_that_completes_before_its_seed_states_the_feed_unknown(monkeypatch):
+    """Review r1 #1: the completion runs before anything else reads the chronology, and a
+    journal still waiting for its seed is released first — the completion never reads the old
+    or empty chronology as if it were the print's."""
+    from backend.app import main
+
+    order = []
+    client = MagicMock()
+    client.journal_held.return_value = True
+    client.journal_generation.return_value = 4
+    client.abandon_journal_hold.side_effect = lambda generation: order.append(("release", generation)) or True
+
+    async def completion(printer_id, data, analysis):
+        order.append(("completion", printer_id))
+
+    monkeypatch.setattr(main.printer_manager, "get_client", lambda _pid: client)
+    monkeypatch.setattr(main, "_on_print_complete_impl", completion)
+
+    await main.on_print_complete(7, {})
+
+    assert order == [("release", 4), ("completion", 7)]
+
+
 async def test_the_internal_assignment_route_during_the_seed_wait_keeps_the_old_reel_on_the_tail(
     async_client, db_session, incident
 ):

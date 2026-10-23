@@ -400,3 +400,35 @@ def test_a_recreated_client_keeps_the_latch_and_the_chronology(client):
     feed(successor, ORIGIN, layer=31)
     assert feed_events(successor) == [("feed_return", ORIGIN, 31, True)]
     successor.on_tray_change.assert_not_called()
+
+
+def test_an_unknown_feed_never_goes_back_before_the_chronology_it_follows(joined, monkeypatch):
+    """Review r1: a lost report carried no layer — the unknown feed starts no earlier than the
+    chronology's last entry, so normalizing never drops the entries before it."""
+    import backend.app.services.bambu_mqtt as mqtt
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    monkeypatch.setattr(mqtt, "_JOURNAL_PENDING_LIMIT", 2)
+    joined._process_message({"print": {"ams": {"tray_now": "0"}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf"}})
+    packet(joined, 1, layer=35)
+    packet(joined, 0, layer=37)
+
+    assert joined.seed_usage_journal(
+        joined.journal_generation(), log=[(ORIGIN, 0), (3, 30)], last_loaded_tray=3, tail_origin=None
+    )
+
+    assert joined.state.tray_change_log == [(ORIGIN, 0), (3, 30), (UNKNOWN_FEED, 30), (1, 35), (0, 37)]
+
+
+def test_a_journal_released_at_completion_still_states_the_feed_unknown(joined):
+    """Review r1 #1: the print completed before the seed came — the release still writes the
+    unknown feed and the held reports, although the print is no longer running."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    first_packet(joined, 1, layer=40)
+    joined._completion_triggered = True
+
+    assert joined.abandon_journal_hold(joined.journal_generation())
+
+    assert joined.state.tray_change_log == [(UNKNOWN_FEED, 0), (1, 40)]
+    assert [c.args for c in joined.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 0), (1, 40)]

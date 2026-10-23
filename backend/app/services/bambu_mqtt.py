@@ -7755,7 +7755,7 @@ class BambuMQTTClient:
                 return
             self._apply_journal_tray(tn, self.state.layer_num if layer is None else layer, self._empty_ams_trays())
 
-    def _apply_journal_tray(self, tn: int, layer: int, empty: frozenset[int]) -> None:
+    def _apply_journal_tray(self, tn: int, layer: int, empty: frozenset[int], *, of_this_print: bool = False) -> None:
         """One tray observation against the print's chronology and the tail latch.
 
         Log tray changes for mid-print usage splitting. Gated on the print-lifecycle
@@ -7769,7 +7769,7 @@ class BambuMQTTClient:
         """
         log_tail = self.state.tray_change_log[-1][0] if self.state.tray_change_log else None
         origin = self.state.last_loaded_tray
-        running = self._was_running and not self._completion_triggered
+        running = of_this_print or (self._was_running and not self._completion_triggered)
         changed = tn != origin and tn != log_tail and running
         after_gap = self._journal_after_gap
         if running:
@@ -7903,20 +7903,25 @@ class BambuMQTTClient:
                 self.serial_number,
                 pending[0][1] if pending else "now",
             )
-            self._replay_held(pending)
+            # A print that already completed is still the print these reports belong to: the
+            # completion releases an unseeded hold before it reads the chronology.
+            self._replay_held(pending, of_this_print=True)
             return True
 
-    def _replay_held(self, pending: list) -> None:
+    def _replay_held(self, pending: list, *, of_this_print: bool = False) -> None:
         """Journal the held tray reports in arrival order; the caller holds ``_journal_lock``.
 
         Reports the hold lost to its bound are stated first, as a feed unknown from the first
-        lost layer — never folded into the chronology that came before them.
+        lost layer — never earlier than the chronology it follows, never folded into it.
+        ``of_this_print``: journal them even though the print's completion already fired.
         """
         self._journal_replaying = True
         try:
             if self._journal_lost_from is not None:
                 lost_from, self._journal_lost_from = self._journal_lost_from, None
-                if self._was_running and not self._completion_triggered:
+                if self.state.tray_change_log:
+                    lost_from = max(lost_from, self.state.tray_change_log[-1][1])
+                if of_this_print or (self._was_running and not self._completion_triggered):
                     # What fed from here, and whether a tail ran on, nobody saw.
                     self._tail_origin = None
                     self._last_tail_suppressed = None
@@ -7932,7 +7937,7 @@ class BambuMQTTClient:
                     later = next((known for _tn, known, _empty in pending[index + 1 :] if known is not None), None)
                     layer = self.state.layer_num if later is None else later
                     self._journal_after_gap = True
-                self._apply_journal_tray(tn, layer, empty)
+                self._apply_journal_tray(tn, layer, empty, of_this_print=of_this_print)
         finally:
             self._journal_replaying = False
 

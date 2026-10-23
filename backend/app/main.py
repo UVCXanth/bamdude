@@ -9936,6 +9936,26 @@ async def _save_ams_drying_latch(db, latch: dict[str, datetime]) -> None:
         setting.value = payload
 
 
+def _release_unseeded_journal(printer_id: int) -> None:
+    """A print that ends while its journal still waits for the restart seed (post-rebuild F-R4).
+
+    The completion must not read a chronology the seed never restored — the empty or old one
+    would charge the whole print to the tray it named last. The hold ends here, before anything
+    reads the chronology: the feed is stated unknown until the first held report. Never raises.
+    """
+    try:
+        client = printer_manager.get_client(printer_id)
+        if client is not None and client.journal_held() is True:
+            if client.abandon_journal_hold(client.journal_generation()):
+                logging.getLogger(__name__).warning(
+                    "Printer %s completed before its usage journal was seeded; its feed before the first "
+                    "observed tray report is recorded as unknown",
+                    printer_id,
+                )
+    except Exception:  # noqa: BLE001 - the completion goes on; its attribution stays as observed
+        logging.getLogger(__name__).exception("Could not release the unseeded usage journal of printer %s", printer_id)
+
+
 async def on_print_complete(printer_id: int, data: dict) -> None:
     """Register completion consumers, then release their exact resources.
 
@@ -9947,6 +9967,8 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
     scope = PrintCompletionTasks(printer_id)
     analysis_completion = {"archive_id": None, "tasks": scope}
     from backend.app.services.print_reconciliation import defer_queue_repair_during_completion
+
+    _release_unseeded_journal(printer_id)
 
     with defer_queue_repair_during_completion(printer_id):
         try:
