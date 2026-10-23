@@ -381,14 +381,21 @@ def _clean_print_lifecycle_registries():
     recovery tests that later land on the same worker failed while each passed on its own (CI, 2026-10-15).
     ``test_print_registries_do_not_leak`` pins the order. Same leak class as the overlay above.
     """
-    from backend.app.services import background_dispatch, print_reconciliation, print_usage_journal
+    from backend.app.services import (
+        background_dispatch,
+        interrupted_dispatch,
+        print_reconciliation,
+        print_usage_journal,
+    )
     from backend.app.services.printer_manager import printer_manager
 
     def clean():
         # The usage journal's tail owners are bound by the same lifecycle (post-rebuild F-R2),
-        # and the attempts a runner stopped watching are this process's too (D-R4).
+        # the attempts a runner stopped watching are this process's too (D-R4), and so are
+        # the printers waiting for their interrupted-dispatch recheck (I-R3).
         print_usage_journal.forget_tail_state()
         background_dispatch._unobserved_attempts.clear()
+        interrupted_dispatch._waiting.clear()
         for name in (
             "_print_start_admissions",
             "_print_start_resolutions",

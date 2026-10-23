@@ -25,7 +25,10 @@ physical command, replays a completion, books usage or touches the heaters. Reco
 gives the spent attempt back: a crash is not a typed refusal (D-R5).
 
 The check is addressed and has no timer: it runs when a printer's first fresh status of a
-connection arrives (``reconcile_printer_prints``) and when the farm is resumed.
+connection arrives (``reconcile_printer_prints``) and when the farm is resumed. When that
+look finds a candidate but the printer is not yet a fresh inactive one (busy, stale), the
+printer waits here; its next status that shows it fresh and idle runs the check once more
+(``on_status``) — in the same connection, with no new Resume or reconnect.
 """
 
 from __future__ import annotations
@@ -49,6 +52,68 @@ FAILED = "failed"
 
 _INTERRUPTED = "The dispatch was interrupted before the start command was sent"
 
+_INACTIVE_STATES = frozenset({"IDLE", "FINISH", "FAILED"})
+#: Printers whose recheck found a candidate while the printer was not yet a fresh inactive
+#: one: their next fresh idle status runs it once more (``on_status``).
+_waiting: set[int] = set()
+
+
+def recheck_due(printer_id: int) -> bool:
+    """A printer that waits for its recheck now reads as a fresh inactive one: due, once."""
+    from backend.app.services.print_state_recovery_store import live_snapshot
+
+    if printer_id not in _waiting or live_snapshot(printer_id)["mode"] != "inactive":
+        return False
+    _waiting.discard(printer_id)
+    return True
+
+
+def on_status(printer_id: int, state) -> None:
+    """Every printer status, from main's status callback: a waiting recheck runs once, when due.
+
+    Costs nothing for a printer nobody waits for, and reads no database: only a status that
+    shows a waiting printer idle asks the in-memory snapshot. Never raises.
+    """
+    if printer_id not in _waiting or getattr(state, "state", None) not in _INACTIVE_STATES:
+        return
+    try:
+        if not recheck_due(printer_id):
+            return
+        from backend.app.core.tasks import spawn_background_task
+
+        spawn_background_task(_recheck(printer_id), name=f"interrupted-dispatch-recheck-{printer_id}")
+    except Exception:  # noqa: BLE001 - a status callback never fails over a recheck
+        logger.exception("Interrupted dispatch recheck could not start for printer %s", printer_id)
+
+
+async def _recheck(printer_id: int) -> None:
+    try:
+        await recover_interrupted_dispatches(printer_id)
+    except Exception:  # noqa: BLE001 - Info still shows the attempt
+        logger.exception("Interrupted dispatch recheck failed for printer %s", printer_id)
+
+
+async def _candidates(db, printer_id: int, boot: str) -> tuple[int | None, list]:
+    queue_id = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+    if queue_id is None:
+        return None, []
+    rows = (
+        await db.execute(
+            select(PrintQueueItem.id, PrintArchive.id)
+            .join(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id)
+            .where(
+                PrintQueueItem.queue_id == queue_id,
+                PrintQueueItem.status == "printing",
+                PrintArchive.status == "printing",
+                PrintArchive.dispatch_phase == dispatch_phase.PREPARED,
+                PrintArchive.dispatch_boot_id.is_not(None),
+                PrintArchive.dispatch_boot_id != boot,
+            )
+            .order_by(PrintQueueItem.id)
+        )
+    ).all()
+    return queue_id, rows
+
 
 async def recover_interrupted_dispatches(printer_id: int) -> list[str]:
     """Settle the ``prepared`` attempts of an ended owner on this printer; the outcome of each, in order."""
@@ -56,31 +121,20 @@ async def recover_interrupted_dispatches(printer_id: int) -> list[str]:
     from backend.app.services.print_state_recovery_store import live_snapshot
 
     if not farm_startup_guard.allowed():
-        return []
+        return []  # the farm's Resume runs this again
     boot = dispatch_phase.current_boot_id()
     if boot is None:
         return []
-    if live_snapshot(printer_id)["mode"] != "inactive":
-        return []
+    ready = live_snapshot(printer_id)["mode"] == "inactive"
     async with database.async_session() as db:
-        queue_id = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
-        if queue_id is None:
-            return []
-        candidates = (
-            await db.execute(
-                select(PrintQueueItem.id, PrintArchive.id)
-                .join(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id)
-                .where(
-                    PrintQueueItem.queue_id == queue_id,
-                    PrintQueueItem.status == "printing",
-                    PrintArchive.status == "printing",
-                    PrintArchive.dispatch_phase == dispatch_phase.PREPARED,
-                    PrintArchive.dispatch_boot_id.is_not(None),
-                    PrintArchive.dispatch_boot_id != boot,
-                )
-                .order_by(PrintQueueItem.id)
-            )
-        ).all()
+        queue_id, candidates = await _candidates(db, printer_id, boot)
+    if not candidates:
+        _waiting.discard(printer_id)
+        return []
+    if not ready:
+        _waiting.add(printer_id)
+        return []
+    _waiting.discard(printer_id)
     outcomes = []
     for item_id, archive_id in candidates:
         outcome = await _settle(printer_id, queue_id, item_id, archive_id, boot)

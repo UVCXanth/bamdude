@@ -409,6 +409,95 @@ async def test_the_farm_resume_rechecks_the_held_attempt_once(
     assert item.dispatch_attempts == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_look", ["printer_busy", "status_stale"])
+async def test_a_requeue_that_could_not_run_yet_runs_on_the_printers_next_idle_status(
+    db_session, printer_factory, archive_factory, telemetry, owner, monkeypatch, first_look
+):
+    """M1: the connection's first status (or the Resume) found the printer busy or stale; a
+    later status of the SAME connection that shows it fresh and idle rechecks once — no new
+    Resume, no reconnect, no timer, and a status that changes nothing runs nothing."""
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue, archive, item, _ = await an_interrupted_job(db_session, printer_factory, archive_factory)
+    if first_look == "printer_busy":
+        telemetry.state = "RUNNING"
+    else:
+        monkeypatch.setattr(printer_manager, "peek_status", Mock(return_value=(telemetry, 10.0, True)))
+    assert await interrupted_dispatch.recover_interrupted_dispatches(printer.id) == []
+    assert not interrupted_dispatch.recheck_due(printer.id)  # nothing changed yet
+
+    telemetry.state = "IDLE"
+    monkeypatch.setattr(printer_manager, "peek_status", Mock(return_value=(telemetry, 11.0, False)))
+    assert interrupted_dispatch.recheck_due(printer.id)
+    assert not interrupted_dispatch.recheck_due(printer.id)  # once
+    assert await interrupted_dispatch.recover_interrupted_dispatches(printer.id) == [interrupted_dispatch.REQUEUED]
+    await reread(db_session, item)
+    assert item.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_printer_with_nothing_to_requeue_waits_for_nothing(
+    db_session, printer_factory, archive_factory, telemetry, owner
+):
+    """An unaccepted attempt that is not ``prepared`` is the operator's: no recheck is armed."""
+    printer, queue, archive, item, _ = await an_interrupted_job(
+        db_session, printer_factory, archive_factory, phase="sent"
+    )
+    telemetry.state = "RUNNING"
+    assert await interrupted_dispatch.recover_interrupted_dispatches(printer.id) == []
+    telemetry.state = "IDLE"
+    assert not interrupted_dispatch.recheck_due(printer.id)
+
+
+@pytest.mark.asyncio
+async def test_a_due_recheck_runs_once_in_the_background(monkeypatch):
+    """The status hook runs the waiting recheck of an idle printer only when it is due, and
+    a printer nobody waits for costs nothing (no snapshot is read)."""
+    from types import SimpleNamespace
+
+    ran = AsyncMock(return_value=[])
+    due = Mock(side_effect=[True, False])
+    monkeypatch.setattr(interrupted_dispatch, "recover_interrupted_dispatches", ran)
+    monkeypatch.setattr(interrupted_dispatch, "recheck_due", due)
+    idle = SimpleNamespace(state="IDLE")
+
+    interrupted_dispatch.on_status(8, idle)  # nobody waits for printer 8
+    interrupted_dispatch._waiting.add(7)
+    interrupted_dispatch.on_status(7, SimpleNamespace(state="RUNNING"))  # not idle: not asked
+    interrupted_dispatch.on_status(7, idle)
+    interrupted_dispatch.on_status(7, idle)
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert due.call_count == 2
+    ran.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_the_printer_status_callback_hands_every_status_to_the_recheck(monkeypatch):
+    """Wired before the broadcast's dedup: a status that changes nothing on the card (stale →
+    fresh on the same state) must still reach the recheck."""
+    from backend.app import main
+    from backend.tests.unit.test_printer_offline_notification import TestOfflineEdgeDetection, _state
+
+    hook = Mock()
+    monkeypatch.setattr(interrupted_dispatch, "on_status", hook)
+    state = _state(connected=True)
+    ws_mgr, relay, pm = TestOfflineEdgeDetection._patch_handler_deps()
+    with (
+        patch("backend.app.main.ws_manager", ws_mgr),
+        patch("backend.app.main.mqtt_relay", relay),
+        patch("backend.app.main.printer_manager", pm),
+        patch("backend.app.main.printer_state_to_dict", return_value={}),
+    ):
+        await main.on_printer_status_change(1, state)
+        await main.on_printer_status_change(1, state)
+
+    assert hook.call_count == 2
+    hook.assert_called_with(1, state)
+
+
 def test_the_guard_proves_nothing_once_it_stops_holding_the_lock(tmp_path, monkeypatch):
     """I03: a boot is proof only while the lock is held, and never over a storage error."""
     guard = FarmStartupGuard()

@@ -1877,6 +1877,12 @@ def _fts_status_key(state: PrinterState) -> tuple:
 
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
+    # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
+    # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
+    from backend.app.services import interrupted_dispatch
+
+    interrupted_dispatch.on_status(printer_id, state)
+
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
     # Include rounded temperatures to detect meaningful temp changes (within 1 degree)
     temps = state.temperatures or {}
