@@ -29,7 +29,7 @@ from backend.app.services import print_usage_journal as journal
 from backend.app.services.usage_tracker import journal_boundaries_for_tray
 from backend.app.utils import failure_reasons
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.integration  # asyncio_mode = "auto" runs the coroutines
 
 OLD, NEW = 309, 313
 TRAY = 2

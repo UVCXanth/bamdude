@@ -135,9 +135,107 @@ async def test_the_same_refusal_without_a_swap_start_waits_and_returns_its_attem
 
     row = await reread(db_session, PrintQueueItem, item_id)
     assert row.status == "pending" and row.dispatch_attempts == 0 and row.error_code is None
+    assert row.started_at is None  # a proven no-effect deferral gives the whole claim back
     status, _message, extra = await execution_archive(db_session)
     assert status == "cancelled" and extra["dispatch_aborted"] is True
     assert (await db_session.get(PrinterQueue, queue_id)).status == "idle"
+
+
+async def _retry(db_session, queue_id, item_id, how):
+    from backend.app.api.routes.print_queue import retry_failed_item
+    from backend.app.models.user import User
+    from backend.app.services.queue_bulk_retry import retry_block
+    from backend.app.services.swap_source_declarations import Actor
+
+    if how == "single":
+        await retry_failed_item(item_id, db=db_session, _=None)
+        return
+    user = User(username="retrying-operator", password_hash="unused", role="admin", is_active=True)
+    db_session.add(user)
+    await db_session.commit()
+    result = await retry_block(
+        db_session, queue_id, [item_id], actor=Actor("user", user.id, user.username), granted_scope=None, key_hash=None
+    )
+    assert result["retried"] == [item_id], result
+
+
+def _refresh_refusal(row):
+    """What a swap-declaration refresh answers for this job, asked by an operator who sees and edits every job."""
+    from backend.app.services import swap_job_refresh
+    from backend.app.services.swap_source_declarations import Actor
+
+    return swap_job_refresh._refusal(
+        "queue",
+        row,
+        source_kind="library",
+        source_id=row.library_file_id or 0,
+        sha256="0" * 64,
+        blob=None,
+        actor=Actor("user", None, "operator"),
+        rights=swap_job_refresh.JobRights(read_all=True, update_all=True),
+        scope=None,
+    )
+
+
+@pytest.mark.parametrize("how", ["single", "bulk"])
+@pytest.mark.parametrize("effect", ["fired", "possibly_fired"])
+@pytest.mark.parametrize("kind", ["library", "archive"])
+async def test_a_swap_start_refusal_keeps_the_proof_of_dispatch_through_a_retry(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, kind, effect, how
+):
+    """A swap start that ran, or may have, makes the attempt a dispatched one: the deferral
+    ends the row without erasing ``started_at``, and after a Retry a swap-declaration
+    refresh still refuses the job as dispatched before."""
+    import backend.app.services.background_dispatch as bd
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    queue_id, mqtt, item_id, service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch, kind
+    )
+
+    async def the_start_macro(job, printer, event, message, *, record=None):
+        if event == "swap_mode_start":
+            job.swap_start_effect = effect
+            if record is not None:
+                await record(effect)
+
+    monkeypatch.setattr(service, "_run_swap_macro_if_needed", the_start_macro)
+    monkeypatch.setattr(bd, "settle_plan", AsyncMock(side_effect=RoutingDeferred("feed_settle_timeout")))
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_not_called()
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "failed" and row.started_at is not None
+    claimed_at = row.started_at
+
+    await _retry(db_session, queue_id, item_id, how)
+
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "pending" and row.dispatch_attempts == 0
+    assert row.started_at == claimed_at
+    assert _refresh_refusal(row) == "not_before_dispatch"
+
+
+async def test_a_terminal_refusal_without_a_swap_start_keeps_its_claim_time(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """A refusal that ENDS the row keeps ``started_at`` too: only a no-effect deferral that
+    sends the row back to pending clears it."""
+    import backend.app.services.background_dispatch as bd
+    from backend.app.services.filament_deferred import DISPOSITION_FAILED, SourceCaptureDeferred
+
+    _queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    refusal = SourceCaptureDeferred("source_timeout", disposition=DISPOSITION_FAILED)
+    monkeypatch.setattr(bd, "settle_plan", AsyncMock(side_effect=refusal))
+
+    await one_tick(scheduler, spawned)
+
+    mqtt._client.publish.assert_not_called()
+    row = await reread(db_session, PrintQueueItem, item_id)
+    assert row.status == "failed" and row.started_at is not None
 
 
 # --------------------------------------------------------------------------- #

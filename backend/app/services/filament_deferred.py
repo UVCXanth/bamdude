@@ -162,9 +162,15 @@ async def defer_claim(
         await abort_execution_archive(db, execution_archive_id, detail, failed_code=code if swap_started else None)
         return False
     wait_code = SOURCE_CAPTURE_WAIT_CODE if disposition == DISPOSITION_RETRY_LATER else "filament_unavailable"
+    # Only a refusal proven to have had no effect clears the claim time: a row sent back to
+    # pending, or one refused before its attempt had an execution archive (nothing reached
+    # the printer — such a failed job stays refreshable, swap-source-declaration §6). Any
+    # other row it ends keeps it: the claim time is the proof the row was dispatched before,
+    # which a Retry keeps and ``swap_job_refresh`` reads.
+    no_effect = not terminal or (execution_archive_id is None and not swap_started and not published)
     values = {
         "status": "failed" if terminal else "pending",
-        "started_at": None,
+        "started_at": None if no_effect else started_at,
         "completed_at": datetime.now(timezone.utc) if terminal else None,
         "waiting_reason": None if terminal else message,
         "waiting_reason_code": None if terminal else wait_code,
