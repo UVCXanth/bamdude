@@ -138,6 +138,8 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
         and a.get("queue_id") == q["id"]
     ):
         return None
+    if f.owner_ended is False and f.live.get("busy"):
+        return None  # this process's dispatch, still in flight: its runner ends it
     reasons = []
     if f.owner_ended is not True:
         reasons.append("owner_alive" if f.owner_ended is False else "owner_unknown")

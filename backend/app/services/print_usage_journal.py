@@ -32,15 +32,20 @@ logger = logging.getLogger(__name__)
 # (callbacks are scheduled in arrival order, and the lock is FIFO) and after
 # ``_get_ams_assignment_lock`` by an assignment — never the other way round. The functions
 # below expect the caller to hold it; none takes it itself.
-_journal_locks: dict[int, asyncio.Lock] = {}
+_journal_locks: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
 
 def journal_lock(printer_id: int) -> asyncio.Lock:
-    """The per-printer journal lock (see above), created on first use."""
-    lock = _journal_locks.get(printer_id)
-    if lock is None:
-        lock = _journal_locks[printer_id] = asyncio.Lock()
-    return lock
+    """The per-printer journal lock (see above), created on first use in the running loop.
+
+    One loop in production; a lock is bound to the loop it first waited in, so a new
+    loop (each test has its own) gets a new lock instead of one it cannot wait on.
+    """
+    loop = asyncio.get_running_loop()
+    entry = _journal_locks.get(printer_id)
+    if entry is None or entry[0] is not loop:
+        entry = _journal_locks[printer_id] = (loop, asyncio.Lock())
+    return entry[1]
 
 
 @dataclass(frozen=True)
@@ -945,7 +950,7 @@ async def note_assignment_change(
     signal there is. No runout on the tray, a replacement already noted, or
     re-linking the very reel the runout froze → no-op.
     """
-    from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
+    from backend.app.models.print_usage_event import EVENT_FEED_RETURN, EVENT_RUNOUT, EVENT_SPOOL_LOADED
 
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
@@ -968,6 +973,20 @@ async def note_assignment_change(
     tail = open_tail_episode(events, global_tray)
     if tail is not None and (runout is None or tail.start.id > runout.id):
         runout = tail.start
+    elif tail is None:
+        # Or a closed tail whose return still named the outgoing reel: the reel the feed came
+        # back with is being named now (the projection takes it from the return's layer,
+        # ``usage_attribution.tail_adopted_load``).
+        episodes = tail_episodes(events, global_tray)
+        last = episodes[-1] if episodes else None
+        close = last.close if last is not None else None
+        if (
+            close is not None
+            and close.event == EVENT_FEED_RETURN
+            and (runout is None or close.id > runout.id)
+            and (close.spool_id, close.spoolman_spool_id) == (last.start.spool_id, last.start.spoolman_spool_id)
+        ):
+            runout = close
     if runout is None:
         return
     already = next(

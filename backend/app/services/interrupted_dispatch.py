@@ -139,8 +139,13 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
             return None  # an unfinished effect is recorded: visible in Info, never resolved here
         now = datetime.now(timezone.utc)
         code = failure_reasons.DISPATCH_PREPARATION_ERROR
+        # A direct print ("print now") is never started later by itself: like a refused one,
+        # it ends, and leaves the queue to the jobs behind it.
+        direct = item.origin == "direct"
         if start_ran:
             detail = f"{_INTERRUPTED}, after the swap start macro ran or may have. Check the plate, then Retry."
+        elif direct:
+            detail = f"{_INTERRUPTED}; a direct print is not started again by itself. Check the printer, then Retry."
         elif (item.dispatch_attempts or 0) >= DISPATCH_MAX_ATTEMPTS:
             detail = f"{_INTERRUPTED}, and its dispatch attempts are spent. Check the printer, then Retry."
         else:
@@ -166,7 +171,14 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
             item.error_message = detail
             item.error_code = code
             item.completed_at = now
-            await set_queue_error(db, queue_id, failed_item_id=item_id, expected_item_id=item_id)
+            # It never printed: no physical failure for a require-previous-success gate.
+            item.gate_acknowledged = True
+            if direct and not start_ran:
+                if queue.current_item_id == item_id and queue.status == "printing":
+                    queue.status = "idle"
+                    queue.current_item_id = None
+            else:
+                await set_queue_error(db, queue_id, failed_item_id=item_id, expected_item_id=item_id)
         await update_queue_counters(db, queue_id)
         await db.commit()
     outcome = REQUEUED if detail is None else FAILED

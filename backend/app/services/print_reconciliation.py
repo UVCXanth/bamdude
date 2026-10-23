@@ -780,12 +780,14 @@ async def _reconcile(
     closed = 0
     recovered: list[int] = []
     for archive in orphans:
-        if archive.dispatch_phase in dispatch_phase.UNACCEPTED:
+        if archive.dispatch_phase in dispatch_phase.UNACCEPTED and _accepted_terminal_checkpoint(archive) is None:
             # I-R1: our dispatch never saw this attempt running. What the printer shows —
             # often the PREVIOUS print of the same plate, FINISH under the same name —
             # proves nothing about it, so no filename verdict closes it and nothing of a
             # completion runs. Its own runner ends it; an ended owner's attempt is for the
             # interrupted-dispatch recovery and the Info action (``interrupted_dispatch``).
+            # A finish our completion handler already accepted for it is proof it ran — that
+            # one goes on to the checkpoint below.
             logger.info(
                 "reconcile: archive %d on printer %d is a dispatch attempt in phase %s — not closed by the "
                 "printer's state",

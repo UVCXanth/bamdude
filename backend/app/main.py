@@ -1735,9 +1735,11 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
 
         try:
             from backend.app.models.print_usage_event import EVENT_RESUME
-            from backend.app.services.print_usage_journal import active_archive_id, record_event
+            from backend.app.services.print_usage_journal import active_archive_id, journal_lock, record_event
 
-            async with _get_ams_assignment_lock(printer_id), async_session() as db:
+            # The journal lock before the session, as the stock insertion takes it: the external
+            # claim below holds SQLite's writer and must not wait for it (post-rebuild review).
+            async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
                     from backend.app.services.auto_stock_spool import claim_on_external_resume
@@ -2361,8 +2363,11 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
     from sqlalchemy.orm import selectinload
 
     from backend.app.services.auto_stock_spool import claim_on_insertion
+    from backend.app.services.print_usage_journal import journal_lock
 
-    async with _get_ams_assignment_lock(printer_id):
+    # The journal lock BEFORE the session: the claim takes SQLite's writer at once and must
+    # never wait for an in-process lock while it holds it (post-rebuild review).
+    async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id):
         key = (printer_id, event["ams_id"], event["tray_id"])
         token = (event["generation"], event["sequence"])
         if token <= _stock_insertion_seen.get(key, (-1, -1)):
@@ -3992,6 +3997,19 @@ async def _close_stale_printing_rows(
         if row.id in expected_ids:
             logger.info("[cleanup] row #%s is the just-dispatched print (expected) — not stale", row.id)
     rows_to_close = [r for r in rows_to_close if r.id not in expected_ids]
+    # Nor is a dispatch attempt our dispatch never saw running (post-rebuild I-R1): its
+    # slicer timer running out would book a print that never ran as completed. The
+    # interrupted-dispatch recovery and the Info action end it, on proof.
+    from backend.app.services import dispatch_phase as _dispatch_phase
+
+    for row in rows_to_close:
+        if row.dispatch_phase in _dispatch_phase.UNACCEPTED:
+            logger.info(
+                "[cleanup] row #%s is a dispatch attempt in phase %s — left to its recovery",
+                row.id,
+                row.dispatch_phase,
+            )
+    rows_to_close = [r for r in rows_to_close if r.dispatch_phase not in _dispatch_phase.UNACCEPTED]
 
     closed_count = 0
     for row in rows_to_close:
@@ -4696,6 +4714,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 # Update archive status to printing
                 archive.status = "printing"
                 archive.started_at = datetime.now(timezone.utc)
+                # The printer runs it: the attempt is accepted, also when its watchdog had
+                # already failed a slow parse (post-rebuild review).
+                from backend.app.services import dispatch_phase as _dispatch_phase
+
+                _dispatch_phase.mark_seen_running(archive)
 
                 # Reprint of an archive reuses the source row. Without resetting
                 # ``timelapse_path`` _scan_for_timelapse_with_retries early-returns
@@ -4995,6 +5018,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 check_name,
             )
             _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
+            # The printer runs it: an attempt of ours left unaccepted is accepted now.
+            from backend.app.services import dispatch_phase as _dispatch_phase
+
+            if _dispatch_phase.mark_seen_running(existing_archive):
+                await db.commit()
             # Ensure queue reflects the busy state. The options are consulted
             # only if no row exists yet — a re-trigger normally adopts the row
             # the first pass created, which knows more than we do here.

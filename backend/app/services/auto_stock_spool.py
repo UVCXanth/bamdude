@@ -243,41 +243,42 @@ async def claim_on_insertion(
         return {"reason": "rfid_priority"}
     if external and await active_archive_id(db, printer_id) != event["archive_id"]:
         return {"reason": "no_active_print"}
-    from backend.app.services.print_usage_journal import ensure_tail_recorded, journal_lock
+    from backend.app.services.print_usage_journal import ensure_tail_recorded
 
     # An open runout tail on this slot is recorded with the reel going out before the
-    # binding names the stock reel, and both commit together (post-rebuild F-R3).
-    async with journal_lock(printer_id):
-        await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
-        if existing:
-            await db.delete(existing)
-            await db.flush()
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            fingerprint_color=tray.get("tray_color", ""),
-            # Preserve unknown firmware identity. A blank fingerprint is the
-            # existing deferred-configuration marker used by manual pre-assignment:
-            # the next material report replays our slot plan instead of unlinking
-            # the stock claim on an intermediate default profile.
-            fingerprint_type=tray.get("tray_type") or "",
-            created_at=now,
-        )
-        db.add(assignment)
+    # binding names the stock reel, and both commit together (post-rebuild F-R3). The
+    # caller holds ``journal_lock`` from before its session: this transaction already
+    # holds SQLite's writer (``take_write_lock`` above) and must never wait for it here.
+    await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    if existing:
+        await db.delete(existing)
         await db.flush()
-        # The existing journal's writer commits the replacement and its boundary
-        # together when a runout exists. Failure is NOT swallowed on this auto path.
-        await note_assignment_change(
-            db,
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            spool_id=spool.id,
-            layer_num=last.layer_num if external else getattr(state, "layer_num", 0),
-        )
-        await db.commit()
+    assignment = SpoolAssignment(
+        spool_id=spool.id,
+        printer_id=printer_id,
+        ams_id=ams_id,
+        tray_id=tray_id,
+        fingerprint_color=tray.get("tray_color", ""),
+        # Preserve unknown firmware identity. A blank fingerprint is the
+        # existing deferred-configuration marker used by manual pre-assignment:
+        # the next material report replays our slot plan instead of unlinking
+        # the stock claim on an intermediate default profile.
+        fingerprint_type=tray.get("tray_type") or "",
+        created_at=now,
+    )
+    db.add(assignment)
+    await db.flush()
+    # The existing journal's writer commits the replacement and its boundary
+    # together when a runout exists. Failure is NOT swallowed on this auto path.
+    await note_assignment_change(
+        db,
+        printer_id=printer_id,
+        ams_id=ams_id,
+        tray_id=tray_id,
+        spool_id=spool.id,
+        layer_num=last.layer_num if external else getattr(state, "layer_num", 0),
+    )
+    await db.commit()
     logger.info("Stock insertion: assigned spool %s to printer %s AMS%s-T%s", spool.id, printer_id, ams_id, tray_id)
     return {"reason": "assigned", "spool_id": spool.id}
 

@@ -94,7 +94,7 @@ export default {
       outcome_unknown: 'The actual print outcome is unknown.', invalid_run_times: 'The recorded run times do not establish this execution.',
       missing_run_times: 'Required run times or a valid slicer estimate are missing.', delete_has_dependencies: 'Deletion is unavailable because other records refer to this item.',
       estimated_time: 'An estimated completion time cannot justify deleting this item.',
-      owner_alive: 'This BamDude process still owns the dispatch and ends the attempt itself.',
+      owner_alive: 'This dispatch was started since BamDude last started and has no answer yet; it can be closed here after a restart.',
       owner_unknown: 'It is not proven that the process that owned this dispatch has ended.',
     },
     live: { inactive: 'Fresh inactive printer observation', successor: 'A positively identified newer print is active', unknown: 'Printer state cannot authorize a repair' },

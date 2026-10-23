@@ -104,7 +104,9 @@ def row_class(status: str | None, archive_reason: str | None) -> str | None:
     """
     if status != "failed":
         return None
-    return archive_reason or OTHER
+    # Only a key of the closed vocabulary: free text (an operator's edit, a legacy reason)
+    # never reaches ``error_code`` (post-rebuild review).
+    return archive_reason if archive_reason in FAILURE_REASON_KEYS else OTHER
 
 
 def dispatch_reason_text(code: str | None, detail: str | None, lang: str | None = None) -> str:

@@ -198,7 +198,11 @@ async def defer_claim(
         .execution_options(synchronize_session=False)
     )
     owned = bool(result.rowcount)
-    await abort_execution_archive(db, execution_archive_id, detail, failed_code=code if swap_started else None)
+    # A refusal that ENDED this attempt's row is a «Dispatch errors» attempt (D-R4 row 2):
+    # its archive fails with the row's class; one that sent the row back is aborted.
+    await abort_execution_archive(
+        db, execution_archive_id, detail, failed_code=code if (swap_started or (terminal and owned)) else None
+    )
     if not owned:
         return False
     if halts_queue:

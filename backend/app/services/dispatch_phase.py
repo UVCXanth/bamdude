@@ -57,6 +57,20 @@ def stamp_prepared(archive) -> str | None:
     return boot
 
 
+def mark_seen_running(archive) -> bool:
+    """The printer was seen running this archive's print: an unaccepted attempt is ``accepted``.
+
+    Called where ``on_print_start`` takes the archive as the print now running — the
+    expected archive of a dispatch (also after the watchdog had failed a slow parse) and
+    the adoption of a printing row after a restart. Whoever's attempt it was, the start
+    is a fact now. Set on the caller's loaded row, in the caller's transaction.
+    """
+    if archive.dispatch_phase in UNACCEPTED:
+        archive.dispatch_phase = ACCEPTED
+        return True
+    return False
+
+
 async def advance(db, archive_id: int | None, to: str, *, boot_id: str | None) -> bool:
     """Move this attempt's archive forward to ``to``; False when the row is no longer this attempt's.
 

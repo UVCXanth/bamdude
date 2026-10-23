@@ -117,6 +117,42 @@ def _refill_layers(events: list, tray: int) -> dict[int, int]:
     return layers
 
 
+def tail_adopted_load(episode, events: list):
+    """The reel the feed came back with, when BamDude named it only after the return.
+
+    A ``feed_return`` freezes the binding at that moment. When it still names the reel the
+    tail started with, nothing in BamDude knew the new reel yet — the operator swapped it at
+    the printer and assigned it later. Then the first reel loaded into the origin after the
+    return, before the origin's next runout or tail and before the feed moves to another
+    tray, is the one that has been feeding since the return (post-rebuild review).
+    """
+    from backend.app.models.print_usage_event import (
+        EVENT_FEED_RETURN,
+        EVENT_RUNOUT,
+        EVENT_SPOOL_LOADED,
+        EVENT_TAIL_START,
+        EVENT_TRAY_CHANGE,
+    )
+
+    close = episode.close
+    if close is None or close.event != EVENT_FEED_RETURN:
+        return None
+    if (close.spool_id, close.spoolman_spool_id) != (episode.start.spool_id, episode.start.spoolman_spool_id):
+        return None
+    for e in sorted(events, key=lambda e: e.id):
+        if e.id <= close.id:
+            continue
+        if e.event == EVENT_TRAY_CHANGE:
+            return None
+        if e.global_tray_id != episode.origin:
+            continue
+        if e.event in (EVENT_RUNOUT, EVENT_TAIL_START):
+            return None
+        if e.event == EVENT_SPOOL_LOADED:
+            return e
+    return None
+
+
 def tail_owned_ids(events: list, episodes: list) -> set[int]:
     """Origin rows a tail episode owns: assignments during the tail and the tail's own runout.
 
@@ -127,18 +163,23 @@ def tail_owned_ids(events: list, episodes: list) -> set[int]:
     """
     from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED
 
-    return {
+    owned = {
         e.id
         for ep in episodes
         for e in events
         if e.global_tray_id == ep.origin and e.event in (EVENT_RUNOUT, EVENT_SPOOL_LOADED) and ep.contains(e)
     }
+    # A reel the return fed but BamDude named later is the episode's own identity too.
+    owned.update(adopted.id for ep in episodes if (adopted := tail_adopted_load(ep, events)) is not None)
+    return owned
 
 
 def tail_identity_changes(episode, events: list) -> list[tuple[int, int | None, int | None, tuple[int, int]]]:
     """Who fed a tail episode's origin from where: ``(layer, spool_id, spoolman_id, order)``.
 
-    * closed by a ``feed_return`` observed live: the reel bound then, from its layer;
+    * closed by a ``feed_return`` observed live: the reel bound then, from its layer — or,
+      when the return still named the outgoing reel, the reel assigned after it
+      (``tail_adopted_load``);
     * a ``feed_return`` first seen after an observation gap: from the tail's last proven
       layer (its start, or its own runout) to the return nobody is named — the return's
       layer is the observed one, not the historical one;
@@ -161,7 +202,8 @@ def tail_identity_changes(episode, events: list) -> list[tuple[int, int | None, 
             last_tail = max([episode.start.layer_num] + [r.layer_num for r in runouts])
             if last_tail < close.layer_num:
                 changes.append((last_tail, None, None, (close.id, 0)))
-        changes.append((close.layer_num, close.spool_id, close.spoolman_spool_id, (close.id, 1)))
+        named = tail_adopted_load(episode, events) or close
+        changes.append((close.layer_num, named.spool_id, named.spoolman_spool_id, (close.id, 1)))
         return changes
     if close is None and runouts:
         return [(runouts[-1].layer_num, None, None, (runouts[-1].id, 0))]

@@ -300,12 +300,23 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     rows = (await db_session.execute(select(PrintArchive).order_by(PrintArchive.id))).scalars().all()
     execution = [a for a in rows if a.id != archive_id]
     assert len(execution) == 1
-    assert execution[0].status == "cancelled" and execution[0].extra_data["dispatch_aborted"] is True
+    if owner == "direct" and change not in {"cancel", "reclaim", "delete"}:
+        # The refusal ENDED the direct attempt: a «Dispatch errors» archive with its class,
+        # still never a print (post-rebuild D-R4 row 2).
+        from backend.app.utils.failure_reasons import DISPATCH_FAILURE_REASONS
+
+        assert execution[0].status == "failed" and execution[0].failure_reason in DISPATCH_FAILURE_REASONS
+    else:
+        assert execution[0].status == "cancelled" and execution[0].extra_data["dispatch_aborted"] is True
     assert execution[0].plate_index == 15
     if source_archive:
         await db_session.refresh(source_archive)
         assert source_archive.status == "completed"
-    assert (await get_queue_terminal_counts(db_session, queue_id))["total_count"] == 0
+    counts = await get_queue_terminal_counts(db_session, queue_id)
+    if owner == "direct" and change not in {"cancel", "reclaim", "delete"}:
+        assert (counts["completed_count"], counts["failed_count"]) == (0, 1)  # the failed job, no print
+    else:
+        assert counts["total_count"] == 0
     assert Path(source.file_path).exists()
     assert upload_mock.await_count == 1
     mqtt._client.publish.assert_not_called()

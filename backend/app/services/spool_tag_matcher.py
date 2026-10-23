@@ -551,49 +551,51 @@ async def auto_assign_spool(
             fingerprint_color = tray.get("tray_color", "")
             fingerprint_type = tray.get("tray_type", "")
 
-    from backend.app.services.print_usage_journal import ensure_tail_recorded, journal_lock
+    from backend.app.services.print_usage_journal import ensure_tail_recorded
 
     # An open runout tail on this slot is recorded with the reel going out before the
-    # binding names the tagged reel (post-rebuild F-R3). Best-effort, in a savepoint.
-    async with journal_lock(printer_id):
-        try:
-            async with db.begin_nested():
-                await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
-        except Exception:
-            logger.exception("ensure_tail_recorded failed for printer %s", printer_id)
+    # binding names the tagged reel (post-rebuild F-R3). Best-effort, in a savepoint. No
+    # journal lock: the callers' sessions may already hold SQLite's writer, and nothing
+    # may wait for an in-process lock then. A tail callback racing this writes at most a
+    # second tail_start, which the episode reader ignores — an episode's first one wins.
+    try:
+        async with db.begin_nested():
+            await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    except Exception:
+        logger.exception("ensure_tail_recorded failed for printer %s", printer_id)
 
-        # Upsert: remove old assignment for this slot
-        existing = await db.execute(
-            select(SpoolAssignment).where(
-                SpoolAssignment.printer_id == printer_id,
-                SpoolAssignment.ams_id == ams_id,
-                SpoolAssignment.tray_id == tray_id,
-            )
+    # Upsert: remove old assignment for this slot
+    existing = await db.execute(
+        select(SpoolAssignment).where(
+            SpoolAssignment.printer_id == printer_id,
+            SpoolAssignment.ams_id == ams_id,
+            SpoolAssignment.tray_id == tray_id,
         )
-        old = existing.scalar_one_or_none()
-        if old:
-            await db.delete(old)
-            await db.flush()
-
-        assignment = SpoolAssignment(
-            spool_id=spool.id,
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            fingerprint_color=fingerprint_color,
-            fingerprint_type=fingerprint_type,
-        )
-        db.add(assignment)
+    )
+    old = existing.scalar_one_or_none()
+    if old:
+        await db.delete(old)
         await db.flush()
 
-        # Replacement-after-runout boundary for the journal (deduped there; the
-        # RFID uuid-watch usually records it first for tagged spools).
-        try:
-            from backend.app.services.print_usage_journal import note_assignment_change
+    assignment = SpoolAssignment(
+        spool_id=spool.id,
+        printer_id=printer_id,
+        ams_id=ams_id,
+        tray_id=tray_id,
+        fingerprint_color=fingerprint_color,
+        fingerprint_type=fingerprint_type,
+    )
+    db.add(assignment)
+    await db.flush()
 
-            await note_assignment_change(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, spool_id=spool.id)
-        except Exception:
-            logger.exception("note_assignment_change failed for printer %s", printer_id)
+    # Replacement-after-runout boundary for the journal (deduped there; the
+    # RFID uuid-watch usually records it first for tagged spools).
+    try:
+        from backend.app.services.print_usage_journal import note_assignment_change
+
+        await note_assignment_change(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, spool_id=spool.id)
+    except Exception:
+        logger.exception("note_assignment_change failed for printer %s", printer_id)
 
     # re-Connect MQTT if stalled
     await printer_manager.ensure_fresh_connection(printer_id)
