@@ -742,51 +742,48 @@ async def test_an_unknown_reel_going_out_stays_unknown_never_the_new_one(db_sess
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, None, None)]
 
 
-async def test_a_second_tail_held_after_its_return_belongs_to_the_reel_that_came_back(db_session, incident):
-    """F07: two tails held through one seed — the outgoing reel the assignment caught is the
-    first tail's only; the reel the feed came back with owns the second."""
+async def test_an_assignment_after_every_held_report_names_no_earlier_interval(db_session, incident):
+    """Review r2 F2-R3: two tails and a return were held, the reel assigned only after all of
+    them. Each was seen while the binding still named the old reel, so each freezes it — the
+    later binding is never put on an earlier interval; the assignment itself is journaled in
+    its place, after them, as the identity note it is (inside the open tail: no boundary)."""
     printer, archive, old, new = incident
     client = a_joined_client_feeding_a_tail()
-    slot_reads(client, TRAY, "PLA")
-    client._process_message({"print": {"ams": {"tray_now": str(TRAY)}, "layer_num": 45}})
-    slot_reads(client, TRAY, "")
-    client._process_message({"print": {"ams": {"tray_now": "254"}, "layer_num": 60}})
+    a_report(client, TRAY, 45, "PLA")
+    a_report(client, 254, 60, "")
     with patch("backend.app.services.printer_manager.printer_manager") as pm:
         pm.get_client.return_value = client
-        async with journal.journal_lock(printer.id):
-            await journal.ensure_tail_recorded(db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT)
-            await bind(db_session, printer.id, new.id)
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
         await seed_and_replay(db_session, printer.id, client)
 
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [
         (40, old.id, None),
-        (60, new.id, None),
+        (60, old.id, None),
     ]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED) == [(60, new.id, None)]
 
 
-async def test_a_held_tail_the_journal_lost_leaves_the_reel_going_out_to_no_later_tail(db_session, incident):
-    """The first replayed tail's handler failed (main logs and drops it); the feed came back
-    and ran out again — that later tail is the returned reel's, not the one caught going out."""
+async def test_a_held_tail_the_journal_lost_leaves_no_name_to_a_later_tail(db_session, incident):
+    """The first replayed tail's handler failed (main logs and drops it). The feed came back,
+    the new reel was assigned, and it ran out again — that later tail is named by the binding
+    it was seen under (the new reel), whatever happened to the first tail's write; the return
+    before the assignment is the old reel's, and the assignment after it names the new one."""
     printer, archive, old, new = incident
     client = a_joined_client_feeding_a_tail()
-    slot_reads(client, TRAY, "PLA")
-    client._process_message({"print": {"ams": {"tray_now": str(TRAY)}, "layer_num": 45}})
-    slot_reads(client, TRAY, "")
-    client._process_message({"print": {"ams": {"tray_now": "254"}, "layer_num": 60}})
+    a_report(client, TRAY, 45, "PLA")
     with patch("backend.app.services.printer_manager.printer_manager") as pm:
         pm.get_client.return_value = client
-        async with journal.journal_lock(printer.id):
-            await journal.ensure_tail_recorded(db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT)
-            await bind(db_session, printer.id, new.id)
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, 254, 60, "")
         assert client.seed_usage_journal(
             client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
         )
-        lost, *rest = [c.args for c in client.on_feed_event.call_args_list]
+        lost = client.on_feed_event.call_args_list[0].args
         assert lost[:3] == ("tail_start", TRAY, 40)
         client.on_feed_event.call_args_list[:] = [c for c in client.on_feed_event.call_args_list if c.args != lost]
         await replay(db_session, printer.id, client)
 
-    assert rest[0][0] == "feed_return"
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(60, new.id, None)]
 
 
@@ -1176,3 +1173,322 @@ async def test_the_pause_row_waits_for_the_journal_lock(db_session, test_engine,
     await pause
 
     assert [r[0] for r in await rows(db_session, printer.id, archive.id)] == [EVENT_PAUSE]
+
+
+# ── F-R4 / M2 · an explicit unknown feed reaches the writers as not recorded ──
+
+
+@pytest.mark.parametrize(
+    "chronology, charged_some, unknown_some",
+    [
+        ("only_unknown", False, True),
+        ("known_then_unknown_on_one_layer", False, True),
+        ("unknown_then_known", True, True),
+        ("empty", True, False),  # no evidence at all: the old ladder, as before
+    ],
+)
+async def test_the_internal_writer_charges_no_reel_for_a_feed_nobody_saw(
+    db_session, incident, monkeypatch, chronology, charged_some, unknown_some
+):
+    """Review r2 F2-R1: one unknown interval — alone, or left alone by normalization — goes
+    through the same not-recorded attribution as an unknown interval among several, and its
+    trays are closed to the later remain-delta fallback so nothing charges those grams again."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+    from backend.app.services.usage_tracker import _track_from_3mf
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    logs = {
+        "only_unknown": [(UNKNOWN_FEED, 0)],
+        "known_then_unknown_on_one_layer": [(TRAY, 0), (UNKNOWN_FEED, 0)],
+        "unknown_then_known": [(UNKNOWN_FEED, 0), (TRAY, 100)],
+        "empty": [],
+    }
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="WRITER", access_code="1")
+    slot_reads(client, TRAY, "PLA")
+    client.state.tray_change_log = logs[chronology]
+    client.state.total_layers = 200
+    pm = MagicMock()
+    pm.get_status.return_value = client.state
+    analysis = SimpleNamespace(
+        filament_usage=[{"slot_id": 1, "used_g": 10.0}], layer_usage=None, filament_properties={}
+    )
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    handled, uncharged = set(), []
+
+    result = await _track_from_3mf(
+        printer_id=printer.id, archive_id=archive.id, status="completed", print_name="plate", handled_trays=handled,
+        printer_manager=pm, db=db_session, ams_mapping=[TRAY], file_analysis=analysis, analysis_attempted=True,
+        uncharged=uncharged,
+    )  # fmt: skip
+
+    charged = sum(r["weight_used"] for r in result)
+    not_recorded = sum(grams for _tray, grams in uncharged)
+    assert round(charged + not_recorded, 1) == 10.0
+    assert (charged > 0) is charged_some and (not_recorded > 0) is unknown_some
+    assert all(r["spool_id"] == old.id for r in result)
+    if unknown_some:
+        assert (AMS, SLOT) in handled  # the remain-delta fallback leaves this tray alone
+
+
+def test_an_unknown_feed_is_named_as_unknown_in_the_not_recorded_notice():
+    from backend.app.services.spool_assignment_notifications import _slot_label_from_global_tray
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    assert _slot_label_from_global_tray(UNKNOWN_FEED) == "?"
+
+
+# ── F-R3 / F-R4 · several assignments while the seed waits (review r2 F2-R2, F2-R3) ──
+
+
+async def bind_spoolman(db, printer_id, spoolman_id):
+    from sqlalchemy import delete
+
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+    await db.execute(
+        delete(SpoolmanSlotAssignment).where(
+            SpoolmanSlotAssignment.printer_id == printer_id,
+            SpoolmanSlotAssignment.ams_id == AMS,
+            SpoolmanSlotAssignment.tray_id == SLOT,
+        )
+    )
+    db.add(SpoolmanSlotAssignment(printer_id=printer_id, ams_id=AMS, tray_id=SLOT, spoolman_spool_id=spoolman_id))
+    await db.commit()
+
+
+async def held_assignment(db, printer_id, rebind):
+    """An assignment writer while the journal waits: the tail check first, then the binding."""
+    async with journal.journal_lock(printer_id):
+        assert not await journal.ensure_tail_recorded(db, printer_id=printer_id, ams_id=AMS, tray_id=SLOT)
+        await rebind()
+
+
+def a_report(client, tray, layer, tray_type):
+    slot_reads(client, TRAY, tray_type)
+    client._process_message({"print": {"ams": {"tray_now": str(tray)}, "layer_num": layer}})
+
+
+@pytest.mark.parametrize("backend", ["internal", "spoolman"])
+async def test_two_assignments_while_the_seed_waits_keep_the_reel_between_them(db_session, printer_factory, backend):
+    """F2-R3: A's tail at 40, B assigned, the feed back at 45, B's own tail at 60, C assigned —
+    all before the seed. The return and B's tail are B's; C is never put on B's interval."""
+    printer, archive = await a_print(db_session, printer_factory)
+    if backend == "internal":
+        reels = [(await a_spool(db_session, name)).id for name in ("A", "B", "C")]
+
+        def rebind_to(reel):
+            return lambda: bind(db_session, printer.id, reel)
+
+        def ids(reel):
+            return (reel, None)
+
+    else:
+        reels = [11, 12, 13]
+
+        def rebind_to(reel):
+            return lambda: bind_spoolman(db_session, printer.id, reel)
+
+        def ids(reel):
+            return (None, reel)
+
+    first, second, third = reels
+    await rebind_to(first)()
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, rebind_to(second))
+        a_report(client, TRAY, 45, "PLA")
+        a_report(client, 254, 60, "")
+        await held_assignment(db_session, printer.id, rebind_to(third))
+        await seed_and_replay(db_session, printer.id, client)
+
+    tails = await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START)
+    returns = await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN)
+    assert tails == [(40, *ids(first)), (60, *ids(second))]
+    assert returns == [(45, *ids(second))]
+
+
+async def test_an_assignment_on_the_layer_of_a_report_is_ordered_by_arrival_not_by_layer(db_session, incident):
+    """F2-R3: the tail at 40, the new reel assigned on layer 40, the feed back still on layer
+    40 — the return came after the assignment, so it names the new reel; the tail the old one."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, TRAY, 40, "PLA")
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(40, new.id, None)]
+
+
+async def test_reports_lost_to_the_bound_keep_the_reels_of_the_reports_kept(db_session, incident, monkeypatch):
+    """F2-R3 with overflow: the oldest reports are lost (the feed is unknown from there). A
+    sentinel seen while the feed is unknown proves no tail and names no external reel — it
+    stays unknown until a tray is seen; the kept reports still carry the reel bound when
+    each was seen."""
+    import backend.app.services.bambu_mqtt as mqtt
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    third = await a_spool(db_session, "third")
+    monkeypatch.setattr(mqtt, "_JOURNAL_PENDING_LIMIT", 3)
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        a_report(client, TRAY, 41, "PLA")
+        a_report(client, 254, 42, "")
+        a_report(client, TRAY, 43, "PLA")  # the report at 40 is lost from here
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, 254, 50, "")
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, third.id))
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert client.state.tray_change_log == [(TRAY, 0), (UNKNOWN_FEED, 40), (TRAY, 43)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(50, new.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == []
+
+
+@pytest.mark.parametrize("foreign", ["earlier_generation", "other_subtask"])
+async def test_a_rejected_callback_of_another_print_changes_nothing_of_this_one(db_session, printer_factory, foreign):
+    """F2-R2: a late feed_return of another print — known by its journal generation, or by a
+    subtask contradicting the archive's — is refused, and leaves the reel captured for this
+    print's held tail exactly as it was."""
+    printer, archive = await a_print(db_session, printer_factory, subtask_id="this-print")
+    old, new = await a_spool(db_session, "old"), await a_spool(db_session, "new")
+    await bind(db_session, printer.id, old.id)
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        observed = (
+            {"generation": client.journal_generation() - 1}
+            if foreign == "earlier_generation"
+            else {"generation": client.journal_generation(), "subtask_id": "an-older-print"}
+        )
+        async with journal.journal_lock(printer.id):
+            assert not await journal.handle_feed_event(
+                db_session, printer_id=printer.id, event="feed_return", origin=TRAY, layer_num=90, after_gap=False,
+                **observed,
+            )  # fmt: skip
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+
+
+async def test_a_reel_named_for_a_held_report_survives_a_rolled_back_write(db_session, incident, monkeypatch):
+    """F2-R2: the replayed tail's first write fails and rolls back; the retry still freezes
+    the reel going out at the held assignment — nothing was spent before a successful write."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        assert client.seed_usage_journal(
+            client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
+        )
+        event, origin, layer, after_gap = client.on_feed_event.call_args_list[0].args
+        real_commit = db_session.commit
+        monkeypatch.setattr(db_session, "commit", AsyncMock(side_effect=RuntimeError("database is locked")))
+        async with journal.journal_lock(printer.id):
+            with pytest.raises(RuntimeError):
+                await journal.handle_feed_event(
+                    db_session, printer_id=printer.id, event=event, origin=origin, layer_num=layer,
+                    after_gap=after_gap, generation=client.journal_generation(),
+                )  # fmt: skip
+        await db_session.rollback()
+        monkeypatch.setattr(db_session, "commit", real_commit)
+        await replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+
+
+async def test_a_held_assignment_is_journaled_in_its_place_between_the_held_reports(db_session, incident):
+    """Review r2 F2-R3: the feed came back (still the old reel's name), the new reel was
+    assigned, then it ran out — the replay journals the assignment between the return and the
+    next tail, as it happened, so the reel named after the return is adopted from the return's
+    layer and the later tail is the new reel's."""
+    from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_report(client, TRAY, 45, "PLA")
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, 254, 60, "")
+        await seed_and_replay(db_session, printer.id, client)
+
+    db_session.expire_all()
+    events = await journal.load_events(db_session, printer.id, archive.id)
+    assert [(e.event, e.spool_id) for e in events if e.event != EVENT_START] == [
+        (EVENT_TAIL_START, old.id),
+        (EVENT_FEED_RETURN, old.id),
+        (EVENT_SPOOL_LOADED, new.id),
+        (EVENT_TAIL_START, new.id),
+    ]
+    assert [(layer, spool) for layer, spool, _ in journal_boundaries_for_tray(events, TRAY)][:2] == [
+        (0, old.id),
+        (45, new.id),
+    ]
+
+
+async def test_an_assignment_held_before_any_layer_takes_the_next_layer_seen_never_a_later_one(
+    db_session, printer_factory
+):
+    """F2-R3: the client joined before the printer reported any layer; the reel was assigned
+    then, before the feed came back at 45 and ran out again at 60. The assignment's layer is
+    the next one a held report observed (45), as a report's own would be — never the layer the
+    seed happens to find (60), which would put it after the facts that followed it."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    printer, archive = await a_print(db_session, printer_factory)
+    old, new = await a_spool(db_session, "old"), await a_spool(db_session, "new")
+    await bind(db_session, printer.id, old.id)
+    client = BambuMQTTClient(ip_address="1.2.3.4", serial_number="HOLD1", access_code="1")
+    client.on_feed_event = MagicMock()
+    client.on_print_running_observed = MagicMock()
+    client._previous_gcode_state = "RUNNING"
+    client._previous_gcode_file = "plate.3mf"
+    slot_reads(client, TRAY, "")
+    client._process_message(
+        {"print": {"ams": {"tray_now": "254"}, "gcode_state": "RUNNING", "gcode_file": "plate.3mf"}}
+    )
+    assert client.journal_held()
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
+        a_report(client, TRAY, 45, "PLA")
+        a_report(client, 254, 60, "")
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED) == [(45, new.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [
+        (45, old.id, None),
+        (60, new.id, None),
+    ]
+
+
+async def test_two_assignments_of_one_tray_on_one_layer_leave_the_later_reel(db_session, printer_factory):
+    """F2-R3, one layer: B and then C were assigned on layer 40 with no report between them.
+    At the layer resolution the journal keeps, B fed nothing; the tail before them is A's, the
+    reel named after them is C, and the next tail is C's."""
+    printer, archive = await a_print(db_session, printer_factory)
+    first, second, third = [(await a_spool(db_session, name)).id for name in ("A", "B", "C")]
+    await bind(db_session, printer.id, first)
+    client = a_joined_client_feeding_a_tail(layer=40)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, second))
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, third))
+        a_report(client, TRAY, 45, "PLA")
+        a_report(client, 254, 60, "")
+        await seed_and_replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, first, None), (60, third, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, third, None)]
+    assert [spool for _layer, spool, _sm in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [
+        third
+    ]

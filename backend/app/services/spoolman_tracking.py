@@ -54,6 +54,19 @@ def _hash_serial_to_hex32(serial: str) -> str:
     return format(hash_value, "X").zfill(8)
 
 
+def _every_global_tray(tray_remain_start: dict | None, ams_trays: dict | None) -> set[int]:
+    """Every global tray id the remain-delta fallback could charge: the start snapshot's slots
+    (``"<ams>-<tray>"``, encoded as ``build_ams_tray_lookup`` does) and the trays seen."""
+    ids = {tray for tray in (ams_trays or {}) if isinstance(tray, int)}
+    for slot_key in tray_remain_start or {}:
+        try:
+            ams_id, tray_id = (int(part) for part in str(slot_key).split("-", 1))
+        except ValueError:
+            continue
+        ids.add(254 + tray_id if ams_id == 255 else ams_id if ams_id >= 128 else ams_id * 4 + tray_id)
+    return ids
+
+
 def _global_tray_id_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
     """Convert global tray id to (ams_id, tray_id) tuple for fallback tag generation."""
     # External spool slots use IDs 254/255 and map to ams_id=255 tray_id=0/1.
@@ -1407,7 +1420,9 @@ def _single_slot_tray_from_state(state, tray_changes: list) -> int | None:
     the Spoolman tracking row does not keep it, and where this matters it reads
     255 anyway — print start runs before the filament loads.
     """
-    if len(tray_changes) > 1:
+    from backend.app.utils.usage_attribution import chronology_splits
+
+    if chronology_splits(tray_changes):
         return None
     if tray_changes:
         tray = tray_changes[0][0]
@@ -1459,7 +1474,9 @@ def _completion_slot_to_tray(
         return mapping, "tray-log"
     if slot_to_tray:
         return slot_to_tray, "dispatched"
-    if len(tray_changes) > 1:
+    from backend.app.utils.usage_attribution import chronology_splits
+
+    if chronology_splits(tray_changes):
         return None, "split"
     if len(used) == 1:
         tray = _single_slot_tray_from_state(state, tray_changes)
@@ -1623,8 +1640,10 @@ async def report_usage(printer_id: int, archive_id: int):
             runout_purge_grams = 0.0
 
         # --- Path 1: 3MF per-slot estimates -----------------------------
+        from backend.app.utils.usage_attribution import UNKNOWN_FEED, chronology_splits
+
         if filament_usage:
-            if len(tray_changes) > 1:
+            if chronology_splits(tray_changes):
                 # Tray-split path — attribute per-segment to the tray that was
                 # loaded at that time.
                 logger.info(
@@ -1671,6 +1690,10 @@ async def report_usage(printer_id: int, archive_id: int):
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
+                if any(tray == UNKNOWN_FEED for tray, _layer in tray_changes):
+                    # Grams nobody saw fed are reported as not recorded: no remain-delta
+                    # fallback charges them to a tray afterwards.
+                    handled_global_tray_ids |= _every_global_tray(tray_remain_start, ams_trays)
             else:
                 logger.info("[SPOOLMAN] Reporting per-filament usage for archive %s", archive_id)
                 # Slots whose tray has journal (runout) boundaries are split

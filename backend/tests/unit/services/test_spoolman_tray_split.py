@@ -669,3 +669,64 @@ async def test_a_journal_segment_nobody_fed_is_reported_not_recorded_on_spoolman
     assert charged == [(11, 50.0)]
     notify.assert_awaited_once()
     assert notify.await_args.args[1] == [(0, 50.0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("log", [[(-1, 0)], [(0, 0), (-1, 0)]], ids=["only_unknown", "known_then_unknown_on_one_layer"])
+async def test_an_explicit_unknown_feed_is_not_recorded_on_spoolman_and_no_fallback_charges_it(log):
+    """Review r2 F2-R1: a chronology that says the feed is unknown — even as its only entry
+    after normalization — charges no Spoolman reel: not by the dispatched mapping, not by the
+    tag, not by the remain-delta fallback (the tray's remain dropped during the print)."""
+    from backend.app.services.spoolman_tracking import report_usage
+
+    tracking = SimpleNamespace(
+        filament_usage=[{"slot_id": 1, "used_g": 300.0}],
+        ams_trays={0: {"tray_uuid": "AAAA", "tray_type": "PLA"}},
+        slot_to_tray=[0],
+        tray_remain_start={"0-0": {"remain": 80, "tray_uuid": "AAAA"}},
+        layer_usage={},
+        filament_properties={},
+    )
+    db = _make_db(tracking)
+    client = AsyncMock()
+    client.find_spool_by_tag = AsyncMock(return_value={"id": 11, "filament": {"color_hex": "000000"}})
+    client.use_spool = AsyncMock()
+    client.get_spool = AsyncMock(return_value={"id": 11, "filament": {"weight": 1000}})
+    printer_manager = MagicMock()
+    printer_manager.get_status.return_value = SimpleNamespace(
+        tray_change_log=log,
+        total_layers=200,
+        layer_num=200,
+        raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_uuid": "AAAA", "remain": 40}]}]},
+    )
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(db)),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=client),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=[])),
+        patch("backend.app.services.spoolman_tracking._apply_spool_colors_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch(
+            "backend.app.services.spoolman_tracking._apply_runout_zero_corrections_spoolman",
+            AsyncMock(return_value=0),
+        ),
+        patch("backend.app.services.printer_manager.printer_manager", printer_manager),
+        # The slot is bound and its reel has a reference weight: the 40 % remain drop would
+        # be 400 g on reel 11 if the remain-delta fallback were let near the unknown feed.
+        patch(
+            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+            AsyncMock(return_value=11),
+        ),
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+    ):
+        await report_usage(printer_id=1, archive_id=144)
+
+    client.use_spool.assert_not_awaited()
+    notify.assert_awaited_once()
+    assert notify.await_args.args[1] == [(-1, 300.0)]

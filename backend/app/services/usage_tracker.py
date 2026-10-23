@@ -1711,6 +1711,25 @@ async def on_print_complete(
     return results
 
 
+def _every_ams_tray_key(state) -> set[tuple[int, int]]:
+    """Every ``(ams_id, tray_id)`` of the AMS units the printer reports — what the remain-delta
+    fallback walks."""
+    raw = getattr(state, "raw_data", None) or {}
+    ams_raw = raw.get("ams", [])
+    units = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
+    keys: set[tuple[int, int]] = set()
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        for tray in unit.get("tray", []) or []:
+            if isinstance(tray, dict):
+                try:
+                    keys.add((int(unit.get("id", 0)), int(tray.get("id", 0))))
+                except (TypeError, ValueError):
+                    continue
+    return keys
+
+
 async def _track_from_3mf(
     printer_id: int,
     archive_id: int,
@@ -1891,7 +1910,7 @@ async def _track_from_3mf(
         # the layer number can see (a BMCU reports tray_now=254 for a moment on
         # every load). Read at full resolution, those blips sent a same-tray
         # refill down the tray split and lost the new reel's share.
-        from backend.app.utils.usage_attribution import normalize_tray_changes, sole_feeding_tray
+        from backend.app.utils.usage_attribution import chronology_splits, normalize_tray_changes, sole_feeding_tray
 
         raw_tray_log = getattr(state, "tray_change_log", []) or []
         tray_changes = normalize_tray_changes(raw_tray_log)
@@ -1913,7 +1932,9 @@ async def _track_from_3mf(
                 archive_id,
             )
 
-    if len(tray_changes) > 1:
+    from backend.app.utils.usage_attribution import chronology_splits
+
+    if chronology_splits(tray_changes):
         # Multi-tray usage detected — splitting takes over regardless of
         # slot_to_tray. Path 2 (AMS remain%-delta fallback) then naturally
         # skips both trays because they're already in handled_trays after
@@ -2011,7 +2032,7 @@ async def _track_from_3mf(
         # is charged exactly once — a tray the print returns to is charged
         # again for its new stretch, to the reel that sat in it then; skipping
         # it as "already handled" lost that stretch (BMCU refill, 2026-10-21).
-        if len(tray_changes) > 1:
+        if chronology_splits(tray_changes):
             # Compute total weight for this slot (same logic as normal path)
             if layer_grams and slot_id in layer_grams:
                 total_weight = layer_grams[slot_id]
@@ -2026,7 +2047,7 @@ async def _track_from_3mf(
             split_props = analysis.filament_properties.get(slot_id, {})
 
             from backend.app.utils.tray_split import compute_layer_segment_grams
-            from backend.app.utils.usage_attribution import add_autoswitch_purge, feed_intervals
+            from backend.app.utils.usage_attribution import UNKNOWN_FEED, add_autoswitch_purge, feed_intervals
 
             layer_intervals = feed_intervals(tray_changes, journal_events or [])
             interval_grams = compute_layer_segment_grams(
@@ -2044,6 +2065,10 @@ async def _track_from_3mf(
             intervals, interval_grams = add_autoswitch_purge(
                 layer_intervals, interval_grams, journal_events or [], runout_purge_grams
             )
+            if any(iv.tray == UNKNOWN_FEED for iv in intervals):
+                # Nobody saw what fed part of this slot: no remain-delta fallback may charge
+                # those grams to a tray after they were reported as not recorded.
+                handled_trays.update(_every_ams_tray_key(state))
 
             for seg_idx, (interval, segment_grams) in enumerate(zip(intervals, interval_grams, strict=True)):
                 if segment_grams <= 0:
@@ -2268,7 +2293,7 @@ async def _track_from_3mf(
         # helper, so the two cannot drift.
         journal_segs = (
             journal_boundaries_for_tray(journal_events, global_tray_id)
-            if journal_events and len(tray_changes) <= 1
+            if journal_events and not chronology_splits(tray_changes)
             else []
         )
         # One segment is a real answer, not "no split": it is the whole print on

@@ -11398,7 +11398,8 @@ async def _application_lifespan(app: FastAPI):
         subtask_id: str | None,
         generation: int | None = None,
     ):
-        """Journal a runout tail's start or the feed's return to its tray (post-rebuild F-R2)."""
+        """Journal a runout tail's start, the feed's return to its tray (post-rebuild F-R2), or an
+        assignment the restart seed replays in its place among the held reports (F-R3)."""
         try:
             from backend.app.services.print_usage_journal import handle_feed_event, journal_lock
 

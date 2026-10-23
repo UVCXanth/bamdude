@@ -21,6 +21,10 @@ def _global_tray_from_assignment(ams_id: int, tray_id: int) -> int:
 
 def _slot_label_from_global_tray(global_tray_id: int) -> str:
     """Return a human-readable slot label from a global tray ID."""
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    if global_tray_id == UNKNOWN_FEED:
+        return "?"  # a stretch nobody saw fed: no slot can be named
     if global_tray_id == 254:
         return "Ext-L"
     if global_tray_id == 255:

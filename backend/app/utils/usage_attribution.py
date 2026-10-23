@@ -52,6 +52,18 @@ class FeedInterval:
     frozen: bool
 
 
+def chronology_splits(tray_changes: list[tuple[int, int]] | None) -> bool:
+    """Does a NORMALIZED chronology decide the print's attribution interval by interval?
+
+    When it moved between trays — and when it names a feed nobody observed, even as its only
+    entry: an explicit unknown is evidence, and must reach the same not-recorded attribution
+    as an unknown among several, never the single-tray ladder that would charge a reel. An
+    empty chronology is no evidence at all and keeps the ladder.
+    """
+    entries = list(tray_changes or [])
+    return len(entries) > 1 or any(tray == UNKNOWN_FEED for tray, _layer in entries)
+
+
 def normalize_tray_changes(tray_changes: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
     """The tray chronology at the resolution the layer number gives.
 
@@ -246,7 +258,7 @@ def feed_intervals(tray_changes: list[tuple[int, int]] | None, journal_events: l
     from backend.app.services.print_usage_journal import tail_episodes, without_stale_refill_runouts
 
     chronology = normalize_tray_changes(tray_changes)
-    if len(chronology) <= 1:
+    if not chronology_splits(chronology):
         return []
     all_events = sorted(without_stale_refill_runouts(list(journal_events or [])), key=lambda e: e.id)
     episodes = tail_episodes(all_events)
