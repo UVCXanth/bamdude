@@ -560,7 +560,7 @@ async def auto_assign_spool(
     # second tail_start, which the episode reader ignores — an episode's first one wins.
     try:
         async with db.begin_nested():
-            await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+            await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, new_spool_id=spool.id)
     except Exception:
         logger.exception("ensure_tail_recorded failed for printer %s", printer_id)
 

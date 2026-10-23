@@ -2698,7 +2698,9 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
             from backend.app.services.print_usage_journal import ensure_tail_recorded
 
             async with db.begin_nested():
-                await ensure_tail_recorded(db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id)
+                await ensure_tail_recorded(
+                    db, printer_id=data.printer_id, ams_id=data.ams_id, tray_id=data.tray_id, new_spool_id=data.spool_id
+                )
         except Exception:
             logger.exception("ensure_tail_recorded failed for printer %s", data.printer_id)
 

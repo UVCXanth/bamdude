@@ -381,43 +381,17 @@ async def record_tray_change_event(db: AsyncSession, printer_id: int, tray_globa
     (print start seeds the log from PrinterState, which may already hold the
     change this callback is reporting).
     """
-    from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE, PrintUsageEvent
-    from backend.app.services.print_usage_journal import active_archive_id, freeze_fact_ids, record_event
+    from backend.app.services.print_usage_journal import active_archive_id, freeze_spool_ids, record_tray_change
 
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
         return
-
-    last = (
-        (
-            await db.execute(
-                select(PrintUsageEvent)
-                .where(
-                    PrintUsageEvent.archive_id == archive_id,
-                    PrintUsageEvent.event.in_([EVENT_START, EVENT_TRAY_CHANGE]),
-                )
-                .order_by(PrintUsageEvent.id.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if last is not None and last.global_tray_id == tray_global and last.layer_num == layer_num:
-        return
-
-    # A change the restart seed replayed names the reel bound when it was seen (post-rebuild F-R3).
-    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "tray_change", tray_global, layer_num)
-    await record_event(
-        db,
-        printer_id=printer_id,
-        archive_id=archive_id,
-        layer_num=layer_num,
-        event=EVENT_TRAY_CHANGE,
-        global_tray_id=tray_global,
-        spool_id=spool_id,
-        spoolman_spool_id=spoolman_spool_id,
-    )
+    # A restart seed's replay is written by the journal lock, with the reels it named (F3).
+    ids = await freeze_spool_ids(db, printer_id, tray_global)
+    if await record_tray_change(
+        db, printer_id=printer_id, archive_id=archive_id, tray=tray_global, layer_num=layer_num, ids=ids
+    ):
+        await db.commit()
 
 
 async def _journal_print_start(db: AsyncSession, printer_id: int, state) -> None:

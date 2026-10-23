@@ -32,10 +32,15 @@ logger = logging.getLogger(__name__)
 # (callbacks are scheduled in arrival order, and the lock is FIFO) and after
 # ``_get_ams_assignment_lock`` by an assignment — never the other way round. The functions
 # below expect the caller to hold it; none takes it itself.
+#
+# It is also where a restart seed's replay reaches the journal (post-rebuild F3): entering it
+# writes the printer's pending replays first, each whole in a transaction of its own, so no
+# holder — a live callback, an assignment, the completion — writes anything before them. Every
+# holder takes it before its session writes (SQLite's writer is never held while waiting).
 _journal_locks: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
 
-def journal_lock(printer_id: int) -> asyncio.Lock:
+def journal_lock(printer_id: int) -> "JournalLock":
     """The per-printer journal lock (see above), created on first use in the running loop.
 
     One loop in production; a lock is bound to the loop it first waited in, so a new
@@ -45,7 +50,175 @@ def journal_lock(printer_id: int) -> asyncio.Lock:
     entry = _journal_locks.get(printer_id)
     if entry is None or entry[0] is not loop:
         entry = _journal_locks[printer_id] = (loop, asyncio.Lock())
-    return entry[1]
+    return JournalLock(printer_id, entry[1])
+
+
+class JournalLock:
+    """``async with journal_lock(printer_id)``: the lock, then the printer's pending replays."""
+
+    __slots__ = ("_lock", "_printer_id")
+
+    def __init__(self, printer_id: int, lock: asyncio.Lock) -> None:
+        self._printer_id = printer_id
+        self._lock = lock
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self) -> "JournalLock":
+        await self._lock.acquire()
+        try:
+            await deliver_pending_replay(self._printer_id)
+        except BaseException:
+            self._lock.release()
+            raise
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        self._lock.release()
+
+
+# The replays restart seeds built that no transaction has written yet, per printer, in the
+# order they were built; and the writer running now — a holder cancelled while it waited
+# leaves it to finish, and the next holder waits for it (post-rebuild F3).
+_pending_replays: dict[int, list] = {}
+_replay_writers: dict[int, asyncio.Task] = {}
+
+
+def queue_replay(printer_id: int, batches) -> None:
+    """Take over the replays a client built (``ReplayBatch``); the journal lock writes them first."""
+    from backend.app.services.bambu_mqtt import ReplayBatch
+
+    kept = [b for b in (batches if isinstance(batches, list) else []) if isinstance(b, ReplayBatch) and b.facts]
+    if kept:
+        _pending_replays.setdefault(printer_id, []).extend(kept)
+
+
+async def deliver_pending_replay(printer_id: int) -> None:
+    """Write the printer's pending replays, in order; the caller holds ``journal_lock``.
+
+    Each batch goes in one transaction of its own and leaves the queue only once committed: a
+    write that fails or rolls back leaves it to the next holder of the lock, whole. The writer
+    is shielded, so a holder cancelled while it waits never cuts a batch between its commit and
+    its removal — a batch is written exactly once. Raises only on cancellation.
+    """
+    loop = asyncio.get_running_loop()
+    running = _replay_writers.get(printer_id)
+    if running is not None and running.get_loop() is loop and not running.done():
+        await asyncio.shield(running)
+    client, _generation, _subtask = _observed_print(printer_id)
+    if client is not None:
+        try:
+            queue_replay(printer_id, client.take_replay_batches())
+        except Exception:  # noqa: BLE001 - a client that cannot hand them over keeps them
+            logger.debug("[UsageJournal] Printer %d: no replay to take from the client", printer_id)
+    if not _pending_replays.get(printer_id):
+        return
+    writer = loop.create_task(_write_pending_replays(printer_id), name=f"usage-journal-replay-{printer_id}")
+    _replay_writers[printer_id] = writer
+    await asyncio.shield(writer)
+
+
+async def _write_pending_replays(printer_id: int) -> None:
+    from backend.app.core import database
+
+    pending = _pending_replays.get(printer_id, [])
+    while pending:
+        batch = pending[0]
+        try:
+            async with database.async_session() as db:
+                written = await _write_replay_batch(db, printer_id, batch)
+                await db.commit()
+                pending.pop(0)
+        except Exception:
+            logger.exception(
+                "[UsageJournal] The restart replay of printer %d (%d facts) could not be written; "
+                "the next holder of the journal lock writes it",
+                printer_id,
+                len(batch.facts),
+            )
+            return
+        logger.info(
+            "[UsageJournal] Printer %d: restart replay written (%d of %d facts)", printer_id, written, len(batch.facts)
+        )
+    _pending_replays.pop(printer_id, None)
+
+
+async def _write_replay_batch(db: AsyncSession, printer_id: int, batch) -> int:
+    """Every fact of ``batch``, in order, into the archive of the print it ran for; no commit."""
+    archive_id = await tail_archive(db, printer_id, generation=batch.generation, subtask_id=batch.subtask_id)
+    if archive_id is None:
+        logger.info(
+            "[UsageJournal] Restart replay of printer %d belongs to no printing archive of its print, dropped",
+            printer_id,
+        )
+        return 0
+    for fact in batch.facts:
+        await _write_replay_fact(db, printer_id, archive_id, fact)
+    return len(batch.facts)
+
+
+async def _write_replay_fact(db: AsyncSession, printer_id: int, archive_id: int, fact) -> None:
+    """One replayed fact with the reel the replay named — or, from a seed without a binding
+    snapshot, the binding now, read under the journal lock before anyone can rewrite it."""
+    ids = tuple(fact.ids) if fact.ids is not None else await freeze_spool_ids(db, printer_id, fact.tray)
+    if fact.kind == "tray_change":
+        await record_tray_change(
+            db, printer_id=printer_id, archive_id=archive_id, tray=fact.tray, layer_num=fact.layer, ids=ids
+        )
+    elif fact.kind == "tail_start":
+        await record_tail_start(
+            db, printer_id=printer_id, archive_id=archive_id, origin=fact.tray, layer_num=fact.layer, ids=ids
+        )
+    elif fact.kind == "feed_return":
+        await record_feed_return(
+            db,
+            printer_id=printer_id,
+            archive_id=archive_id,
+            origin=fact.tray,
+            layer_num=fact.layer,
+            after_gap=fact.after_gap,
+            ids=ids,
+        )
+    elif fact.kind == "held_assignment":
+        ams_id, tray_id = _global_tray_to_ams_slot(fact.tray)
+        await note_assignment_change(
+            db,
+            printer_id=printer_id,
+            ams_id=ams_id,
+            tray_id=tray_id,
+            spool_id=ids[0],
+            spoolman_spool_id=ids[1],
+            layer_num=fact.layer,
+            archive_id=archive_id,
+            commit=False,
+        )
+
+
+async def binding_snapshot(db: AsyncSession, printer_id: int) -> dict[int, tuple[int | None, int | None]]:
+    """Every tray's ``(spool_id, spoolman_spool_id)`` of the printer, read at once — what a
+    restart seed names its replay with. A tray absent from it is unbound in both backends."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+    snapshot: dict[int, tuple[int | None, int | None]] = {}
+    internal = await db.execute(
+        select(SpoolAssignment.ams_id, SpoolAssignment.tray_id, SpoolAssignment.spool_id).where(
+            SpoolAssignment.printer_id == printer_id
+        )
+    )
+    for ams_id, tray_id, spool_id in internal.all():
+        tray = _global_tray(ams_id, tray_id)
+        snapshot[tray] = (spool_id, snapshot.get(tray, (None, None))[1])
+    spoolman = await db.execute(
+        select(
+            SpoolmanSlotAssignment.ams_id, SpoolmanSlotAssignment.tray_id, SpoolmanSlotAssignment.spoolman_spool_id
+        ).where(SpoolmanSlotAssignment.printer_id == printer_id)
+    )
+    for ams_id, tray_id, spoolman_spool_id in spoolman.all():
+        tray = _global_tray(ams_id, tray_id)
+        snapshot[tray] = (snapshot.get(tray, (None, None))[0], spoolman_spool_id)
+    return snapshot
 
 
 # The one local owner of a print's tail facts (post-rebuild F-R2): the archive the run
@@ -68,11 +241,15 @@ def bind_tail_owner_to_client(printer_id: int, archive_id: int) -> None:
 
 
 def forget_tail_state(printer_id: int | None = None) -> None:
-    """Drop the in-process tail owners — of one printer, or all."""
+    """Drop the in-process tail owners and pending replays — of one printer, or all."""
     if printer_id is None:
         _tail_owners.clear()
+        _pending_replays.clear()
+        _replay_writers.clear()
     else:
         _tail_owners.pop(printer_id, None)
+        _pending_replays.pop(printer_id, None)
+        _replay_writers.pop(printer_id, None)
 
 
 def _observed_print(printer_id: int):
@@ -103,37 +280,6 @@ def _subtasks_contradict(observed, recorded) -> bool:
     observed = str(observed or "").strip()
     recorded = str(recorded or "").strip()
     return observed not in ("", "0") and recorded not in ("", "0") and observed != recorded
-
-
-def _replayed_identity(
-    printer_id: int, event: str, origin: int, layer_num: int
-) -> tuple[int | None, int | None] | None:
-    """The reel the restart seed's replay names for this fact (F-R3), or None for the binding.
-
-    Held reports and the assignments made while the journal waited keep their arrival order in
-    the MQTT client; a replayed tail, return or assignment carries the reel bound when it
-    happened — never a later binding. Read, never consumed: a write that rolls back asks again.
-    """
-    client, _generation, _subtask = _observed_print(printer_id)
-    if client is None:
-        return None
-    try:
-        named = client.replayed_identity(event, origin, layer_num)
-    except Exception:  # noqa: BLE001 - no reading names nothing
-        return None
-    if not isinstance(named, tuple) or len(named) != 2:
-        return None
-    return named
-
-
-async def freeze_fact_ids(db: AsyncSession, printer_id: int, event: str, origin: int, layer_num: int):
-    """The ids a journal row of this observed fact freezes: the reel the restart seed's replay
-    names for it (``tail_start``, ``feed_return``, ``tray_change``, ``held_assignment``), else the
-    binding now."""
-    named = _replayed_identity(printer_id, event, origin, layer_num)
-    if named is not None:
-        return named
-    return await freeze_spool_ids(db, printer_id, origin)
 
 
 @dataclass(frozen=True)
@@ -207,20 +353,22 @@ async def _append(db: AsyncSession, **fields) -> PrintUsageEvent:
     return row
 
 
-async def record_tail_start(db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int) -> bool:
+async def record_tail_start(
+    db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int, ids: tuple | None = None
+) -> bool:
     """Open a tail episode on ``origin``, freezing the reel running out; False when one is open.
 
     Frozen from the binding as every journal row is — and safe from an assignment that
     arrives while this callback waits, because every assignment writer records the open
     tail itself before it rewrites the binding (``ensure_tail_recorded``). A tail the restart
-    seed replayed was seen while no writer could record it: it freezes the reel bound when it
-    was seen, which the replay names (F-R3). Does not commit.
+    seed replayed was seen while no writer could record it: ``ids`` is the reel bound when it
+    was seen, which the replay named (F-R3). Does not commit.
     """
     from backend.app.models.print_usage_event import EVENT_TAIL_START
 
     if open_tail_episode(await load_events(db, printer_id, archive_id)) is not None:
         return False
-    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "tail_start", origin, layer_num)
+    spool_id, spoolman_spool_id = ids if ids is not None else await freeze_spool_ids(db, printer_id, origin)
     await _append(
         db,
         printer_id=printer_id,
@@ -242,21 +390,67 @@ async def record_tail_start(db: AsyncSession, *, printer_id: int, archive_id: in
     return True
 
 
+async def record_tray_change(
+    db: AsyncSession, *, printer_id: int, archive_id: int, tray: int, layer_num: int, ids: tuple
+) -> bool:
+    """A mid-print tray change with the reels ``ids`` names; False for an identical
+    immediately-preceding entry (print start seeds the log from PrinterState, which may already
+    hold the change). Does not commit."""
+    from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE
+
+    last = (
+        (
+            await db.execute(
+                select(PrintUsageEvent)
+                .where(
+                    PrintUsageEvent.archive_id == archive_id,
+                    PrintUsageEvent.event.in_([EVENT_START, EVENT_TRAY_CHANGE]),
+                )
+                .order_by(PrintUsageEvent.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if last is not None and last.global_tray_id == tray and last.layer_num == layer_num:
+        return False
+    spool_id, spoolman_spool_id = ids
+    await _append(
+        db,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        layer_num=layer_num,
+        event=EVENT_TRAY_CHANGE,
+        global_tray_id=tray,
+        spool_id=spool_id,
+        spoolman_spool_id=spoolman_spool_id,
+    )
+    return True
+
+
 async def record_feed_return(
-    db: AsyncSession, *, printer_id: int, archive_id: int, origin: int, layer_num: int, after_gap: bool
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    archive_id: int,
+    origin: int,
+    layer_num: int,
+    after_gap: bool,
+    ids: tuple | None = None,
 ) -> bool:
     """Close the open tail of ``origin``: the feed boundary, with the reel bound at this moment.
 
     ``after_gap``: the return was first seen after a restart or a new client — the layer is
     the observed one, and what fed since the tail's last proven layer is not recorded.
-    A return the restart seed replayed names the reel bound when it was seen (F-R3).
+    A return the restart seed replayed carries the reel bound when it was seen (``ids``, F-R3).
     A return without an open tail is a no-op (False). Does not commit.
     """
     from backend.app.models.print_usage_event import EVENT_FEED_RETURN, KIND_GAP
 
     if open_tail_episode(await load_events(db, printer_id, archive_id), origin) is None:
         return False
-    spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, "feed_return", origin, layer_num)
+    spool_id, spoolman_spool_id = ids if ids is not None else await freeze_spool_ids(db, printer_id, origin)
     await _append(
         db,
         printer_id=printer_id,
@@ -346,9 +540,8 @@ async def handle_feed_event(
 
     ``subtask_id`` and ``generation`` are the print the client was on when it observed the
     fact (``tail_archive``). A fact this print does not own is refused before anything of the
-    print's state is touched. ``held_assignment`` is an assignment made while the journal
-    waited for its seed, replayed in its place among the held reports: the identity note the
-    assignment writer could not write then (``note_assignment_change``).
+    print's state is touched. A restart seed's replay never comes this way: it is one batch,
+    written by ``journal_lock`` (post-rebuild F3).
     """
     archive_id = await tail_archive(db, printer_id, generation=generation, subtask_id=subtask_id)
     if archive_id is None:
@@ -362,20 +555,6 @@ async def handle_feed_event(
         written = await record_feed_return(
             db, printer_id=printer_id, archive_id=archive_id, origin=origin, layer_num=layer_num, after_gap=after_gap
         )
-    elif event == "held_assignment":
-        spool_id, spoolman_spool_id = await freeze_fact_ids(db, printer_id, event, origin, layer_num)
-        ams_id, tray_id = _global_tray_to_ams_slot(origin)
-        await note_assignment_change(
-            db,
-            printer_id=printer_id,
-            ams_id=ams_id,
-            tray_id=tray_id,
-            spool_id=spool_id,
-            spoolman_spool_id=spoolman_spool_id,
-            layer_num=layer_num,
-            archive_id=archive_id,
-        )
-        written = True
     else:
         return False
     if written:
@@ -383,7 +562,15 @@ async def handle_feed_event(
     return written
 
 
-async def ensure_tail_recorded(db: AsyncSession, *, printer_id: int, ams_id: int, tray_id: int) -> bool:
+async def ensure_tail_recorded(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    new_spool_id: int | None = None,
+    new_spoolman_spool_id: int | None = None,
+) -> bool:
     """Before an assignment rewrites a slot's binding: if that slot's reel is feeding its
     tail right now, make sure the tail_start exists, frozen with the reel going out.
 
@@ -393,30 +580,40 @@ async def ensure_tail_recorded(db: AsyncSession, *, printer_id: int, ams_id: int
     which then finds the episode open. Flushed into the caller's transaction, so the
     tail_start and the new binding commit together. The archive is the one the callback
     would pick (``tail_archive``). While a joined print waits for its restart seed no tail is
-    proven, so nothing is written — but the client records the reel going out, in its place
-    among the held reports, for the replay to name (F-R3).
+    proven, so nothing is written — but the client records the change in its place among the
+    held reports: the reel going out and the one coming in (``new_spool_id`` /
+    ``new_spoolman_spool_id``, the side this writer sets), for the replay to name (F-R3). A
+    writer without the journal lock (RFID) whose note the seed overtook is a live change.
     """
     client, generation, subtask = _observed_print(printer_id)
+    tray = _global_tray(ams_id, tray_id)
+    try:
+        held = client is not None and client.journal_held() is True
+    except Exception:  # noqa: BLE001
+        held = False
+    if held and generation is not None:
+        outgoing = await freeze_spool_ids(db, printer_id, tray)
+        incoming = None
+        if new_spool_id is not None or new_spoolman_spool_id is not None:
+            incoming = (
+                new_spool_id if new_spool_id is not None else outgoing[0],
+                new_spoolman_spool_id if new_spoolman_spool_id is not None else outgoing[1],
+            )
+        if client.note_held_binding_change(generation, tray, outgoing, incoming):
+            logger.info(
+                "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
+                "the reel going out is %s/%s",
+                tray,
+                printer_id,
+                *outgoing,
+            )
+            return False
+        # The hold ended while the reel was read (the seed ran): from here a live change.
     try:
         tail = client.open_tail() if client is not None else None
     except Exception:  # noqa: BLE001 - no reading proves nothing; the callback still records it
         tail = None
-    tray = _global_tray(ams_id, tray_id)
     if tail is None:
-        try:
-            held = client is not None and client.journal_held() is True
-        except Exception:  # noqa: BLE001
-            held = False
-        if held and generation is not None:
-            outgoing = await freeze_spool_ids(db, printer_id, tray)
-            if client.note_held_binding_change(generation, tray, outgoing):
-                logger.info(
-                    "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
-                    "the reel going out is %s/%s",
-                    tray,
-                    printer_id,
-                    *outgoing,
-                )
         return False
     origin, layer = tail
     if origin != tray:
@@ -499,8 +696,9 @@ async def record_event(
     global_tray_id: int | None = None,
     spool_id: int | None = None,
     spoolman_spool_id: int | None = None,
+    commit: bool = True,
 ) -> None:
-    """Append one journal row and commit.
+    """Append one journal row and commit (``commit=False``: flush only).
 
     The row also freezes whether the event's own slot physically held filament
     at this moment (m161) — the only fact that later tells a real refill from a
@@ -520,7 +718,7 @@ async def record_event(
             slot_occupied=_slot_occupied_now(printer_id, global_tray_id),
         )
     )
-    await db.commit()
+    await (db.commit() if commit else db.flush())
 
 
 async def freeze_spool_ids(db: AsyncSession, printer_id: int, global_tray_id: int) -> tuple[int | None, int | None]:
@@ -1098,12 +1296,14 @@ async def note_assignment_change(
     spoolman_spool_id: int | None = None,
     layer_num: int | None = None,
     archive_id: int | None = None,
+    commit: bool = True,
 ) -> None:
     """A slot got a (re)assigned spool — if it ran out during the active
     print, this IS the replacement: journal EVENT_SPOOL_LOADED.
 
     ``archive_id``: the print the assignment belongs to, when the caller already resolved it
-    (an assignment the restart seed replays); else the active archive.
+    (an assignment the restart seed replays); else the active archive. ``commit=False``: only
+    flushed, for a caller that commits a batch of facts once.
 
     The RFID uuid-watch covers tagged spools; this covers the tagless ones
     (external holders, untagged reels), where "assign the replacement in
@@ -1176,7 +1376,7 @@ async def note_assignment_change(
                 spool_id,
                 spoolman_spool_id,
             )
-            await db.commit()
+            await (db.commit() if commit else db.flush())
         return
     if spool_id is not None and runout.spool_id == spool_id:
         return  # the same reel re-linked — a correction, not a replacement
@@ -1209,6 +1409,7 @@ async def note_assignment_change(
         global_tray_id=global_tray,
         spool_id=spool_id,
         spoolman_spool_id=spoolman_spool_id,
+        commit=commit,
     )
 
 

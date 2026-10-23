@@ -52,6 +52,34 @@ logger = logging.getLogger(__name__)
 # oldest go, and the replay says the feed was unknown from the first one lost (F-R4).
 _JOURNAL_PENDING_LIMIT = 64
 
+#: Default of ``_journal_fact``'s ``ids``: name the fact with the reel of its moment.
+_UNNAMED = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayFact:
+    """One journal fact of a restart seed's replay, named when the replay ran (post-rebuild F3).
+
+    ``kind`` is ``tray_change``, ``tail_start``, ``feed_return`` or ``held_assignment``; ``ids``
+    the ``(spool_id, spoolman_spool_id)`` it names — or None when the seed was given no binding
+    snapshot, and the reel is then read under the journal lock when the batch is written.
+    """
+
+    kind: str
+    tray: int
+    layer: int
+    after_gap: bool
+    ids: tuple | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayBatch:
+    """A replay's facts in arrival order, for the print (journal generation, subtask) it ran for."""
+
+    generation: int
+    subtask_id: str | None
+    facts: tuple[ReplayFact, ...]
+
 
 def _install_paho_suback_guard() -> None:
     """Guard paho's SUBACK handler against malformed (sub-2-byte) packets.
@@ -2406,14 +2434,17 @@ class BambuMQTTClient:
         # While the journal waits for its seed, its tray reports and the binding changes made
         # meanwhile keep their arrival order (post-rebuild F-R3): each held report gets the next
         # ``_journal_held_seq``; ``note_held_binding_change`` records, per tray, how many reports
-        # had arrived, the reel it replaced and the layer then. The replay names every tail, return
-        # and assignment with the reel bound when it happened (``_replayed_identities``, read by
-        # the journal through ``replayed_identity``), never the binding the seed finds at the end.
+        # had arrived, the reel it replaced, the one it put in and the layer then. The replay is
+        # not sent fact by fact (post-rebuild F3): it becomes one ``ReplayBatch`` whose facts are
+        # named with the reel bound when each happened — a held change, else the seed's binding
+        # snapshot (``_replay_bindings``) — and waits in ``_replay_batches`` until the journal
+        # takes it (``take_replay_batches``) and writes it whole under its lock.
         self._journal_held_seq = 0
-        self._held_changes: dict[int, list[tuple[int, tuple, int | None]]] = {}
-        self._replayed_identities: dict[tuple[str, int, int], tuple | None] = {}
+        self._held_changes: dict[int, list[tuple[int, tuple, tuple | None, int | None]]] = {}
         self._replaying_seq: int | None = None
-        self._journal_replaying = False
+        self._replay_bindings: dict | None = None
+        self._replay_facts: list[ReplayFact] | None = None
+        self._replay_batches: list[ReplayBatch] = []
         # The layer of the first held tray report the bound dropped, or None: the replay then
         # states the feed unknown from there instead of joining what is kept to the old log.
         self._journal_lost_from: int | None = None
@@ -2627,7 +2658,7 @@ class BambuMQTTClient:
             self._journal_generation = prior._journal_generation
             self._journal_held_seq = prior._journal_held_seq
             self._held_changes = {tray: list(changes) for tray, changes in prior._held_changes.items()}
-            self._replayed_identities = dict(prior._replayed_identities)
+            self._replay_batches = list(prior._replay_batches)
             self._journal_lost_from = prior._journal_lost_from
         self._journal_after_gap = True
 
@@ -7247,9 +7278,8 @@ class BambuMQTTClient:
                 self._journal_generation += 1
                 self._journal_after_gap = True
                 # The packet's own tray report is already held (its tray branch ran first): the
-                # held-report count goes on, only what was named for another print is dropped.
+                # held-report count goes on, only another print's binding changes are dropped.
                 self._held_changes = {}
-                self._replayed_identities = {}
                 self._journal_lost_from = None
                 journal_generation = self._journal_generation
             # Restart-recovery hook (#1485 follow-up): BamDude started mid-
@@ -7804,9 +7834,8 @@ class BambuMQTTClient:
                 logger.info(
                     "[%s] Feed came back to tray %d at layer %d - end of its tail", self.serial_number, tn, layer
                 )
-                if running and self.on_feed_event:
-                    self._name_replayed("feed_return", latched, layer)
-                    self.on_feed_event("feed_return", latched, layer, after_gap)
+                if running:
+                    self._journal_fact("feed_return", latched, layer, after_gap)
             # Another AMS tray: the backup took over — the ordinary tray change below says so.
         elif changed and tn >= 254 and origin is not None and 0 <= origin < 254 and origin in empty:
             # Runout tail, not a tray change (X2D, 2026-08-23): when an AMS slot runs dry the
@@ -7826,17 +7855,13 @@ class BambuMQTTClient:
                 tn,
                 origin,
             )
-            if self.on_feed_event:
-                self._name_replayed("tail_start", origin, layer)
-                self.on_feed_event("tail_start", origin, layer, after_gap)
+            self._journal_fact("tail_start", origin, layer, after_gap)
             return
         self._last_tail_suppressed = None
         if changed:
             self.state.tray_change_log.append((tn, layer))
             logger.info("[%s] Tray change during print: tray=%d at layer=%d", self.serial_number, tn, layer)
-            if self.on_tray_change:
-                self._name_replayed("tray_change", tn, layer)
-                self.on_tray_change(tn, layer)
+            self._journal_fact("tray_change", tn, layer, False)
         self.state.last_loaded_tray = tn
 
     def journal_generation(self) -> int:
@@ -7849,10 +7874,13 @@ class BambuMQTTClient:
         with self._journal_lock:
             return self._journal_held is True
 
-    def note_held_binding_change(self, generation: int, tray: int, outgoing: tuple) -> bool:
+    def note_held_binding_change(
+        self, generation: int, tray: int, outgoing: tuple, incoming: tuple | None = None
+    ) -> bool:
         """An assignment rewrites ``tray``'s binding while this print's journal waits for its seed.
 
-        ``outgoing`` is the binding it replaces (``(spool_id, spoolman_spool_id)``, opaque here).
+        ``outgoing`` is the binding it replaces and ``incoming`` the one it writes, when the writer
+        says (``(spool_id, spoolman_spool_id)``, opaque here; None: the seed's snapshot names it).
         Recorded with how many held reports had arrived, so the replay knows which came before.
         Refused (False) for another print or a journal no longer held.
         """
@@ -7860,54 +7888,70 @@ class BambuMQTTClient:
             if generation != self._journal_generation or self._journal_held is not True:
                 return False
             layer = self.state.layer_num if (self.state.layer_num or self.state.total_layers) else None
-            self._held_changes.setdefault(tray, []).append((self._journal_held_seq, tuple(outgoing), layer))
+            self._held_changes.setdefault(tray, []).append(
+                (self._journal_held_seq, tuple(outgoing), tuple(incoming) if incoming is not None else None, layer)
+            )
             return True
 
-    def replayed_identity(self, event: str, origin: int, layer: int) -> tuple | None:
-        """The reel bound when a replayed ``event`` on ``origin`` at ``layer`` happened, or None.
-
-        None: not a replayed fact, or nothing was re-linked after it — the binding names it.
-        Never consumed by a read: a write that rolls back can ask again.
-        """
+    def take_replay_batches(self) -> list[ReplayBatch]:
+        """Hand over the replays this client built that nobody has taken yet (post-rebuild F3)."""
         with self._journal_lock:
-            return self._replayed_identities.get((event, origin, layer))
+            batches, self._replay_batches = self._replay_batches, []
+            return batches
 
     def _forget_held_order(self) -> None:
         self._journal_held_seq = 0
         self._held_changes = {}
-        self._replayed_identities = {}
         self._replaying_seq = None
 
-    def _binding_at(self, tray: int, seq: int) -> tuple | None:
-        """The reel bound to ``tray`` when held report ``seq`` arrived: the reel the first change
-        after it replaced; None when nothing changed after it (the binding now names it)."""
-        for seen, outgoing, _layer in self._held_changes.get(tray, ()):
+    def _seed_binding(self, tray: int) -> tuple | None:
+        """The binding the seed's snapshot gives ``tray`` (unbound when the snapshot lacks it),
+        or None when the seed came without one."""
+        if self._replay_bindings is None:
+            return None
+        return tuple(self._replay_bindings.get(tray, (None, None)))
+
+    def _identity_at(self, tray: int, seq: int) -> tuple | None:
+        """The reel bound to ``tray`` when held report ``seq`` arrived: the one the first change
+        after it replaced; else the one the last change before it put in; else the snapshot's."""
+        put_in = None
+        for seen, outgoing, incoming, _layer in self._held_changes.get(tray, ()):
             if seen > seq:
                 return outgoing
-        return None
+            put_in = incoming
+        return put_in if put_in is not None else self._seed_binding(tray)
 
-    def _name_replayed(self, event: str, origin: int, layer: int) -> None:
-        """Record which reel a fact the replay emits belongs to; a live fact clears a stale name."""
-        key = (event, origin, layer)
-        if self._journal_replaying and self._replaying_seq is not None:
-            self._replayed_identities[key] = self._binding_at(origin, self._replaying_seq)
-        else:
-            self._replayed_identities.pop(key, None)
+    def _journal_fact(self, kind: str, tray: int, layer: int, after_gap: bool, ids=_UNNAMED) -> None:
+        """One journal fact: into the replay's batch while the seed replays — named with the reel
+        of its moment — else to main's callback, which journals it with the binding then."""
+        if self._replay_facts is not None:
+            if ids is _UNNAMED:
+                ids = (
+                    self._identity_at(tray, self._replaying_seq)
+                    if self._replaying_seq is not None
+                    else self._seed_binding(tray)
+                )
+            self._replay_facts.append(ReplayFact(kind, tray, layer, after_gap, ids))
+            return
+        if kind == "tray_change":
+            if self.on_tray_change:
+                self.on_tray_change(tray, layer)
+        elif self.on_feed_event:
+            self.on_feed_event(kind, tray, layer, after_gap)
 
     def _emit_held_changes(self, due: list, of_this_print: bool, unknown_layer: int) -> None:
-        """Journal held binding changes in their place among the replayed reports: each names
-        the reel it put in (the one the next change replaced, else the binding now). A change
-        made before any layer was reported takes ``unknown_layer`` — the next layer a report
-        observed, as a held report's own would — never a later one run backwards."""
-        running = of_this_print or (self._was_running and not self._completion_triggered)
+        """Held binding changes, in their place among the replayed reports: each names the reel it
+        put in — the writer's own word, else the reel the next change replaced, else the seed's
+        snapshot. A change made before any layer was reported takes ``unknown_layer`` — the next
+        layer a report observed, as a held report's own would — never a later one run backwards."""
+        if not (of_this_print or (self._was_running and not self._completion_triggered)):
+            return
         for tray, index in due:
             changes = self._held_changes[tray]
-            _seen, _outgoing, layer = changes[index]
-            layer = unknown_layer if layer is None else layer
-            incoming = changes[index + 1][1] if index + 1 < len(changes) else None
-            self._replayed_identities[("held_assignment", tray, layer)] = incoming
-            if running and self.on_feed_event:
-                self.on_feed_event("held_assignment", tray, layer, False)
+            _seen, _outgoing, incoming, layer = changes[index]
+            if incoming is None:
+                incoming = changes[index + 1][1] if index + 1 < len(changes) else self._seed_binding(tray)
+            self._journal_fact("held_assignment", tray, unknown_layer if layer is None else layer, False, ids=incoming)
 
     def open_tail(self) -> tuple[int, int] | None:
         """``(origin tray, opening layer)`` of the runout tail being fed now, or None.
@@ -7927,14 +7971,17 @@ class BambuMQTTClient:
         last_loaded_tray: int,
         tail_origin: int | None,
         tail_open_layer: int = 0,
+        bindings: dict | None = None,
     ) -> bool:
         """Give a joined print its chronology and open tail back, then replay what was held.
 
-        Called by main.py once the journal was read back (restart recovery). Refused — and
-        nothing replayed — when the seed names another print than the one now held, or the
-        print is no longer held (it started anew under this client). The held observations
-        are processed in arrival order, the one in the packet that started the recovery
-        included; the first of them may close an open tail as a return after the gap.
+        Called by main.py once the journal was read back (restart recovery), under the journal
+        lock, with ``bindings`` — every tray's ``(spool_id, spoolman_spool_id)`` read under that
+        lock. Refused — and nothing replayed — when the seed names another print than the one
+        now held, or the print is no longer held (it started anew under this client). The held
+        observations are processed in arrival order, the one in the packet that started the
+        recovery included; the first of them may close an open tail as a return after the gap.
+        What they journal becomes one ``ReplayBatch`` (``take_replay_batches``).
         """
         with self._journal_lock:
             if generation != self._journal_generation or self._journal_held is not True:
@@ -7947,10 +7994,10 @@ class BambuMQTTClient:
             self._journal_held = False
             self._journal_after_gap = True
             pending, self._journal_pending = self._journal_pending, []
-            self._replay_held(pending)
+            self._replay_held(pending, bindings=bindings)
             return True
 
-    def abandon_journal_hold(self, generation: int) -> bool:
+    def abandon_journal_hold(self, generation: int, *, bindings: dict | None = None) -> bool:
         """End the hold of a joined print whose restart seed never came (it failed for good).
 
         Nothing from before the restart could be read back, so the feed is stated unknown from
@@ -7978,17 +8025,20 @@ class BambuMQTTClient:
             )
             # A print that already completed is still the print these reports belong to: the
             # completion releases an unseeded hold before it reads the chronology.
-            self._replay_held(pending, of_this_print=True)
+            self._replay_held(pending, of_this_print=True, bindings=bindings)
             return True
 
-    def _replay_held(self, pending: list, *, of_this_print: bool = False) -> None:
+    def _replay_held(self, pending: list, *, of_this_print: bool = False, bindings: dict | None = None) -> None:
         """Journal the held tray reports in arrival order; the caller holds ``_journal_lock``.
 
         Reports the hold lost to its bound are stated first, as a feed unknown from the first
         lost layer — never earlier than the chronology it follows, never folded into it.
-        ``of_this_print``: journal them even though the print's completion already fired.
+        ``of_this_print``: journal them even though the print's completion already fired. What
+        they journal is one ``ReplayBatch`` of facts named with the reel of their moment
+        (``bindings``: the seed's snapshot), queued for the journal to take and write whole.
         """
-        self._journal_replaying = True
+        self._replay_bindings = dict(bindings) if bindings is not None else None
+        self._replay_facts = []
         try:
             if self._journal_lost_from is not None:
                 lost_from, self._journal_lost_from = self._journal_lost_from, None
@@ -8000,15 +8050,14 @@ class BambuMQTTClient:
                     self._last_tail_suppressed = None
                     self.state.tray_change_log.append((UNKNOWN_FEED, lost_from))
                     self.state.last_loaded_tray = UNKNOWN_FEED
-                    if self.on_tray_change:
-                        self.on_tray_change(UNKNOWN_FEED, lost_from)
+                    self._journal_fact("tray_change", UNKNOWN_FEED, lost_from, False)
                 self._journal_after_gap = True
             # The binding changes in arrival order, each due before the first report it preceded.
             changes = sorted(
                 (
                     (seen, tray, index)
                     for tray, rows in self._held_changes.items()
-                    for index, (seen, _o, _l) in enumerate(rows)
+                    for index, (seen, *_change) in enumerate(rows)
                 ),
             )
             for index, (tn, layer, empty, seq) in enumerate(pending):
@@ -8028,8 +8077,14 @@ class BambuMQTTClient:
             self._replaying_seq = None
             self._emit_held_changes([(tray, i) for _seen, tray, i in changes], of_this_print, self.state.layer_num)
         finally:
+            facts, self._replay_facts = self._replay_facts, None
             self._replaying_seq = None
-            self._journal_replaying = False
+            self._replay_bindings = None
+            self._held_changes = {}
+            if facts:
+                self._replay_batches.append(
+                    ReplayBatch(self._journal_generation, self.state.subtask_id or None, tuple(facts))
+                )
 
     def _ams_unit_ids(self) -> list[int]:
         """Ids of the AMS units currently present, from merged state."""

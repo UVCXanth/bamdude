@@ -8,6 +8,7 @@ the assignment lock, its remote I/O outside it), F-R4 (the seed of a joined prin
 """
 
 import asyncio
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from backend.app.models.print_usage_event import (
     EVENT_SPOOL_LOADED,
     EVENT_START,
     EVENT_TAIL_START,
+    EVENT_TRAY_CHANGE,
     KIND_GAP,
     KIND_PAUSE,
     PrintUsageEvent,
@@ -492,7 +494,7 @@ async def test_the_restart_seed_gives_the_joined_client_its_open_tail_back(db_se
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=generation
         )
 
-    assert client.on_feed_event.call_args_list[-1].args == ("feed_return", TRAY, 50, True)
+    assert (EVENT_FEED_RETURN, 50, old.id, KIND_GAP) in await rows(db_session, printer.id, archive.id)
     assert client.state.last_loaded_tray == TRAY
 
 
@@ -567,7 +569,7 @@ async def test_a_failed_seed_is_retried_from_the_same_evidence(db_session, incid
         await seed_retries.pop()
 
     assert not client.journal_held()
-    assert client.on_feed_event.call_args_list[-1].args == ("feed_return", TRAY, 50, True)
+    assert (EVENT_FEED_RETURN, 50, old.id, KIND_GAP) in await rows(db_session, printer.id, archive.id)
 
 
 async def test_a_seed_that_keeps_failing_ends_the_hold_with_the_feed_unknown(
@@ -595,7 +597,12 @@ async def test_a_seed_that_keeps_failing_ends_the_hold_with_the_feed_unknown(
     assert len(calls) == 4  # the first try and three retries, then no more
     assert not client.journal_held()
     assert client.state.tray_change_log == [(UNKNOWN_FEED, 0), (TRAY, 50)]
-    assert [c.args for c in client.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 0), (TRAY, 50)]
+    db_session.expire_all()
+    assert [
+        (e.global_tray_id, e.layer_num)
+        for e in await journal.load_events(db_session, printer.id, archive.id)
+        if e.event == EVENT_TRAY_CHANGE
+    ] == [(UNKNOWN_FEED, 0), (TRAY, 50)]
 
 
 async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incident, monkeypatch, seed_retries):
@@ -653,7 +660,11 @@ def a_joined_client_feeding_a_tail(tray=TRAY, layer=40):
 
 
 async def replay(db, printer_id, client):
-    """main's queued feed callbacks, in the order the client emitted them, then forgotten."""
+    """What reaches the journal after the seed: the replay's batch, delivered by the next holder
+    of the journal lock, then main's queued live feed callbacks in the order the client emitted
+    them, then forgotten."""
+    async with journal.journal_lock(printer_id):
+        pass
     for event, origin, layer, after_gap in [c.args for c in client.on_feed_event.call_args_list]:
         async with journal.journal_lock(printer_id):
             await journal.handle_feed_event(
@@ -764,14 +775,23 @@ async def test_an_assignment_after_every_held_report_names_no_earlier_interval(d
     assert await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED) == [(60, new.id, None)]
 
 
-async def test_a_held_tail_the_journal_lost_leaves_no_name_to_a_later_tail(db_session, incident):
-    """The first replayed tail's handler failed (main logs and drops it). The feed came back,
-    the new reel was assigned, and it ran out again — that later tail is named by the binding
-    it was seen under (the new reel), whatever happened to the first tail's write; the return
-    before the assignment is the old reel's, and the assignment after it names the new one."""
+async def test_a_replay_whose_first_write_failed_names_every_tail_with_its_own_reel(db_session, incident, monkeypatch):
+    """The replay's first write failed and rolled back whole (F3). The feed came back, the new
+    reel was assigned, and it ran out again — written later by the next holder of the journal
+    lock, the first tail and the return are still the old reel's and the later tail the new
+    reel's: a failed write spends no name."""
     printer, archive, old, new = incident
     client = a_joined_client_feeding_a_tail()
     a_report(client, TRAY, 45, "PLA")
+    real, calls = journal._write_replay_fact, []
+
+    async def first_write_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
     with patch("backend.app.services.printer_manager.printer_manager") as pm:
         pm.get_client.return_value = client
         await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
@@ -779,12 +799,15 @@ async def test_a_held_tail_the_journal_lost_leaves_no_name_to_a_later_tail(db_se
         assert client.seed_usage_journal(
             client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
         )
-        lost = client.on_feed_event.call_args_list[0].args
-        assert lost[:3] == ("tail_start", TRAY, 40)
-        client.on_feed_event.call_args_list[:] = [c for c in client.on_feed_event.call_args_list if c.args != lost]
+        await replay(db_session, printer.id, client)  # the write fails, the batch waits
+        assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []
         await replay(db_session, printer.id, client)
 
-    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(60, new.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [
+        (40, old.id, None),
+        (60, new.id, None),
+    ]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
 
 
 async def test_a_seed_that_comes_late_journals_every_held_transition_at_its_own_layer(db_session, incident):
@@ -900,7 +923,7 @@ async def test_a_print_that_completes_before_its_seed_states_the_feed_unknown(mo
     client = MagicMock()
     client.journal_held.return_value = True
     client.journal_generation.return_value = 4
-    client.abandon_journal_hold.side_effect = lambda generation: order.append(("release", generation)) or True
+    client.abandon_journal_hold.side_effect = lambda generation, **_: order.append(("release", generation)) or True
 
     async def completion(printer_id, data, analysis):
         order.append(("completion", printer_id))
@@ -1162,13 +1185,14 @@ async def test_the_pause_row_waits_for_the_journal_lock(db_session, test_engine,
     monkeypatch.setattr(main_mod, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
 
     lock = journal.journal_lock(printer.id)
+    waiting = journal._journal_locks[printer.id][1]  # the asyncio lock under it
     async with lock:
         pause = asyncio.create_task(main_mod._handle_pause_edge(printer.id, state))
         for _ in range(200):
-            if lock._waiters or pause.done():
+            if waiting._waiters or pause.done():
                 break
             await asyncio.sleep(0.01)
-        assert lock._waiters, "the pause row was written without the journal lock"
+        assert waiting._waiters, "the pause row was written without the journal lock"
         assert await rows(db_session, printer.id, archive.id) == []
     await pause
 
@@ -1379,27 +1403,38 @@ async def test_a_rejected_callback_of_another_print_changes_nothing_of_this_one(
 
 
 async def test_a_reel_named_for_a_held_report_survives_a_rolled_back_write(db_session, incident, monkeypatch):
-    """F2-R2: the replayed tail's first write fails and rolls back; the retry still freezes
-    the reel going out at the held assignment — nothing was spent before a successful write."""
+    """F2-R2 under F3: the replay's facts were all written and its commit failed; the rollback
+    leaves the batch to the next holder of the journal lock, which writes it with the reel the
+    replay named — nothing was spent before a successful commit, nothing is written twice."""
+    from backend.app.core import database
+
     printer, archive, old, new = incident
     client = a_joined_client_feeding_a_tail(layer=40)
+    factory, commits = database.async_session, []
+
+    def sessions_whose_first_commit_fails():
+        session = factory()
+        commit = session.commit
+
+        async def failing_once():
+            commits.append(1)
+            if len(commits) == 1:
+                raise RuntimeError("database is locked")
+            await commit()
+
+        session.commit = failing_once
+        return session
+
     with patch("backend.app.services.printer_manager.printer_manager") as pm:
         pm.get_client.return_value = client
         await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, new.id))
         assert client.seed_usage_journal(
             client.journal_generation(), log=[(TRAY, 0)], last_loaded_tray=TRAY, tail_origin=None
         )
-        event, origin, layer, after_gap = client.on_feed_event.call_args_list[0].args
-        real_commit = db_session.commit
-        monkeypatch.setattr(db_session, "commit", AsyncMock(side_effect=RuntimeError("database is locked")))
-        async with journal.journal_lock(printer.id):
-            with pytest.raises(RuntimeError):
-                await journal.handle_feed_event(
-                    db_session, printer_id=printer.id, event=event, origin=origin, layer_num=layer,
-                    after_gap=after_gap, generation=client.journal_generation(),
-                )  # fmt: skip
-        await db_session.rollback()
-        monkeypatch.setattr(db_session, "commit", real_commit)
+        monkeypatch.setattr(database, "async_session", sessions_whose_first_commit_fails)
+        await replay(db_session, printer.id, client)
+        assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []
+        await replay(db_session, printer.id, client)
         await replay(db_session, printer.id, client)
 
     assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
@@ -1503,8 +1538,12 @@ def queue_every_callback(client):
 
 
 async def drain_every_callback(db, printer_id, client, queued):
+    """The replay's batch (written by the next holder of the journal lock), then main's live
+    callbacks in the order the client queued them."""
     from backend.app.services.usage_tracker import record_tray_change_event
 
+    async with journal.journal_lock(printer_id):
+        pass
     for kind, args in queued:
         async with journal.journal_lock(printer_id):
             if kind == "feed":
@@ -1597,3 +1636,440 @@ async def test_tray_changes_kept_after_an_overflow_keep_the_reel_bound_when_each
     ]
     rows = await journal.load_events(db_session, printer.id, archive.id)
     assert [e.global_tray_id for e in rows if e.event == EVENT_TRAY_CHANGE] == [UNKNOWN_FEED, TRAY]
+
+
+# ── F3-R1 · the replay reaches the journal as one ordered batch (review r3) ──
+
+
+@contextmanager
+def every_manager_names(client):
+    """main's and the services' printer manager, both naming ``client``."""
+    with ExitStack() as stack:
+        for target in ("backend.app.main.printer_manager", "backend.app.services.printer_manager.printer_manager"):
+            pm = stack.enter_context(patch(target))
+            pm.get_client.return_value = client
+            pm.get_status.return_value = client.state if client is not None else None
+        yield
+
+
+async def seed_through_main(printer_id, client):
+    """The production seed: main's restore, on a session of its own."""
+    import logging
+
+    from backend.app.core import database
+    from backend.app.main import _restore_usage_tracking_session
+
+    async with database.async_session() as seed_db:
+        return await _restore_usage_tracking_session(
+            printer_id, client.state, seed_db, logging.getLogger(__name__), generation=client.journal_generation()
+        )
+
+
+def a_held_tail_and_return(client):
+    """The joined print's chronology says TRAY; the tail at 40 is held, the return at 45 too."""
+    client.state.tray_change_log = [(TRAY, 0)]
+    a_report(client, TRAY, 45, "PLA")
+
+
+def gate_on(monkeypatch, name):
+    """Pause ``journal.<name>`` on its next call until the returned ``release`` is set."""
+    real = getattr(journal, name)
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def gated(*args, **kwargs):
+        if not release.is_set():
+            reached.set()
+            await release.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, name, gated)
+    return reached, release
+
+
+async def settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+async def queued_on_the_lock(printer_id, task):
+    """Wait until ``task`` waits for the printer's journal lock; fail if it finishes instead."""
+    lock = journal._journal_locks[printer_id][1]
+    for _ in range(300):
+        if lock._waiters or task.done():
+            break
+        await asyncio.sleep(0.01)
+    assert lock._waiters and not task.done(), "it ran without waiting for the journal lock"
+
+
+async def test_the_seed_waits_for_an_assignment_reading_the_reel_going_out(db_session, incident, monkeypatch):
+    """H2: an assignment holds the journal lock while it reads the reel going out; the seed
+    started meanwhile waits for it, so the change is noted among the held reports and the
+    tail and the return seen before it stay the old reel's."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    reached, release = gate_on(monkeypatch, "freeze_spool_ids")
+    with every_manager_names(client):
+
+        async def assign():
+            async with journal.journal_lock(printer.id):
+                await journal.ensure_tail_recorded(
+                    db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+                )
+                await bind(db_session, printer.id, new.id)
+                await journal.note_assignment_change(
+                    db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, spool_id=new.id
+                )
+
+        assignment = asyncio.create_task(assign())
+        await reached.wait()
+        seed = asyncio.create_task(seed_through_main(printer.id, client))
+        await queued_on_the_lock(printer.id, seed)
+        assert client.journal_held()  # the seed waits for the assignment, it has not run
+        release.set()
+        await assignment
+        assert await seed
+        await replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+    assert [s for _l, s, _m in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [new.id]
+
+
+async def test_a_lock_free_writer_whose_note_the_seed_overtook_is_a_live_change(db_session, incident, monkeypatch):
+    """H2, the RFID writer, which takes no journal lock: the seed runs while it reads the reel
+    going out and freezes the held facts with the binding it found; the writer's note is then
+    refused and its change is a live one — after the return, so the reel it names is adopted
+    from the return's layer, and the replayed facts keep the old reel."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    reached, release = gate_on(monkeypatch, "freeze_spool_ids")
+    with every_manager_names(client):
+
+        async def rfid():
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+            )
+            await bind(db_session, printer.id, new.id)
+            await journal.note_assignment_change(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, spool_id=new.id
+            )
+
+        writer = asyncio.create_task(rfid())
+        await reached.wait()
+        assert await seed_through_main(printer.id, client)
+        release.set()
+        await writer
+        await replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+    assert [s for _l, s, _m in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [new.id]
+
+
+async def test_an_assignment_waits_for_the_batch_being_written(db_session, incident, monkeypatch):
+    """H3, the other lock order: the seed holds the journal lock while it writes the batch;
+    an assignment of C waits for it, so the return seen while B fed is B's."""
+    printer, archive, old, middle = incident
+    newest = await a_spool(db_session, "assigned after the replay")
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    with every_manager_names(client):
+        await held_assignment(db_session, printer.id, lambda: bind(db_session, printer.id, middle.id))
+        a_report(client, TRAY, 45, "PLA")
+        reached, release = gate_on(monkeypatch, "record_feed_return")
+        seed = asyncio.create_task(seed_through_main(printer.id, client))
+        await reached.wait()
+
+        async def assign():
+            async with journal.journal_lock(printer.id):
+                await journal.ensure_tail_recorded(
+                    db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=newest.id
+                )
+                await bind(db_session, printer.id, newest.id)
+
+        assignment = asyncio.create_task(assign())
+        await settle()
+        assert not assignment.done()
+        release.set()
+        assert await seed
+        await assignment
+        await replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, middle.id, None)]
+
+
+@pytest.mark.parametrize("window", ["no_client", "recreated_client"])
+async def test_a_batch_delivered_late_names_the_reels_of_the_snapshot(db_session, incident, monkeypatch, window):
+    """H4: the batch's first write failed and it waits for the next holder of the journal lock;
+    meanwhile the slot was re-linked by a writer that does no accounting, and the printer's
+    client is missing (the reconnect window) or was recreated. The late delivery still names
+    the reels the seed's snapshot froze — never the binding it finds then."""
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    real = journal._write_replay_fact
+    calls = []
+
+    async def first_write_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
+    with every_manager_names(client):
+        assert await seed_through_main(printer.id, client)
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []  # rolled back, kept
+
+    await bind(db_session, printer.id, new.id)  # e.g. an unassign + assign: no journal facts
+    if window == "no_client":
+        later = None
+    else:
+        later = BambuMQTTClient(ip_address="1.2.3.4", serial_number="HOLD1", access_code="1")
+        later.carry_print_lifecycle_from(client)
+    with every_manager_names(later):
+        async with journal.journal_lock(printer.id):
+            pass
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+
+
+@pytest.mark.parametrize("backend", ["internal", "spoolman"])
+async def test_every_kind_of_replayed_fact_is_written_in_order_with_the_reel_of_its_moment(
+    db_session, printer_factory, backend
+):
+    """H5: a tray change at 40, the tail at 60, an assignment, the return at 70 — held, then
+    seeded by main. One batch, in arrival order: the tray change and the tail are the old
+    reel's, the assignment names the new one, the return (seen after it) is the new reel's.
+    Internal inventory and Spoolman freeze the same reels."""
+    printer, archive = await a_print(db_session, printer_factory)
+    if backend == "internal":
+        first, second = [(await a_spool(db_session, name)).id for name in ("old", "new")]
+        rebind, ids = (lambda reel: bind(db_session, printer.id, reel)), (lambda reel: (reel, None))
+        assigning = {"new_spool_id": second}
+    else:
+        first, second = 11, 12
+        rebind, ids = (lambda reel: bind_spoolman(db_session, printer.id, reel)), (lambda reel: (None, reel))
+        assigning = {"new_spoolman_spool_id": second}
+    await rebind(first)
+    client = a_joined_client_on_tray(1, 30)
+    client.state.tray_change_log = [(1, 0)]
+    with every_manager_names(client):
+        a_report(client, TRAY, 40, "PLA")
+        a_report(client, 254, 60, "")
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, **assigning)
+            await rebind(second)
+        a_report(client, TRAY, 70, "PLA")
+        assert await seed_through_main(printer.id, client)
+
+    db_session.expire_all()
+    events = [e for e in await journal.load_events(db_session, printer.id, archive.id) if e.event != EVENT_START]
+    assert [(e.event, e.layer_num, (e.spool_id, e.spoolman_spool_id)) for e in events] == [
+        (EVENT_TRAY_CHANGE, 40, ids(first)),
+        (EVENT_TAIL_START, 60, ids(first)),
+        (EVENT_SPOOL_LOADED, 60, ids(second)),
+        (EVENT_FEED_RETURN, 70, ids(second)),
+    ]
+
+
+async def test_a_batch_interrupted_at_any_fact_is_written_once_and_whole(db_session, printer_factory, monkeypatch):
+    """H6: the batch's write fails at its k-th fact, for every k; the next holder of the
+    journal lock writes it again. Every run ends with the rows of an uninterrupted one —
+    nothing lost, nothing twice — however far the first write got."""
+
+    async def run(fail_at):
+        printer, archive = await a_print(db_session, printer_factory)
+        old, new = await a_spool(db_session, "old"), await a_spool(db_session, "new")
+        await bind(db_session, printer.id, old.id)
+        client = a_joined_client_on_tray(1, 30)
+        client.state.tray_change_log = [(1, 0)]
+        real = journal._write_replay_fact
+        calls = []
+
+        async def write(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == fail_at:
+                raise RuntimeError("database is locked")
+            return await real(*args, **kwargs)
+
+        with every_manager_names(client), patch.object(journal, "_write_replay_fact", write):
+            a_report(client, TRAY, 40, "PLA")
+            a_report(client, 254, 60, "")
+            async with journal.journal_lock(printer.id):
+                await journal.ensure_tail_recorded(
+                    db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+                )
+                await bind(db_session, printer.id, new.id)
+            a_report(client, TRAY, 70, "PLA")
+            assert await seed_through_main(printer.id, client)
+            async with journal.journal_lock(printer.id):
+                pass
+        db_session.expire_all()
+        named = {old.id: "old", new.id: "new"}
+        return [
+            (e.event, e.layer_num, named.get(e.spool_id))
+            for e in await journal.load_events(db_session, printer.id, archive.id)
+            if e.event != EVENT_START
+        ]
+
+    whole = await run(fail_at=0)
+    assert len(whole) == 4
+    for k in range(1, len(whole) + 1):
+        assert await run(fail_at=k) == whole, k
+
+
+async def test_a_cancelled_seed_leaves_its_batch_written_once(db_session, incident, monkeypatch):
+    """H7, a cancelled owner: the seed is cancelled while its batch is being written; the write
+    finishes on its own, and the next holder of the journal lock writes nothing twice."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    real, started = journal._write_replay_batch, []
+
+    async def counted(*args, **kwargs):
+        started.append(1)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_batch", counted)
+    with every_manager_names(client):
+        reached, release = gate_on(monkeypatch, "record_feed_return")
+        seed = asyncio.create_task(seed_through_main(printer.id, client))
+        await reached.wait()
+        seed.cancel()
+        await settle()
+
+        async def next_holder():
+            async with journal.journal_lock(printer.id):
+                pass
+
+        waiting = asyncio.create_task(next_holder())  # enters while the cancelled seed's write runs
+        await settle()
+        assert not waiting.done()  # it waits for that write instead of starting its own
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await seed
+        await waiting
+        await next_holder()
+
+    assert len(started) == 1  # finished by the write the seed started; nobody wrote it again
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+
+
+async def test_a_completion_writes_the_batch_left_waiting_before_it_reads_the_journal(
+    db_session, incident, monkeypatch
+):
+    """H7, completion during the handoff: the seed's write failed and the batch waits; the
+    print completes. The completion's release writes it while the archive is still printing,
+    before anything reads the chronology or the journal."""
+    from backend.app.main import _release_unseeded_journal
+
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    a_held_tail_and_return(client)
+    real = journal._write_replay_fact
+    calls = []
+
+    async def first_write_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
+    with every_manager_names(client):
+        assert await seed_through_main(printer.id, client)
+        assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []
+        await _release_unseeded_journal(printer.id)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, old.id, None)]
+
+
+async def test_a_completion_before_the_seed_writes_the_released_hold_while_the_archive_prints(db_session, incident):
+    """H7: the print completes before its seed; the release states the feed unknown until the
+    held reports and writes them — with the reels the slot held — while the archive is still
+    the printing one, so nothing the completion reads is missing."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+
+    printer, archive, old, new = incident
+    client = a_joined_client_on_tray(TRAY, 30)
+    with every_manager_names(client):
+        a_report(client, 254, 40, "")
+        await _release_unseeded_journal(printer.id)
+
+    assert (EVENT_TRAY_CHANGE, 0, None, None) in await rows(db_session, printer.id, archive.id)
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert client.state.tray_change_log[0] == (UNKNOWN_FEED, 0)
+
+
+async def test_a_lock_free_writer_overtaken_while_the_batch_waits_records_the_open_tail_first(
+    db_session, incident, monkeypatch
+):
+    """H2: the RFID writer (no journal lock) read the reel going out; the seed ran meanwhile, but
+    its write failed, so the batch waits. The writer's note is refused and its change is a live
+    one: the tail the replay left open is recorded with the reel going out before the binding
+    moves, and the new reel is named in it; the late batch then adds nothing twice."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    real, calls = journal._write_replay_fact, []
+
+    async def first_write_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
+    reached, release = gate_on(monkeypatch, "freeze_spool_ids")
+    with every_manager_names(client):
+
+        async def rfid():
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+            )
+            await bind(db_session, printer.id, new.id)
+            await journal.note_assignment_change(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, spool_id=new.id
+            )
+
+        writer = asyncio.create_task(rfid())
+        await reached.wait()
+        assert await seed_through_main(printer.id, client)
+        assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == []  # the batch waits
+        release.set()
+        await writer
+        await replay(db_session, printer.id, client)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert [s for _l, s, _m in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [new.id]
+
+
+async def test_a_change_noted_before_the_seed_but_written_after_it_names_its_own_reel(db_session, incident):
+    """H2: a writer without the journal lock noted its change while the journal waited, and its
+    binding commits only after the seed read its snapshot. The replay still names what the
+    change put in — the writer said so — never the snapshot's older reel: the return seen after
+    the change and the assignment itself are the new reel's, the tail before it the old one's."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    with every_manager_names(client):
+        assert not await journal.ensure_tail_recorded(
+            db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spool_id=new.id
+        )
+        a_report(client, TRAY, 45, "PLA")
+        assert await seed_through_main(printer.id, client)  # the snapshot still says old
+        await bind(db_session, printer.id, new.id)
+
+    assert await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START) == [(40, old.id, None)]
+    assert await frozen(db_session, printer.id, archive.id, EVENT_FEED_RETURN) == [(45, new.id, None)]
+    assert [s for _l, s, _m in await frozen(db_session, printer.id, archive.id, EVENT_SPOOL_LOADED)] == [new.id]

@@ -249,7 +249,7 @@ async def claim_on_insertion(
     # binding names the stock reel, and both commit together (post-rebuild F-R3). The
     # caller holds ``journal_lock`` from before its session: this transaction already
     # holds SQLite's writer (``take_write_lock`` above) and must never wait for it here.
-    await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    await ensure_tail_recorded(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, new_spool_id=spool.id)
     if existing:
         await db.delete(existing)
         await db.flush()

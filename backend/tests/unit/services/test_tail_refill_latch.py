@@ -54,7 +54,22 @@ def refill(client, tray_type="PLA"):
 
 
 def feed_events(client):
-    return [c.args for c in client.on_feed_event.call_args_list]
+    """The tail facts this client journals, in the order it observed them: those a restart
+    seed's replay batch holds (post-rebuild F3: one batch, never a callback per fact), then
+    those main's callback received live."""
+    replayed = [
+        (f.kind, f.tray, f.layer, f.after_gap)
+        for batch in client._replay_batches
+        for f in batch.facts
+        if f.kind in ("tail_start", "feed_return")
+    ]
+    return replayed + [c.args for c in client.on_feed_event.call_args_list]
+
+
+def tray_changes(client):
+    """The tray changes this client journals: the replay batch's, then the live callback's."""
+    replayed = [(f.tray, f.layer) for batch in client._replay_batches for f in batch.facts if f.kind == "tray_change"]
+    return replayed + [c.args for c in client.on_tray_change.call_args_list]
 
 
 # ── F-R1 / F01 / F02 · the latch ─────────────────────────────────────────────
@@ -333,7 +348,7 @@ def test_held_reports_lost_to_the_bound_leave_an_unknown_feed_from_the_first_los
     )
 
     assert joined.state.tray_change_log == [(ORIGIN, 0), (UNKNOWN_FEED, 10), (0, 14), (1, 16), (0, 18)]
-    assert [c.args for c in joined.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 10), (0, 14), (1, 16), (0, 18)]
+    assert tray_changes(joined) == [(UNKNOWN_FEED, 10), (0, 14), (1, 16), (0, 18)]
 
 
 def test_a_journal_that_never_got_its_seed_is_released_with_an_unknown_feed(joined):
@@ -431,4 +446,4 @@ def test_a_journal_released_at_completion_still_states_the_feed_unknown(joined):
     assert joined.abandon_journal_hold(joined.journal_generation())
 
     assert joined.state.tray_change_log == [(UNKNOWN_FEED, 0), (1, 40)]
-    assert [c.args for c in joined.on_tray_change.call_args_list] == [(UNKNOWN_FEED, 0), (1, 40)]
+    assert tray_changes(joined) == [(UNKNOWN_FEED, 0), (1, 40)]

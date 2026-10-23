@@ -1511,7 +1511,13 @@ async def assign_spoolman_slot(
             from backend.app.services.print_usage_journal import ensure_tail_recorded
 
             async with db.begin_nested():
-                await ensure_tail_recorded(db, printer_id=body.printer_id, ams_id=body.ams_id, tray_id=body.tray_id)
+                await ensure_tail_recorded(
+                    db,
+                    printer_id=body.printer_id,
+                    ams_id=body.ams_id,
+                    tray_id=body.tray_id,
+                    new_spoolman_spool_id=body.spoolman_spool_id,
+                )
         except Exception:
             logger.exception("ensure_tail_recorded failed for printer %s", body.printer_id)
 
