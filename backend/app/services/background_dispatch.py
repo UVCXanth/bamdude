@@ -1915,6 +1915,12 @@ class BackgroundDispatchService:
         target model. The actual zip mutation lives in ``apply_3mf_transforms``
         so M970-commenting and snippet-injection share one open/repack cycle
         instead of two — important on multi-plate 50+ MB 3MFs.
+
+        The setting is read on every attempt through the module's own
+        ``async_session``, closed before any file work. A setting that cannot be
+        read skips the injection, never the print; the warning names only the
+        exception's class, because its text can carry SQL parameters or the
+        snippets themselves (issue #96).
         """
         if not job.options.get("gcode_injection"):
             return None
@@ -1926,7 +1932,7 @@ class BackgroundDispatchService:
 
             from backend.app.api.routes.settings import get_setting
 
-            async with self._session_factory() as _sdb:
+            async with async_session() as _sdb:
                 snippets_raw = await get_setting(_sdb, "gcode_snippets")
             if not snippets_raw:
                 return None
@@ -1942,7 +1948,11 @@ class BackgroundDispatchService:
                 end_gcode=end_gc or None,
             )
         except Exception as exc:
-            logger.warning("Dispatch job %s: failed to resolve gcode_snippets (%s), skipping", job.id, exc)
+            logger.warning(
+                "Dispatch job %s: gcode injection skipped (injection_settings_failed, %s)",
+                job.id,
+                type(exc).__name__,
+            )
             return None
 
     async def _set_active_message(self, job: PrintDispatchJob, message: str, *, phase: str = "preparing"):
