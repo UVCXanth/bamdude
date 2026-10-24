@@ -577,12 +577,40 @@ async def camera_snapshot(
     # The light for the whole answer — buffered, cached or fresh — so a
     # poller keeps it on between two frames. The capture requests below do
     # NOT name the printer: this lease already waited for the light.
-    from backend.app.services import camera_light
+    from backend.app.services import camera_capability, camera_light
 
+    external = printer.external_camera_enabled and printer.external_camera_url
+    if not external and camera_capability.skip_builtin_capture(printer_id, printer.ip_address, printer.access_code):
+        # The printer says it has no built-in camera (PR #95): only a frame already here may answer, chosen
+        # BEFORE the light is waited for — a cache that ages out meanwhile must never become a fresh capture.
+        reuse = _reusable_frame(printer_id)
+        if reuse is None:  # no light, no worker, no temp file
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to capture camera frame. Ensure printer is on and camera is enabled.",
+            )
+        delivery, frame = reuse
+        async with camera_light.held(printer_id, "snapshot", hold=camera_light.hold_for_poll(poll)) as lease:
+            if lease is not None:
+                await lease.settle()
+            camera_metrics.remember_delivery(printer_id, delivery)
+            return _snapshot_response(printer_id, frame)
     async with camera_light.held(printer_id, "snapshot", hold=camera_light.hold_for_poll(poll)) as lease:
         if lease is not None:
             await lease.settle()
         return await _snapshot_from(printer_id, printer)
+
+
+def _reusable_frame(printer_id: int) -> tuple[str, bytes] | None:
+    """A frame already here for a built-in camera — the live stream's buffer, else a recent snapshot — with how
+    it is delivered; None when a fresh capture would be needed."""
+    buffered = try_get_active_buffered_frame(printer_id)
+    if buffered is not None:
+        return "live_buffer", buffered
+    cached = _get_cached_snapshot(printer_id)
+    if cached is not None:
+        return "snapshot_cache", cached
+    return None
 
 
 async def _snapshot_from(printer_id: int, printer):
@@ -631,15 +659,11 @@ async def _snapshot_from(printer_id: int, printer):
     # viewer's stream. Falls through to fresh capture when no viewer is
     # attached (snapshot is user-initiated single-shot; that's fine).
     # Upstream Bambuddy #1271 / commit c097140e.
-    buffered = try_get_active_buffered_frame(printer_id)
-    if buffered is not None:
-        camera_metrics.remember_delivery(printer_id, "live_buffer")
-        return _snapshot_response(printer_id, buffered)
-
-    cached = _get_cached_snapshot(printer_id)
-    if cached is not None:
-        camera_metrics.remember_delivery(printer_id, "snapshot_cache")
-        return _snapshot_response(printer_id, cached)
+    reuse = _reusable_frame(printer_id)
+    if reuse is not None:
+        delivery, frame = reuse
+        camera_metrics.remember_delivery(printer_id, delivery)
+        return _snapshot_response(printer_id, frame)
 
     # Create temporary file for the snapshot
     import os

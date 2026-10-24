@@ -443,10 +443,20 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
     does the capture: a request that names its printer holds the light for
     the frame and waits for the printer to confirm it before the capture
     (services/camera_light — off unless the farm or the printer asks for it).
+
+    A built-in request for a printer whose live client said it has no camera is answered empty before any of
+    that (services/camera_capability) — except a diagnosis, which the operator asked for and which really tries.
     """
 
-    from backend.app.services import camera_light
+    from backend.app.services import camera_capability, camera_light
 
+    if (
+        request.kind == "builtin"
+        and request.printer_id is not None
+        and request.purpose != "diagnose"
+        and camera_capability.skip_builtin_capture(request.printer_id, request.ip_address, request.access_code)
+    ):
+        return CameraCaptureResult(frame=None, source=None)
     async with camera_light.held(request.printer_id, request.purpose, hold=request.hold) as lease:
         if lease is not None:
             await lease.settle()

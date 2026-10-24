@@ -1554,6 +1554,9 @@ class PrinterState:
     store_to_sdcard: bool = False  # Store sent files on SD card (home_flag bit 11)
     timelapse: bool = False  # Timelapse recording active
     ipcam: bool = False  # Live view / camera streaming enabled
+    # ``print.ipcam.ipcam_dev``, the printer's own word on its built-in camera: True for "1", False for "0", None
+    # unknown — any other value, never reported on this connection (services/camera_capability, PR #95).
+    ipcam_dev: bool | None = None
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
     door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1 family, stat bit 23 on X2D)
@@ -2252,6 +2255,8 @@ class BambuMQTTClient:
         self.serial_number = serial_number
         self.access_code = access_code
         self.model = model
+        # One log line per state of ``state.ipcam_dev`` when a capture is skipped for it (camera_capability).
+        self.builtin_camera_skip_logged = False
         self.on_state_change = on_state_change
         self.on_print_start = on_print_start
         self.on_print_complete = on_print_complete
@@ -2912,6 +2917,8 @@ class BambuMQTTClient:
             self.state.feed_telemetry = FeedTelemetry()
             self.state.fila_switch = FilaSwitchState()
             self.state.fts_pending_confirmation = previous_fts
+            self.state.ipcam_dev = None  # this connection has not said yet whether there is a camera
+            self.builtin_camera_skip_logged = False
             self.state.connected = True
 
             # ⚠️ Anything paho is still retrying was published BEFORE this link
@@ -3143,6 +3150,8 @@ class BambuMQTTClient:
                 self.state.feed_telemetry = FeedTelemetry()
                 self.state.fila_switch = FilaSwitchState()
                 self.state.fts_pending_confirmation = previous_fts
+                self.state.ipcam_dev = None  # as on connect: this connection's camera is not known yet
+                self.builtin_camera_skip_logged = False
             self.state.connected = True
 
             # Intercept request-topic messages (print commands from slicer/BamDude)
@@ -6849,6 +6858,15 @@ class BambuMQTTClient:
             if isinstance(ipcam_data, dict):
                 # Check ipcam_record field for live view status
                 self.state.ipcam = ipcam_data.get("ipcam_record") == "enable"
+                # Bambu Studio's reading (DeviceManager.cpp, has_ipcam): only when the field is present — a delta
+                # without it keeps the last word — and only from the printer's own status, never a command echo.
+                # Exactly the strings "1"/"0"; anything else is unknown, not "no camera".
+                if "ipcam_dev" in ipcam_data and is_printer_status_frame(data):
+                    reported = ipcam_data["ipcam_dev"]
+                    camera = True if reported == "1" else False if reported == "0" else None
+                    if camera is not self.state.ipcam_dev:
+                        self.builtin_camera_skip_logged = False  # a new state may be reported once again
+                    self.state.ipcam_dev = camera
                 # Check timelapse field (H2D sends it here, not in xcam)
                 if "timelapse" in ipcam_data:
                     timelapse_enabled = ipcam_data.get("timelapse") == "enable"
