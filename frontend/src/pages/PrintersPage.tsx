@@ -1580,7 +1580,7 @@ function AmsNameHoverCard({
   return (
     <div
       ref={triggerRef}
-      className="relative inline-block"
+      className="relative inline-block min-w-0 max-w-full"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -5072,18 +5072,20 @@ const PrinterCard = memo(function PrinterCard({
 
                   {/* AMS Content */}
                   <div className="space-y-3">
-                    {/* Row 1-2: Regular AMS (4-tray) in 2-column grid */}
+                    {/* Fit whole AMS units to the card width, not the viewport. The minimum
+                        is counted in --pc-i4 (1rem at M), so it grows with the card scale
+                        together with the slots it has to hold. */}
                     {regularAms.length > 0 && (
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,calc(var(--pc-i4,1rem)*14)),1fr))] gap-3">
                         {regularAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
 
                         return (
-                          <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+                          <div key={ams.id} className="min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
                             {/* Header: Label + Stats (no icon) */}
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-2">
+                              <div className="flex min-w-0 max-w-full items-center gap-1.5">
                                 {/* AMS name - hover to see serial, firmware, and edit friendly name */}
                                 <AmsNameHoverCard
                                   ams={ams}
@@ -5093,7 +5095,7 @@ const PrinterCard = memo(function PrinterCard({
                                   canEdit={hasPermission('printers:update')}
                                   onSaved={refetchAmsLabels}
                                 >
-                                  <span className="text-[length:var(--pc-t10,10px)] text-white font-medium cursor-default select-none">
+                                  <span className="text-[length:var(--pc-t10,10px)] text-white font-medium cursor-default select-none block truncate">
                                     {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
                                   </span>
                                 </AmsNameHoverCard>
@@ -5107,7 +5109,7 @@ const PrinterCard = memo(function PrinterCard({
                                 ) : null}
                               </div>
                               {(ams.humidity != null || ams.temp != null) && (
-                                <div className="flex items-center gap-1.5 max-[550px]:flex-col max-[550px]:items-start">
+                                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
                                   {ams.humidity != null && (
                                     <HumidityIndicator
                                       humidity={ams.humidity}
@@ -5596,9 +5598,9 @@ const PrinterCard = memo(function PrinterCard({
                     </div>
                   )}
 
-                    {/* Row 3: HT AMS + External spools (same style as regular AMS, 4 across) */}
+                    {/* Single-slot units wrap without squeezing their contents. */}
                     {(htAms.length > 0 || status.vt_tray.length > 0) && (
-                      <div className="grid grid-cols-4 gap-3">
+                      <div className="flex flex-wrap items-start gap-3">
                       {/* HT AMS units - name/badge top, slot left, stats right */}
                       {htAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
@@ -5747,7 +5749,7 @@ const PrinterCard = memo(function PrinterCard({
                         );
 
                         return (
-                          <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+                          <div key={ams.id} className="w-[calc(var(--pc-i4,1rem)*10)] max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
                             {/* Row 1: Label + Nozzle + Drying */}
                             <div className="flex items-center gap-1 mb-2">
                               {/* AMS name - hover to see serial, firmware, and edit friendly name */}
@@ -6047,7 +6049,7 @@ const PrinterCard = memo(function PrinterCard({
                       })}
                       {/* External spool(s) - grouped in one card like regular AMS */}
                       {status.vt_tray.length > 0 && showExternalSpool && (
-                        <div className={`p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'max-w-[50%]' : ''}`}>
+                        <div className={`max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'w-[calc(var(--pc-i4,1rem)*6)]' : 'w-[calc(var(--pc-i4,1rem)*10)]'}`}>
                           <div className="flex items-center justify-center gap-1 mb-2">
                             <span className="text-[length:var(--pc-t10,10px)] text-white font-medium">{t('printers.external')}</span>
                           </div>
