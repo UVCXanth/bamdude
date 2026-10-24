@@ -1612,7 +1612,8 @@ export interface Archive {
   // NULL for external prints. Dedup groups by `effective_hash`.
   source_content_hash: string | null;
   // Patch identifiers applied before upload (v1: informational).
-  applied_patches: string[] | null;
+  /** Patches applied before upload: identifiers and descriptor objects, as the dispatch wrote them. */
+  applied_patches: Array<string | Record<string, unknown>> | null;
   // Group key for duplicate detection: source_content_hash ?? content_hash.
   effective_hash: string | null;
   thumbnail_path: string | null;

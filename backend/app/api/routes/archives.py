@@ -33,6 +33,7 @@ from backend.app.models.product import ProductPart
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
+    AppliedPatch,
     ArchiveFilterOptions,
     ArchiveResponse,
     ArchiveUpdate,
@@ -128,8 +129,9 @@ _ARCHIVE_MEDIA_READ = Depends(
 )
 
 
-def _parse_applied_patches(raw: str | None) -> list[str] | None:
-    """Decode the ``applied_patches`` TEXT column into a list for response."""
+def _parse_applied_patches(raw: str | None) -> list[AppliedPatch] | None:
+    """Decode the ``applied_patches`` TEXT column into a list for response — identifiers and descriptor objects
+    as stored; NULL, empty, broken or non-array JSON is None."""
     if not raw:
         return None
     try:

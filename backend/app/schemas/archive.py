@@ -1,11 +1,15 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
 from backend.app.schemas.timelapse import TimelapseStorage
+
+# One entry of ``applied_patches``: a plain identifier ("mesh_mode_fast_check_off") or a descriptor object
+# ({"name": "gcode_injection", "plate_id": N}), kept exactly as the dispatch wrote it (issue #97).
+AppliedPatch = str | dict[str, Any]
 
 
 class ArchivePartRow(BaseModel):
@@ -119,8 +123,8 @@ class ArchiveResponse(BaseModel):
     # Hash of the UNPATCHED source (library file or prior archive) for
     # BamDude-dispatched prints; NULL for external prints.
     source_content_hash: str | None = None
-    # JSON array of patch identifiers applied before upload (v1: informational).
-    applied_patches: list[str] | None = None
+    # JSON array of the patches applied before upload — identifiers and descriptor objects (informational).
+    applied_patches: list[AppliedPatch] | None = None
     # Effective hash for dedup queries: source_content_hash or content_hash.
     # Computed at response time in the route; frontend groups by this.
     effective_hash: str | None = None

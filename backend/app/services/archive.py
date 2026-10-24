@@ -866,7 +866,7 @@ class ArchiveService:
         *,
         project_line_id: int | None = None,
         source_content_hash: str | None = None,
-        applied_patches: list[str] | None = None,
+        applied_patches: list[str | dict] | None = None,
         subtask_id: str | None = None,
         library_file_id: int | None = None,
         swap_macro_events_pending: list[str] | None = None,
