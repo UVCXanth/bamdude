@@ -294,7 +294,7 @@ function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   const bgColor = mode === 'dark' ? '#1a4d2e' : '#e7f5e9';
   return (
     <span
-      className="inline-flex items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
+      className="inline-flex shrink-0 items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
       style={{ backgroundColor: bgColor, color: '#00ae42' }}
       title={side === 'L' ? t('common.left') : t('common.right')}
     >
@@ -312,7 +312,7 @@ function InletBadge({ inlet, title }: { inlet: 'A' | 'B'; title: string }) {
   const bgColor = mode === 'dark' ? '#1e3a5f' : '#e3f0fb';
   return (
     <span
-      className="inline-flex items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
+      className="inline-flex shrink-0 items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
       style={{ backgroundColor: bgColor, color: '#3b82f6' }}
       title={title}
       data-testid="ams-inlet-badge"
@@ -5761,7 +5761,7 @@ const PrinterCard = memo(function PrinterCard({
                                 canEdit={hasPermission('printers:update')}
                                 onSaved={refetchAmsLabels}
                               >
-                                <span className="text-[length:var(--pc-t10,10px)] text-white font-medium cursor-default select-none">
+                                <span className="text-[length:var(--pc-t10,10px)] text-white font-medium cursor-default select-none block truncate">
                                   {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
                                 </span>
                               </AmsNameHoverCard>
@@ -5776,7 +5776,7 @@ const PrinterCard = memo(function PrinterCard({
                               {/* Drying button for HT AMS. Screen-only models (P1 series)
                                   keep the control but can't be commanded (#2533). */}
                               {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
-                                <div className="relative ml-auto">
+                                <div className="relative ml-auto shrink-0">
                                   <button
                                     disabled={!!status.drying_screen_only}
                                     onClick={(e) => {
