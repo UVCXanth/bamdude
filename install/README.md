@@ -142,6 +142,14 @@ What a reason means:
 | `helper_unproven` | An update from Settings could not prove an earlier run of the helper ended: restart BamDude, then update again or run `enable` |
 | `pip_timeout`, `pip_failed` | The download did not complete: check the network, then run `enable` |
 
+When an install or update finds a half-finished folder of an earlier run of
+the component and cannot prove that run has ended, it keeps the folder for a
+later install. The log then has one warning per such folder, starting
+`bamdude-step-staging-kept`, with the reason as a closed code: the helper
+prints it to its error output, and an update from Settings writes it to
+BamDude's log. It names no path or user, and nothing about the folder changes
+because of it.
+
 Updates keep an enabled component current: `update.sh` and an update from
 Settings refresh it, and `update.sh` removes an older version only when it can
 prove the service stopped (cgroup v2: the unit's group is empty); otherwise it
