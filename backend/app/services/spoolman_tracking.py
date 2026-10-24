@@ -1043,7 +1043,12 @@ async def _report_spool_usage_split_by_tray_changes(
     attributed here is not double-charged there.
     """
     from backend.app.utils.tray_split import compute_layer_segment_grams
-    from backend.app.utils.usage_attribution import add_autoswitch_purge, feed_intervals
+    from backend.app.utils.usage_attribution import (
+        UNKNOWN_FEED,
+        add_autoswitch_purge,
+        feed_intervals,
+        split_is_measured,
+    )
 
     spools_updated = 0
     handled_global_tray_ids: set[int] = set()
@@ -1059,6 +1064,18 @@ async def _report_spool_usage_split_by_tray_changes(
             continue
 
         props = (filament_properties or {}).get(str(slot_id)) or (filament_properties or {}).get(slot_id) or {}
+        if not split_is_measured(intervals, slot_id, layer_usage, total_layers, last_layer_num):
+            # Part of the feed is unknown and nothing tells how to divide the grams: an equal share
+            # would be a guess — the slot is not recorded (post-rebuild F6).
+            logger.info(
+                "[SPOOLMAN] %s: slot %d has an unknown feed and no layer count — %.2fg not recorded",
+                method_label,
+                slot_id,
+                float(total_weight),
+            )
+            if uncharged_out is not None:
+                uncharged_out.append((UNKNOWN_FEED, round(float(total_weight), 2)))
+            continue
         interval_grams = compute_layer_segment_grams(
             boundary_layers=[iv.start_layer for iv in intervals],
             total_weight=float(total_weight),
@@ -1294,15 +1311,15 @@ async def _report_partial_usage(
 
     partial_tray_changes: list[tuple[int, int]] = []
     partial_journal: list = []
-    if state is not None and len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
+    if len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
         try:
             partial_journal = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
         except Exception as exc:
             logger.debug("[SPOOLMAN] Journal load failed for partial report: %s", exc)
-        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5).
-        partial_tray_changes = normalize_tray_changes(
-            chronology_with_journal(list(getattr(state, "tray_change_log", []) or []), partial_journal)
-        )
+        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5) —
+        # and with no printer state at all, the journal is the chronology (F6).
+        memory = list(getattr(state, "tray_change_log", []) or []) if state is not None else None
+        partial_tray_changes = normalize_tray_changes(chronology_with_journal(memory, partial_journal))
 
     async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
         if not chronology_splits(partial_tray_changes):
@@ -1617,20 +1634,20 @@ async def report_usage(printer_id: int, archive_id: int):
             from backend.app.services.printer_manager import printer_manager as _pm
 
             _state = _pm.get_status(printer_id)
-            if _state is not None:
-                # Normalized the same way as usage_tracker: a same-layer blip
-                # (BMCU tray_now=254 on every load) fed nothing.
-                from backend.app.utils.usage_attribution import (
-                    chronology_with_journal,
-                    normalize_tray_changes,
-                    sole_feeding_tray,
-                )
+            # Normalized the same way as usage_tracker: a same-layer blip
+            # (BMCU tray_now=254 on every load) fed nothing. The journal's
+            # unknown feed governs the memory (F5); with no printer state at
+            # all, the journal is the chronology (F6).
+            from backend.app.utils.usage_attribution import (
+                chronology_with_journal,
+                normalize_tray_changes,
+                sole_feeding_tray,
+            )
 
-                raw_tray_log = chronology_with_journal(
-                    list(getattr(_state, "tray_change_log", []) or []), journal_events
-                )
-                tray_changes = normalize_tray_changes(raw_tray_log)
-                sole_tray = sole_feeding_tray(raw_tray_log)
+            memory = list(getattr(_state, "tray_change_log", []) or []) if _state is not None else None
+            raw_tray_log = chronology_with_journal(memory, journal_events)
+            tray_changes = normalize_tray_changes(raw_tray_log)
+            sole_tray = sole_feeding_tray(raw_tray_log)
         _total_layers = int(getattr(_state, "total_layers", 0) or 0) if _state else 0
         _current_layer = int(getattr(_state, "layer_num", 0) or 0) if _state else 0
         # For the linear-fallback denominator when total_layers is 0 (P1S

@@ -1880,7 +1880,7 @@ async def _track_from_3mf(
     tray_changes: list[tuple[int, int]] = []  # [(global_tray_id, layer_num), ...]
     sole_tray: int | None = None
     state = printer_manager.get_status(printer_id) if len(nonzero_slots) == 1 else None
-    if state is not None:
+    if len(nonzero_slots) == 1:
         # Normalized: an entry followed by another on the same layer fed nothing
         # the layer number can see (a BMCU reports tray_now=254 for a moment on
         # every load). Read at full resolution, those blips sent a same-tray
@@ -1892,8 +1892,10 @@ async def _track_from_3mf(
             sole_feeding_tray,
         )
 
-        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5).
-        raw_tray_log = chronology_with_journal(getattr(state, "tray_change_log", []) or [], journal_events)
+        # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5) —
+        # and with no printer state at all, the journal is the chronology (F6).
+        memory = (getattr(state, "tray_change_log", []) or []) if state is not None else None
+        raw_tray_log = chronology_with_journal(memory, journal_events)
         tray_changes = normalize_tray_changes(raw_tray_log)
         sole_tray = sole_feeding_tray(raw_tray_log)
     elif len(nonzero_slots) > 1:
@@ -2028,9 +2030,27 @@ async def _track_from_3mf(
             split_props = analysis.filament_properties.get(slot_id, {})
 
             from backend.app.utils.tray_split import compute_layer_segment_grams
-            from backend.app.utils.usage_attribution import UNKNOWN_FEED, add_autoswitch_purge, feed_intervals
+            from backend.app.utils.usage_attribution import (
+                UNKNOWN_FEED,
+                add_autoswitch_purge,
+                feed_intervals,
+                split_is_measured,
+            )
 
             layer_intervals = feed_intervals(tray_changes, journal_events or [])
+            split_total_layers = (state.total_layers if state else 0) or 0
+            if not split_is_measured(layer_intervals, slot_id, split_layer_usage, split_total_layers, last_layer_num):
+                # Part of the feed is unknown and nothing tells how to divide the grams: an equal
+                # share would be a guess — the slot is not recorded (post-rebuild F6).
+                logger.info(
+                    "[UsageTracker] 3MF split: slot %d has an unknown feed and no layer count — %.1fg not recorded",
+                    slot_id,
+                    total_weight,
+                )
+                handled_trays.update(_every_ams_tray_key(state))
+                if uncharged is not None:
+                    uncharged.append((UNKNOWN_FEED, round(float(total_weight), 2)))
+                continue
             interval_grams = compute_layer_segment_grams(
                 boundary_layers=[iv.start_layer for iv in layer_intervals],
                 total_weight=total_weight,
@@ -2038,7 +2058,7 @@ async def _track_from_3mf(
                 layer_usage=split_layer_usage,
                 density=split_props.get("density", 1.24),
                 diameter=split_props.get("diameter", 1.75),
-                total_layers=(state.total_layers if state else 0) or 0,
+                total_layers=split_total_layers,
                 last_layer_num=last_layer_num,
             )
             # A purge whose backup normalized away comes back as an interval of

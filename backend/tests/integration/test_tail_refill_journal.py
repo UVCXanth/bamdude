@@ -2246,8 +2246,9 @@ async def a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, prin
     assert await seed_through_main(printer.id, client)
 
 
-async def internal_charges(db_session, printer, archive, client):
-    """The internal writer at completion, as Codex's r4 probe runs it: grams per reel, not recorded."""
+async def internal_charges(db_session, printer, archive, client, *, last_layer_num=0):
+    """The internal writer at completion, as Codex's r4 probe runs it: grams per reel, not recorded.
+    ``last_layer_num``: the completion's last layer, as ``on_print_complete`` passes it."""
     from backend.app.services.usage_tracker import _track_from_3mf
 
     archived = await db_session.get(PrintArchive, archive.id)
@@ -2262,7 +2263,7 @@ async def internal_charges(db_session, printer, archive, client):
         file_analysis=SimpleNamespace(
             filament_usage=[{"slot_id": 1, "used_g": 10.0}], layer_usage=None, filament_properties={}
         ),
-        analysis_attempted=True, uncharged=uncharged, journal_events=events,
+        analysis_attempted=True, uncharged=uncharged, journal_events=events, last_layer_num=last_layer_num,
     )  # fmt: skip
     charges = {}
     for row in result:
@@ -2820,3 +2821,126 @@ async def test_the_next_tray_report_after_an_unknown_feed_stated_without_a_clien
 
     if next_report == "the_same_tray":  # B, bound since the held assignment, from 100
         assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == (2.0, 5.0, 3.0)
+
+
+# ── F6-R1 · no client at the writer either: the journal is the chronology (review r6) ──
+
+
+NO_CLIENT = SimpleNamespace(state=None)
+
+
+@pytest.mark.parametrize(
+    "last_layer, later_feed, expected",
+    [
+        (200, False, (2.0, 0.0, 8.0)),  # the layer count is known: the start stays A's
+        (0, False, (0.0, 0.0, 10.0)),  # nothing to divide by: nothing invented, all not recorded
+        (200, True, (2.0, 5.0, 3.0)),  # a feed journaled after the marker is charged from there
+    ],
+)
+async def test_the_internal_writer_reads_the_journal_when_there_is_no_client_at_all(
+    db_session, incident, monkeypatch, last_layer, later_feed, expected
+):
+    """F6-R1: the unknown feed reached the journal while the client was away, and it is still
+    away when the print is charged (no printer state at all). The journal is the chronology:
+    the start's reel keeps what came before the marker, a feed journaled later keeps its own
+    stretch, and when no layer count tells how to divide the grams nothing is invented — the
+    slot goes not recorded, never to the reel in the slot now."""
+    printer, archive, old, new = incident
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    monkeypatch.setattr("backend.app.services.usage_tracker._warn_if_low_stock", AsyncMock())
+    await a_replay_settled_while_the_client_is_away(db_session, printer, new, client, monkeypatch)
+    if later_feed:  # the client journaled the slot feeding again at 100, then went away
+        await journal.record_tray_change(
+            db_session, printer_id=printer.id, archive_id=archive.id, tray=TRAY, layer_num=100, ids=(new.id, None)
+        )
+        await db_session.commit()
+    with every_manager_names(None):
+        charges, not_recorded = await internal_charges(
+            db_session, printer, archive, NO_CLIENT, last_layer_num=last_layer
+        )
+
+    assert (charges.get(old.id, 0.0), charges.get(new.id, 0.0), not_recorded) == expected
+
+
+@pytest.mark.parametrize("measured", [True, False])
+async def test_spoolman_reads_the_journal_when_there_is_no_client_at_all(
+    db_session, printer_factory, monkeypatch, measured
+):
+    """F6-R1 on Spoolman's completion: no printer state at all. With the print's per-layer
+    G-code the stretch before the marker is the start's reel and the rest not recorded; with
+    nothing to divide by, the whole slot is not recorded — never charged to the slot's reel."""
+    from backend.app.main import _release_unseeded_journal
+    from backend.app.services.spoolman_tracking import report_usage
+    from backend.app.utils.usage_attribution import UNKNOWN_FEED
+    from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+    printer, archive = await a_print(db_session, printer_factory)
+    await bind_spoolman(db_session, printer.id, 11)
+    await journal.record_event(
+        db_session, printer_id=printer.id, archive_id=archive.id, layer_num=0, event=EVENT_START,
+        global_tray_id=TRAY, spoolman_spool_id=11,
+    )  # fmt: skip
+    client = a_joined_client_feeding_a_tail()
+    client.state.tray_change_log = [(TRAY, 0)]
+    failing_replay_writes(monkeypatch, 2)
+    with every_manager_names(client):
+        async with journal.journal_lock(printer.id):
+            await journal.ensure_tail_recorded(
+                db_session, printer_id=printer.id, ams_id=AMS, tray_id=SLOT, new_spoolman_spool_id=12
+            )
+            await bind_spoolman(db_session, printer.id, 12)
+        a_report(client, TRAY, 45, "PLA")
+        assert await seed_through_main(printer.id, client)
+    with every_manager_names(None):
+        await _release_unseeded_journal(printer.id)
+    db_session.expire_all()
+    events = await journal.load_events(db_session, printer.id, archive.id)
+
+    tracking = SimpleNamespace(
+        filament_usage=[{"slot_id": 1, "used_g": 10.0}],
+        ams_trays={TRAY: {"tray_uuid": "", "tray_type": "PLA"}},
+        slot_to_tray=[TRAY],
+        tray_remain_start={},
+        # The G-code's cumulative extrusion per layer (one unit a layer), as the 3MF analysis stores it.
+        layer_usage={str(layer): {"0": float(layer)} for layer in range(201)} if measured else {},
+        filament_properties={},
+    )
+    spoolman = AsyncMock()
+    spoolman.find_spool_by_tag = AsyncMock(return_value=None)
+    spoolman.get_spool = AsyncMock(side_effect=lambda spool_id: {"id": spool_id, "filament": {}})
+    spoolman.use_spool = AsyncMock()
+    notify = AsyncMock()
+    with (
+        patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(_make_db(tracking))),
+        patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="true")),
+        patch(
+            "backend.app.services.spoolman_tracking._get_spoolman_client_with_fallback",
+            AsyncMock(return_value=spoolman),
+        ),
+        patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
+        patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
+        patch("backend.app.services.spoolman_tracking._apply_spool_colors_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
+        patch("backend.app.services.spoolman_tracking._settle_charges", AsyncMock()),
+        patch(
+            "backend.app.services.spoolman_tracking._apply_runout_zero_corrections_spoolman",
+            AsyncMock(return_value=0),
+        ),
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
+        patch(
+            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+            AsyncMock(return_value=12),
+        ),
+    ):
+        pm.get_status.return_value = None
+        await report_usage(printer_id=printer.id, archive_id=archive.id)
+
+    charged = {c.args[0]: c.args[1] for c in spoolman.use_spool.await_args_list}
+    if measured:
+        assert charged == {11: 2.0}
+        assert notify.await_args.args[1] == [(UNKNOWN_FEED, 8.0)]
+    else:
+        assert charged == {}
+        assert notify.await_args.args[1] == [(UNKNOWN_FEED, 10.0)]

@@ -77,9 +77,18 @@ def chronology_with_journal(
     recorded after the marker — the next real feed closes the stretch; what the stale memory says
     about it is not believed. When the memory holds the marker, the tray changes after it are the
     memory's and the journal's together: a later feed the journal recorded is never hidden.
-    """
-    from backend.app.models.print_usage_event import EVENT_TRAY_CHANGE
 
+    ``tray_changes`` None: there is no memory at all (no printer state, post-rebuild F6) — the
+    journal is the chronology, its start and its tray changes in journal order.
+    """
+    from backend.app.models.print_usage_event import EVENT_START, EVENT_TRAY_CHANGE
+
+    if tray_changes is None:
+        tray_changes = [
+            (e.global_tray_id, e.layer_num)
+            for e in sorted(journal_events or [], key=lambda e: e.id)
+            if e.event in (EVENT_START, EVENT_TRAY_CHANGE) and e.global_tray_id is not None
+        ]
     chronology = [tuple(entry) for entry in (tray_changes or [])]
     memory = set(chronology)  # what the client's memory itself holds, before any reconciling
     events = sorted(
@@ -103,6 +112,25 @@ def chronology_with_journal(
         after.sort(key=lambda entry: entry[1])  # stable: within a layer, the memory's order first
         chronology = [*before, unknown, *after]
     return chronology
+
+
+def split_is_measured(
+    intervals: list[FeedInterval], slot_id: int, layer_usage, total_layers: int, last_layer_num: int
+) -> bool:
+    """Can a slot's grams be divided between ``intervals`` from facts (post-rebuild F6)?
+
+    The slot's own G-code progress, or a layer count to take a share of, measures each interval;
+    without either, ``tray_split.compute_layer_segment_grams`` falls back to equal shares — a
+    guess. A guess is never made for a chronology that states part of the feed unknown: the
+    caller reports the slot not recorded instead.
+    """
+    from backend.app.utils.threemf_tools import slot_progress_fraction
+
+    if not any(iv.tray == UNKNOWN_FEED for iv in intervals) or len(intervals) < 2:
+        return True
+    if layer_usage and slot_progress_fraction(layer_usage, slot_id - 1, 0) is not None:
+        return True
+    return int(total_layers or 0) > 0 or int(last_layer_num or 0) > 0
 
 
 def normalize_tray_changes(tray_changes: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
