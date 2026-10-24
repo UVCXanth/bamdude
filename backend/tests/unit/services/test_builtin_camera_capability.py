@@ -70,6 +70,18 @@ def test_a_new_connection_starts_from_unknown():
     assert client.state.ipcam_dev is None
 
 
+def test_a_link_recovered_by_its_first_message_starts_from_unknown_too():
+    """The other place a connection begins: a report arriving while the link counted as down."""
+    import json
+
+    client = _client(False, connected=False)
+    client.builtin_camera_skip_logged = True
+    message = MagicMock(topic="", payload=json.dumps({"print": {"command": "push_status"}}).encode())
+    client._on_message(None, None, message)
+    assert client.state.connected is True
+    assert client.state.ipcam_dev is None and client.builtin_camera_skip_logged is False
+
+
 # --- the one decision, over the live client of this very configuration --------------------------------------------
 
 
