@@ -498,6 +498,43 @@ def _drop_run(records: Path) -> None:
 
 
 _PROVEN_ENDS = (subprocess.TimeoutExpired, TreeStopped, RecordUnwritable, SpawnFailed, TreeFailed)
+_RELAYED_EVENTS = 32
+
+
+def _relay_staging_events(stderr: str | None, label: str, run_id: str) -> None:
+    """The CAD helper's "staging kept" events (``step_runtime.staging_kept_event``) into this process's log —
+    exactly that event, decoded and re-written from its closed fields; every other byte of the child's stderr stays
+    in its bounded tail, never passed on (STEP ownership spec S-R6)."""
+    from backend.app import step_runtime
+
+    relayed = 0
+    for line in (stderr or "").splitlines():
+        event = step_runtime.parse_staging_kept(line)
+        if event is None:
+            continue
+        logger.warning(
+            "%s run=%s CAD staging kept op=%s outer=%s inner=%s ended=%d elapsed_ms=%d",
+            label,
+            run_id,
+            event["op"],
+            event["outer"],
+            event["inner"],
+            event["ended"],
+            event["elapsed_ms"],
+        )
+        relayed += 1
+        if relayed >= _RELAYED_EVENTS:
+            return
+
+
+def _stderr_of(task: asyncio.Future) -> str:
+    """What the run's stderr tail holds, where ``run_tree`` gives one: its result, or the timeout it raised."""
+    exc = task.exception()
+    if exc is None:
+        return task.result().stderr or ""
+    if isinstance(exc, subprocess.TimeoutExpired) and isinstance(exc.stderr, str):
+        return exc.stderr
+    return ""
 
 
 def _settled(task: asyncio.Future, records: Path) -> tuple[str, int | None, str]:
@@ -581,6 +618,10 @@ async def _run_owned(cmd, owner_root: Path, timeout: float, cwd, env, label: str
         raise
     except Exception:
         pass  # the task's own exception: settled below
+    try:
+        _relay_staging_events(_stderr_of(task), label, run_id)
+    except Exception:  # noqa: BLE001 - diagnostics only: never the run's outcome
+        logger.debug("%s run=%s staging events could not be read", label, run_id)
     try:
         settled = _settled(task, records)
     except Exception:

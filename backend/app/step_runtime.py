@@ -24,6 +24,7 @@ import contextlib
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -757,8 +758,100 @@ def _platform_lock(root: Path, key: str, timeout: float):
 OWNER_RECORD = "owner.pid"
 INSTALLER = "installer"
 
+# Why a staging was kept, in one closed event per staging and call (STEP ownership spec S-R6): the outer reason
+# ``_writer_may_live`` gave, the inner reason of the token proof it ran, how many holders that very proof ended and
+# how long it took. Codes and numbers only — never a path, a token, a user, a command line or an exception's text.
+# The standalone helper writes it to stderr; the app's owned run relays exactly this event to its own log.
+logger = logging.getLogger("backend.app.step_runtime")  # one name, also when run as ``python -m``
+STAGING_KEPT = "bamdude-step-staging-kept"
+OUTER_CODES = (  # exact reasons first: "bootstrap record unreadable" also starts with "bootstrap "
+    ("bootstrap's boot unknown", "bootstrap_boot_unknown", True),
+    ("bootstrap record unreadable", "bootstrap_record_unreadable", True),
+    ("group scan unreadable", "group_scan_unreadable", True),
+    ("launch unreadable", "launch_unreadable", True),
+    ("an unreleased bootstrap not proven ended", "bootstrap_unreleased_unproven", True),
+    ("owner ", "owner_may_live", False),
+    ("bootstrap ", "bootstrap_may_live", False),
+    ("group member pid=", "group_member_alive", False),
+    ("survivor ", "survivor_may_live", False),
+)
+INNER_CODES = (
+    ("a possible holder unreadable", "holder_unreadable", True),
+    ("a holder's user unreadable", "holder_user_unreadable", True),
+    ("run owner names no user", "owner_names_no_user", True),
+    ("holder still running after its kill ", "holder_survived_kill", False),
+    ("holder access denied ", "holder_kill_denied", False),
+    ("holders still found after ", "holders_remain", False),
+)
+_EVENT_KEYS = frozenset({"v", "op", "outer", "inner", "ended", "elapsed_ms"})
+_EVENT_OPS = frozenset({"reclaim", "prune"})
+_EVENT_OUTER = frozenset({code for _, code, _ in OUTER_CODES} | {"unknown_reason"})
+_EVENT_INNER = frozenset({code for _, code, _ in INNER_CODES} | {"not_checked", "proven", "unknown_reason"})
+_EVENT_LIMITS = {"ended": 10_000, "elapsed_ms": 7 * 24 * 3600 * 1000}
 
-def _writer_may_live(staging: Path) -> str | None:
+
+def staging_reason_code(why: str, codes) -> str:
+    """The closed code of a reason ``_writer_may_live`` or ``_end_why`` gave; ``unknown_reason`` for any other."""
+    for text, code, exact in codes:
+        if why == text if exact else why.startswith(text):
+            return code
+    return "unknown_reason"
+
+
+def staging_kept_event(op: str, why: str, proof: tuple[str | None, int] | None, elapsed: float) -> str:
+    """The one line saying why ``op`` kept a staging: ``proof`` is what the token proof answered (``(why, ended)``),
+    None when it never ran."""
+    if proof is None:
+        inner, ended = "not_checked", 0
+    else:
+        inner = "proven" if proof[0] is None else staging_reason_code(proof[0], INNER_CODES)
+        ended = proof[1]
+    event = {
+        "v": 1,
+        "op": op,
+        "outer": staging_reason_code(why, OUTER_CODES),
+        "inner": inner,
+        "ended": min(max(int(ended), 0), _EVENT_LIMITS["ended"]),
+        "elapsed_ms": min(max(int(elapsed * 1000), 0), _EVENT_LIMITS["elapsed_ms"]),
+    }
+    return f"{STAGING_KEPT} {json.dumps(event, sort_keys=True, separators=(',', ':'))}"
+
+
+def parse_staging_kept(line: str) -> dict | None:
+    """The event, only when ``line`` is exactly one: the closed keys, codes and bounded whole numbers. Anything
+    else — another line, a damaged or a foreign one — is None, never text to pass on."""
+    prefix = STAGING_KEPT + " "
+    if not line.startswith(prefix) or len(line) > 512:
+        return None
+    try:
+        event = json.loads(line[len(prefix) :])
+    except ValueError:
+        return None
+    if not isinstance(event, dict) or set(event) != _EVENT_KEYS or event["v"] != 1 or type(event["v"]) is not int:
+        return None
+    if event["op"] not in _EVENT_OPS or event["outer"] not in _EVENT_OUTER or event["inner"] not in _EVENT_INNER:
+        return None
+    for key, limit in _EVENT_LIMITS.items():
+        if type(event[key]) is not int or not 0 <= event[key] <= limit:
+            return None
+    return event
+
+
+def _keeps(staging: Path, op: str) -> str | None:
+    """``_writer_may_live`` at the point where a staging is kept or removed — and when it is kept, the one event
+    that says why, out of the very proof that decided. The log never changes what is kept."""
+    proof: list[tuple[str | None, int]] = []
+    began = time.monotonic()
+    why = _writer_may_live(staging, diagnostic=lambda answer, ended: proof.append((answer, ended)))
+    if why:
+        try:
+            logger.warning("%s", staging_kept_event(op, why, proof[-1] if proof else None, time.monotonic() - began))
+        except Exception:  # noqa: BLE001 - diagnostics only: a broken log keeps exactly what the proof kept
+            pass
+    return why
+
+
+def _writer_may_live(staging: Path, *, diagnostic=None) -> str | None:
     """Why a writer of this staging may still live; None only on a positive proof that none does (Codex A-R1).
 
     The installer writes its owner's record, then the launch's token (both before the spawn), then the
@@ -767,7 +860,8 @@ def _writer_may_live(staging: Path) -> str | None:
     keep the staging; another boot, no such process, another process under a recorded pid and a zombie prove an
     end. A launch without its bootstrap's record: that bootstrap never got its go, so once its owner is proven
     dead every holder of the token of the owner's user is ended. POSIX: the bootstrap led its own process group,
-    and every member must be positively gone too."""
+    and every member must be positively gone too. ``diagnostic`` hears the token proof's own answer when one runs
+    (``part_render_tree.end_launch_holders``); without it, everything answers as before."""
     from backend.app.services import part_render_tree as tree
     from backend.app.services.step_runtime_child import group_members
 
@@ -800,7 +894,7 @@ def _writer_may_live(staging: Path) -> str | None:
         token = tree.launch_token(staging, INSTALLER)
         if token is None:
             return "launch unreadable"
-        if not tree.end_launch_holders(token, 5, tree.recorded_user(owner)):
+        if not tree.end_launch_holders(token, 5, tree.recorded_user(owner), diagnostic=diagnostic):
             return "an unreleased bootstrap not proven ended"
     for survivor in staging.glob("survivor-*.pid"):
         why = tree.recorded_running(survivor)
@@ -817,7 +911,7 @@ def _reclaim_staging(own: Path) -> None:
     for path in own.iterdir():
         if not path.is_dir():
             continue
-        if _writer_may_live(path):
+        if _keeps(path, "reclaim"):
             continue
         shutil.rmtree(path, ignore_errors=True)
 
@@ -1011,7 +1105,7 @@ def prune(
                 for path in sorted(staging.iterdir()) if staging.is_dir() else []:
                     if not path.is_dir():
                         continue
-                    if _writer_may_live(path):
+                    if _keeps(path, "prune"):
                         keep("writer_may_live")
                     elif gone(path):
                         removed += 1
@@ -1135,5 +1229,13 @@ def main(argv: list[str] | None = None, *, runner=None, data_dir: Path = DATA) -
         return EXIT_FAILED
 
 
+def _log_to_stderr() -> None:
+    """The standalone helper's own log: its events alone on stderr, as their bare lines — stdout keeps its JSON."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+
 if __name__ == "__main__":
+    _log_to_stderr()
     raise SystemExit(main())

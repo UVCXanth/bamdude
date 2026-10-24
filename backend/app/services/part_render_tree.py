@@ -291,10 +291,12 @@ def launch_token(scope: Path, name: str) -> str | None:
     return _token(scope, name)
 
 
-def end_launch_holders(token: str, timeout: float, owner: int | str | None) -> bool:
+def end_launch_holders(token: str, timeout: float, owner: int | str | None, *, diagnostic=None) -> bool:
     """Once a launch's parent is proven dead: end every process of ``owner`` started with its token -- what never
-    got its record cannot have got its input -- and True only when a scan finds none left (``_end_why``)."""
-    return _end_launched(token, timeout, owner)
+    got its record cannot have got its input -- and True only when a scan finds none left (``_end_why``).
+    ``diagnostic(why, ended)``, when given, hears that very proof's answer -- for the caller's log, never a second
+    scan; it changes nothing that is ended or answered."""
+    return _end_launched(token, timeout, owner, diagnostic=diagnostic)
 
 
 def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
@@ -572,9 +574,12 @@ def _end_why(
     return f"holders still found after {_END_ROUNDS} rounds", ended  # still finding holders: not proven
 
 
-def _end_launched(token: str, timeout: float, owner: int | str | None) -> bool:
+def _end_launched(token: str, timeout: float, owner: int | str | None, *, diagnostic=None) -> bool:
     """``_end_why`` as a proof: True when a scan finds no holder left running."""
-    return _end_why(token, timeout, owner)[0] is None
+    why, ended = _end_why(token, timeout, owner)
+    if diagnostic is not None:
+        diagnostic(why, ended)
+    return why is None
 
 
 def _user_of(data: dict) -> int | str | None:
