@@ -280,6 +280,28 @@ def test_the_parent_relays_no_event_it_does_not_know_exactly(line, caplog):
     assert "SECRET" not in caplog.text
 
 
+def _with(field: str, value) -> str:
+    """A valid event with one closed field replaced — the keys stay exactly the event's."""
+    event = json.loads(sr.staging_kept_event("reclaim", "launch unreadable", None, 0.25).split(" ", 1)[1])
+    event[field] = value
+    return f"{sr.STAGING_KEPT} {json.dumps(event)}"
+
+
+@pytest.mark.parametrize("field", ["op", "outer", "inner"])
+@pytest.mark.parametrize("value", [[], {"SECRET": 1}, 7, None, True], ids=["list", "object", "number", "null", "bool"])
+def test_a_code_of_another_json_type_is_no_event_and_the_next_one_still_counts(field, value, caplog):
+    """Codex review ST-R1: the parser is total over JSON's own types, so a damaged line never ends the reading
+    of the lines after it."""
+    caplog.set_level(logging.DEBUG)
+    damaged = _with(field, value)
+    assert sr.parse_staging_kept(damaged) is None
+    valid = sr.staging_kept_event("prune", "launch unreadable", None, 0.25)
+    child._relay_staging_events(f"{damaged}\n{valid}\n", "CAD install", "run1")
+    [record] = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "op=prune" in record.getMessage() and "outer=launch_unreadable" in record.getMessage()
+    assert "SECRET" not in caplog.text
+
+
 def test_the_parent_relays_a_valid_event_and_nothing_around_it(caplog):
     caplog.set_level(logging.DEBUG)
     event = sr.staging_kept_event(
@@ -387,6 +409,20 @@ async def test_the_owned_run_relays_what_a_helper_that_timed_out_had_written(tmp
     assert run.outcome == "timeout" and time.monotonic() - began < 60
     [message] = _relayed(caplog)
     assert "outer=launch_unreadable" in message and "inner=not_checked" in message
+
+
+async def test_the_owned_run_relays_a_valid_event_after_a_damaged_one(tmp_path, caplog):
+    """Codex review ST-R1, through a real child: the damaged line is skipped, the next event still reaches the
+    parent's log, and the run's outcome is the child's own."""
+    caplog.set_level(logging.DEBUG)
+    damaged, valid = _with("outer", {"SECRET": 1}), sr.staging_kept_event("reclaim", "launch unreadable", None, 0.25)
+    script = tmp_path / "helper.py"
+    script.write_text(f"import sys\nprint({damaged!r}, file=sys.stderr)\nprint({valid!r}, file=sys.stderr)\n")
+    run = await _owned([sys.executable, str(script)], tmp_path / "owner")
+    assert run.outcome == "ok"
+    [message] = _relayed(caplog)
+    assert "outer=launch_unreadable" in message
+    assert "SECRET" not in caplog.text and "could not be read" not in caplog.text
 
 
 # --- S12: without a sink nothing changes, and the log decides nothing ---------------------------------------------

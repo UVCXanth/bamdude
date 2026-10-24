@@ -829,6 +829,8 @@ def parse_staging_kept(line: str) -> dict | None:
         return None
     if not isinstance(event, dict) or set(event) != _EVENT_KEYS or event["v"] != 1 or type(event["v"]) is not int:
         return None
+    if any(type(event[key]) is not str for key in ("op", "outer", "inner")):  # a list or an object is no code
+        return None
     if event["op"] not in _EVENT_OPS or event["outer"] not in _EVENT_OUTER or event["inner"] not in _EVENT_INNER:
         return None
     for key, limit in _EVENT_LIMITS.items():
