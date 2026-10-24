@@ -15,7 +15,7 @@ import logging
 import os
 import platform
 import random
-from datetime import date, datetime, time, timezone
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import func, select
@@ -24,6 +24,7 @@ from backend.app.core.config import APP_VERSION, TELEMETRY_DISABLED, TELEMETRY_R
 from backend.app.core.database import async_session
 from backend.app.core.install_id import get_install_id
 from backend.app.core.oidc_env import parse_bool
+from backend.app.core.timezones import day_bounds, server_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ async def _gt0(db, model, *where) -> bool:
     return (await _count(db, model, *where)) > 0
 
 
+def _utc_now() -> datetime:
+    """The current moment, aware UTC — the only clock a payload reads, and only once."""
+    return datetime.now(timezone.utc)
+
+
 async def _build_payload(db) -> dict | None:
     install_id = get_install_id()
     if not install_id:
@@ -131,7 +137,13 @@ async def _build_payload(db) -> dict | None:
     from backend.app.models.virtual_printer import VirtualPrinter
 
     failure_states = ["failed", "aborted", "cancelled", "stopped"]
-    start_of_today = datetime.combine(date.today(), time.min, tzinfo=timezone.utc)
+    # One day of the server's own zone (TZ; UTC when unset), read once before the first query: the
+    # snapshot is keyed by that day and its usage counts the archives created within it, so a clock
+    # that passes midnight during the awaits below moves neither (telemetry-day-window spec).
+    zone = server_timezone()
+    today = _utc_now().astimezone(zone).date()
+    day_start, day_end = day_bounds(today, zone)
+    created_today = (PrintArchive.created_at >= day_start, PrintArchive.created_at < day_end)
 
     counts = {
         "archives": await _count(db, PrintArchive),
@@ -159,19 +171,15 @@ async def _build_payload(db) -> dict | None:
     # The outcome classes every statistic asks (post-rebuild D-R7): an attempt that never
     # started printing is a dispatch error, counted apart — never a failed print.
     usage = {
-        "prints_completed": await _count(
-            db, PrintArchive, PrintArchive.status == "completed", PrintArchive.created_at >= start_of_today
-        ),
+        "prints_completed": await _count(db, PrintArchive, PrintArchive.status == "completed", *created_today),
         "prints_failed": await _count(
             db,
             PrintArchive,
             PrintArchive.status.in_(failure_states),
             not_dispatch_failure(),
-            PrintArchive.created_at >= start_of_today,
+            *created_today,
         ),
-        "dispatch_errors": await _count(
-            db, PrintArchive, dispatch_failure(), PrintArchive.created_at >= start_of_today
-        ),
+        "dispatch_errors": await _count(db, PrintArchive, dispatch_failure(), *created_today),
     }
 
     return {
@@ -183,7 +191,7 @@ async def _build_payload(db) -> dict | None:
         "arch": platform.machine(),
         "python_version": platform.python_version(),
         "docker": _in_docker(),
-        "snapshot_date": date.today().isoformat(),
+        "snapshot_date": today.isoformat(),
         "counts": counts,
         "printer_models": printer_models,
         "vp_modes": vp_modes,

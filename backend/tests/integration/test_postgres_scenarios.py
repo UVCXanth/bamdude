@@ -118,6 +118,31 @@ def test_post_rebuild_transactions_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+def test_telemetry_day_window_on_postgres(tmp_path):
+    """The telemetry day's bounds compared by PostgreSQL itself: the same boundary rows as SQLite,
+    aware UTC bounds through asyncpg (telemetry-day-window T08)."""
+    url = _pg_url()
+    _wipe(url)
+    env = {**os.environ, "DATA_DIR": str(tmp_path), "DISPATCH_TEST_POSTGRES_URL": _async_url(url)}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_telemetry_day_window_on_postgres.py",
+            "-q",
+            "--timeout=90",
+            "--tb=short",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
+
+
 def test_queue_bulk_retry_concurrency(tmp_path):
     """The same real-runner matrix on independent PostgreSQL connections."""
     url = _pg_url()

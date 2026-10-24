@@ -89,10 +89,17 @@ async def test_send_once_skips_when_disabled(monkeypatch):
 
 async def test_the_usage_counts_a_dispatch_error_apart_from_a_failed_print(db_session, printer_factory, monkeypatch):
     """Post-rebuild D-R7 / M3: telemetry asks the same outcome predicates as Statistics — an
-    attempt that never started printing is a dispatch error, not a failed print."""
+    attempt that never started printing is a dispatch error, not a failed print.
+
+    The clock and every ``created_at`` are fixed, so the counts do not depend on the hour the test
+    runs at (the server default stamps the wall clock, and near midnight that is another day)."""
+    from datetime import datetime, timezone
+
     from backend.app.models.archive import PrintArchive
     from backend.app.utils.failure_reasons import DISPATCH_NO_ACKNOWLEDGEMENT
 
+    monkeypatch.setenv("TZ", "UTC")
+    monkeypatch.setattr(telemetry, "_utc_now", lambda: datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc))
     monkeypatch.setattr(telemetry, "get_install_id", lambda: "install")
     monkeypatch.setattr(telemetry, "_ams_unit_count", lambda: 0)
     printer = await printer_factory()
@@ -113,6 +120,7 @@ async def test_the_usage_counts_a_dispatch_error_apart_from_a_failed_print(db_se
                 file_size=1,
                 status=status,
                 failure_reason=reason,
+                created_at=datetime(2026, 10, 23, 8, 0),
             )
         )
     await db_session.commit()
