@@ -147,6 +147,65 @@ async def test_fleet_snapshot_drives_preview_and_apply_without_printing(
         )
 
 
+async def test_extended_search_is_forwarded_per_request_without_editing_order_or_queue(
+    committing_client, db_session, shop, monkeypatch
+):
+    from backend.app.services import plate_fit
+
+    original = plate_fit.proposals
+    modes = []
+
+    async def observed(snapshot, request):
+        modes.append(request.extended_search)
+        return await original(snapshot, request)
+
+    monkeypatch.setattr(plate_fit, "proposals", observed)
+    before = (await db_session.execute(select(func.count()).select_from(AutoQueueItem))).scalar_one()
+    for payload in ({"extended_search": True}, {}):
+        response = await preview(committing_client, shop, **payload)
+        assert response.status_code == 200 and response.json()["options"], response.text
+    assert modes == [True, False]
+    line = await db_session.get(ProjectLine, shop["line"], populate_existing=True)
+    assert line.quantity == 10
+    assert (await db_session.execute(select(func.count()).select_from(AutoQueueItem))).scalar_one() == before
+
+
+@pytest.mark.parametrize("value", [1, "true", 30, None])
+async def test_extended_search_rejects_non_boolean_mode(committing_client, shop, value):
+    response = await preview(committing_client, shop, extended_search=value)
+    assert response.status_code == 422, response.text
+
+
+async def test_an_extended_preview_is_applied_by_the_ordinary_confirm(committing_client, shop):
+    r = await preview(committing_client, shop, extended_search=True)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    chosen = next(o for o in data["options"] if o["quantity"] == 11)
+    result = await apply(committing_client, shop, data, chosen)
+    assert result.status_code == 200, result.text
+    assert result.json()["lines"][0]["quantity"] == 11
+
+
+@pytest.mark.parametrize("extended", [False, True])
+async def test_a_preview_writes_nothing_so_it_never_holds_the_writer(committing_client, shop, test_engine, extended):
+    """SQLite takes its one writer at the first write: a preview that runs no INSERT/UPDATE/DELETE never holds it."""
+    from sqlalchemy import event
+
+    writes = []
+
+    def record(_conn, _cursor, statement, *_args):
+        if statement.lstrip().split(" ", 1)[0].upper() in ("INSERT", "UPDATE", "DELETE", "REPLACE"):
+            writes.append(statement.split("\n", 1)[0])
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", record)
+    try:
+        response = await preview(committing_client, shop, extended_search=extended)
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", record)
+    assert response.status_code == 200, response.text
+    assert writes == []
+
+
 async def test_preview_and_apply_create_no_jobs_or_stock_movements(committing_client, db_session, shop):
     r = await preview(committing_client, shop)
     assert r.status_code == 200, r.text

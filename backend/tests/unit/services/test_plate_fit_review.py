@@ -95,7 +95,8 @@ def test_R1_optional_deadline_preserves_the_ordinary_fleet_mix():
     assert not bounded[2]
 
 
-async def test_R1_cancelled_preview_retains_admission_until_worker_exits(monkeypatch):
+@pytest.mark.parametrize("extended", [False, True])
+async def test_R1_cancelled_preview_retains_admission_until_worker_exits(monkeypatch, extended):
     s = snapshot([fit.Part(1, "Part A", 1, Fraction(0), 0)], [fit.Plate(1, (1,), 60)], 10)
     entered, release = threading.Event(), threading.Event()
     slot = asyncio.Semaphore(1)
@@ -110,7 +111,7 @@ async def test_R1_cancelled_preview_retains_admission_until_worker_exits(monkeyp
 
     async def first():
         async with slot:
-            await fit.proposals(s, PlateFitRequest(around=10))
+            await fit.proposals(s, PlateFitRequest(around=10, extended_search=extended))
 
     async def second():
         async with slot:

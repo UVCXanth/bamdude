@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Calculator, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -33,6 +33,8 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
   const [selected, setSelected] = useState<number | null>(null);
   const [ack, setAck] = useState(false);
   const [replacePending, setReplacePending] = useState(false);
+  const [extendedSearch, setExtendedSearch] = useState(false);
+  const extendedHelpId = useId();
   const [queueAck, setQueueAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +63,7 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
     const request = ++sequence.current;
     setBusy(true); setError(null); setData(null); setSelected(null); setAck(false); setQueueAck(false);
     try {
-      const result = await api.getPlateFit(door.orderId, line.id, { around, plate_ids: door.selectedPlates?.[line.id], steps: more ? 3 : 1, ...(replacePending ? { replace_pending: true } : {}) });
+      const result = await api.getPlateFit(door.orderId, line.id, { around, plate_ids: door.selectedPlates?.[line.id], steps: more ? 3 : 1, ...(replacePending ? { replace_pending: true } : {}), ...(extendedSearch ? { extended_search: true } : {}) });
       if (request !== sequence.current) return;
       setData(result);
       const preferred = result.options.find(o => o.quantity === around) ?? result.options.find(o => o.quantity > around) ?? result.options.at(-1);
@@ -105,7 +107,10 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
       door.onApplied({ orderId: door.orderId, lineId: line.id, quantity: current.quantity, rows, revision: Date.now(), planSignature: JSON.stringify(baseline) });
       onClose();
     } catch (e) {
-      showError(e);
+      // Applying re-checks the option within its own short budget: a busy answer here means that check ran out of
+      // time, which a plain retry does not cure — the option is dropped and a new calculation is offered.
+      if (!persisted && e instanceof ApiError && e.code === 'plate_fit_busy') { setError(t('plateFit.errors.applyBusy')); setSelected(null); setAck(false); }
+      else showError(e);
       if (!persisted && e instanceof ApiError && e.status === 409) { setSelected(null); setAck(false); }
     } finally { setBusy(false); }
   };
@@ -140,6 +145,16 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
           <Button variant="secondary" disabled={busy || !!saved || order.isFetching || !line || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000}
             onClick={() => void calculate()}>{busy ? t('common.loading') : t('plateFit.calculate')}</Button>
         </div>
+        <div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1 accent-bambu-green" aria-describedby={extendedHelpId}
+              checked={extendedSearch} disabled={busy || !!saved}
+              onChange={e => { reset(); setExpanded(false); setExtendedSearch(e.target.checked); }} />
+            {t('plateFit.extendedSearch')}
+          </label>
+          <p id={extendedHelpId} className="mt-1 text-xs text-bambu-gray">{t('plateFit.extendedSearchHint')}</p>
+        </div>
+        {busy && !data && !saved && <p role="status" className="text-sm text-bambu-gray">{t('plateFit.searching', { seconds: extendedSearch ? 30 : 6 })}</p>}
         <p className="text-xs text-bambu-gray">{t('plateFit.platesScope', { count: selectedPlateIds?.length ?? data?.plate_ids.length ?? 0 })}</p>
         {hasPermission('queue:delete_all') && hasPermission('queue:read') && <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-1 accent-bambu-green" checked={replacePending} disabled={busy || !!saved} onChange={e => { reset(); setReplacePending(e.target.checked); }} />

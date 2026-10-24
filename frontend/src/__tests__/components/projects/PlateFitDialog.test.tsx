@@ -41,6 +41,49 @@ describe.each(['en-US', 'uk-UA'])('whole-plate quantity review (%s)', locale => 
       return new Intl.NumberFormat(locale).format(Number(this));
     });
   });
+  it('extended search is opt-in, invalidates the review and never changes the queue by itself', async () => {
+    await calculate();
+    const extended = screen.getByRole('checkbox', { name: /Extended search/ });
+    expect(extended).not.toBeChecked();
+    expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 1 });
+    fireEvent.click(extended);
+    expect(screen.queryByRole('button', { name: 'Show more options' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByRole('button', { name: 'Show more options' });
+    expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 1, extended_search: true });
+    fireEvent.click(extended);
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    await screen.findByRole('button', { name: 'Show more options' });
+    expect(api.getPlateFit).toHaveBeenLastCalledWith(41, 17, { around: 1000, plate_ids: [7], steps: 1 });
+    expect(api.updateOrderLine).not.toHaveBeenCalled();
+    expect(door.onApplied).not.toHaveBeenCalled();
+  });
+  it('extended search names its bounded wait and cannot change mode while running', async () => {
+    let resolve!: (value: PlateFitResponse) => void;
+    vi.mocked(api.getPlateFit).mockReturnValueOnce(new Promise<PlateFitResponse>(done => { resolve = done; }));
+    render(<PlateFitDialog door={door} onClose={vi.fn()} />);
+    const extended = await screen.findByRole('checkbox', { name: /Extended search/ });
+    fireEvent.click(extended);
+    fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));
+    expect(extended).toBeDisabled();
+    expect(screen.getByText(/Searching.*30 seconds/)).toBeInTheDocument();
+    resolve({ ...result([900]), upper: 'limited' });
+    await screen.findByRole('button', { name: numberText(`${(900).toLocaleString()} · -100`) });
+    expect(screen.getByText(/The calculation reached its limit/)).toBeInTheDocument();
+    expect(extended).toBeEnabled();
+    expect(api.updateOrderLine).not.toHaveBeenCalled();
+  });
+  it('an apply whose re-check ran out of time drops the option and asks for a new calculation', async () => {
+    vi.mocked(api.updateOrderLine).mockRejectedValue(new ApiError('busy', 429, 'plate_fit_busy'));
+    await calculate();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+    fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
+    await screen.findByText(/could not be re-checked in time\. Calculate again/);
+    expect(screen.queryByText(/Another quantity calculation is running/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
+    expect(door.onApplied).not.toHaveBeenCalled();
+  });
   it('shows the greedy free-stock reservation before applying and rechecks the resulting plan', async () => {
     const reply = result([900, 3000]);
     reply.options[1] = { ...reply.options[1], from_finished: 2, from_kits: 3, stock_parts: { '1': 4 },

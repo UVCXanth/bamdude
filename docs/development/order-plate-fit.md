@@ -117,6 +117,41 @@ stock or queue write. Ordinary planner calls omit the optional deadline and keep
 their existing choices. Cancellation continues to own the worker and admission
 slot until that work exits; a timeout around a detached thread is not used.
 
+## Extended search
+
+The dialog's optional **Extended search — up to 30 seconds** checkbox sends a
+strict boolean `extended_search` on the read-only preview request; omitted, the
+search keeps its six seconds. The choice belongs to that one request — not to a
+printer, order or setting — and changing it discards the shown options and their
+acknowledgements. No caller-supplied time budget exists.
+
+Both modes share one monotonic start and one outer deadline between the current
+quantity (a third) and the two directions. An extended integer solve may take
+7.5 s and 500,000 nodes instead of 1.5 s and 100,000, always capped by its turn.
+**Every canonical check of a candidate gets at most 3 seconds, in both modes**
+(`CANDIDATE_SECONDS`, half of confirm's six): confirm repeats that very check
+inside the line's writer transaction, where SQLite holds its one writer and other
+writers wait at most `busy_timeout`. A check cut short, or a found option that
+took longer than 3 s, stops its direction as `limited` — never skipped as if it
+did not fit, never a farther quantity presented as the nearest. A completed
+rejection is proof whatever it cost, and the search goes on within what is left
+of its turn; no budget is renewed. The margin lowers the risk that confirm runs
+out of time; it is not a guarantee, because confirm re-checks against the farm as
+it is then.
+
+Confirm keeps its six seconds and every stale, stock, queue and reviewed-run
+guard. A confirm that runs out of time answers `busy`; the dialog then drops the
+option and asks for a new calculation instead of promising that a retry helps.
+Measured on synthetic orders (one product of three parts on per-part plates for
+two models, up to 20 preceding lines, 100–5,000 parts, 8 or 24 lanes, with and
+without an operator absence window): the extended search found an applicable
+option in 22 of 30 runs where the ordinary one found none, never a farther one,
+and every option it offered applied; no candidate check exceeded 3 s, so the
+ordinary search was unchanged there. Applying 0, 5 or 15 s after the preview,
+with the farm's occupancy running down, refused nothing; after two lanes had
+started new two-hour prints, one extended option in four was refused as
+`invalid_plan`, as it must be — the reviewed runs no longer held.
+
 Options reconsidered for this fix: the existing [SciPy milp interface](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html)
 remains the sparse-range filter. Rebuilding it for every adjacent quantity was
 measured to waste the budget. The [native HiGHS Python interface](https://ergo-code.github.io/HiGHS/stable/interfaces/python/example-py/)

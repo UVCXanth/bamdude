@@ -30,6 +30,10 @@ from backend.app.services.product_composition import recipes_for_products
 
 MAX_QUANTITY = 1_000_000
 MAX_SECONDS = 6.0
+EXTENDED_SECONDS = 30.0
+# Each candidate's canonical check in a preview: half of confirm's MAX_SECONDS, because confirm repeats that very
+# check inside the line's writer transaction (SQLite's one writer, busy_timeout 15 s). A margin, not a guarantee.
+CANDIDATE_SECONDS = 3.0
 
 
 class FitError(Exception):
@@ -452,8 +456,20 @@ def greedy_option(
     return option(snapshot, quantity, [runs.get(p.id, 0) for p in snapshot.plates], offer), False
 
 
+def _checked(snapshot: Snapshot, quantity: int, deadline: float) -> tuple[PlateFitOption | None, bool]:
+    """A preview candidate's canonical check: ``greedy_option`` within ``CANDIDATE_SECONDS`` of its own start, never
+    past ``deadline``. ``(option, False)`` found in time; ``(None, False)`` a completed rejection — proof that the
+    quantity does not fit, whatever it took; ``(None, True)`` unknown: cut short, or found only after the candidate
+    budget, which confirm might not repeat in time. An unknown stops its direction as ``limited``."""
+    began = time.monotonic()
+    found, truncated = greedy_option(snapshot, quantity, deadline=min(deadline, began + CANDIDATE_SECONDS))
+    if truncated or (found is not None and time.monotonic() - began > CANDIDATE_SECONDS):
+        return None, True
+    return found, False
+
+
 def solve(
-    snapshot: Snapshot, lower: int, upper: int, direction: int, deadline: float
+    snapshot: Snapshot, lower: int, upper: int, direction: int, deadline: float, *, extended_search: bool = False
 ) -> tuple[PlateFitOption | None, str]:
     """HiGHS only skips impossible quantities; stock_offers + greedy cover decide.
 
@@ -470,7 +486,7 @@ def solve(
         return None, "none"
     if deadline <= time.monotonic():
         return None, "limited"
-    edge, truncated = greedy_option(snapshot, lower if direction == 1 else upper, deadline=deadline)
+    edge, truncated = _checked(snapshot, lower if direction == 1 else upper, deadline)
     if truncated:
         return None, "limited"
     if edge is not None:
@@ -569,7 +585,11 @@ def solve(
                     integrality=np.ones(size),
                     bounds=bounds,
                     constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
-                    options={"time_limit": min(1.5, seconds), "mip_rel_gap": 0.0, "node_limit": 100_000},
+                    options={
+                        "time_limit": min(7.5 if extended_search else 1.5, seconds),
+                        "mip_rel_gap": 0.0,
+                        "node_limit": 500_000 if extended_search else 100_000,
+                    },
                 )
             except (ValueError, RuntimeError):
                 return None, "limited"
@@ -595,7 +615,7 @@ def solve(
             )
             if option(snapshot, q, values[1 : 1 + m], relaxed_offer) is None:
                 return None, "limited"
-            found, truncated = greedy_option(snapshot, q, deadline=deadline)
+            found, truncated = _checked(snapshot, q, deadline)
             if truncated:
                 return None, "limited"
             if found is not None:
@@ -615,7 +635,7 @@ def solve(
                 if time.monotonic() >= deadline:
                     return None, "limited"
                 q = lower if direction == 1 else upper
-                found, truncated = greedy_option(snapshot, q, deadline=deadline)
+                found, truncated = _checked(snapshot, q, deadline)
                 if truncated:
                     return None, "limited"
                 if found is not None:
@@ -629,9 +649,15 @@ def solve(
 
 
 async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
+    extended = request.extended_search
+
     def run():
-        deadline = time.monotonic() + MAX_SECONDS
-        same, same_status = solve(snapshot, request.around, request.around, 1, time.monotonic() + MAX_SECONDS / 3)
+        budget = EXTENDED_SECONDS if extended else MAX_SECONDS
+        started = time.monotonic()
+        deadline = started + budget
+        same, same_status = solve(
+            snapshot, request.around, request.around, 1, started + budget / 3, extended_search=extended
+        )
         options = [same] if same is not None else []
         statuses = {"lower": "none", "upper": "none"}
         cursors = {"lower": request.around, "upper": request.around}
@@ -650,7 +676,7 @@ async def proposals(snapshot: Snapshot, request: PlateFitRequest) -> dict:
                 )
                 now = time.monotonic()
                 turn_deadline = now + max(0, deadline - now) / (len(active) - index)
-                found, status = solve(snapshot, low, high, direction, turn_deadline)
+                found, status = solve(snapshot, low, high, direction, turn_deadline, extended_search=extended)
                 if step == 0 or status == "limited":
                     statuses[key] = status
                 if found is None:
