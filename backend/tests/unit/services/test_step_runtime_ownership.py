@@ -349,9 +349,9 @@ class _Reclaims:
                 self._fail("a refusal outside the closed retry list")
             if deadline is None:  # the first pass never counts against the budget (a cold one took 19 s)
                 deadline = time.monotonic() + self.retry_seconds
-            if time.monotonic() >= deadline:
-                self._fail("the retry budget is spent and the end is still not proven")
             time.sleep(0.2)
+            if time.monotonic() >= deadline:  # asked right before the next pass: a late wake-up starts none
+                self._fail("the retry budget is spent and the end is still not proven")
 
 
 class _UnreadableRow:
@@ -450,6 +450,41 @@ def test_a_slow_first_pass_does_not_spend_the_retry_budget(tmp_path, monkeypatch
         reclaims = _Reclaims(monkeypatch, own, staging, retry_seconds=0.5)
         assert reclaims.until_proven().outer is None
         assert reclaims.passes[0].seconds >= 1.5 and len(reclaims.passes) == 2
+
+
+def _scripted(monkeypatch, retry_seconds: float, wake: float) -> tuple[_Reclaims, list[float]]:
+    """``until_proven`` over a fake clock — no process, no reclaim: the first pass refuses for an unread scan,
+    every later one proves; each pause wakes ``wake`` seconds later."""
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + wake))
+    reclaims = object.__new__(_Reclaims)
+    reclaims.retry_seconds, reclaims.passes = retry_seconds, []
+
+    def one() -> _Pass:
+        if reclaims.passes:
+            answer = _Pass(outer=None, staging=False, alive=[])
+        else:
+            answer = _Pass(outer=_GENERIC, inner=[("a possible holder unreadable", 0)])
+        reclaims.passes.append(answer)
+        return answer
+
+    reclaims.one = one
+    return reclaims, clock
+
+
+def test_a_pause_that_wakes_past_the_budget_starts_no_further_pass(monkeypatch):
+    """Codex review ST-R2: the budget bounds the START of a pass, so a late wake-up ends the test failed."""
+    reclaims, _ = _scripted(monkeypatch, retry_seconds=0.1, wake=1.0)
+    with pytest.raises(AssertionError, match="the retry budget is spent"):
+        reclaims.until_proven()
+    assert len(reclaims.passes) == 1
+
+
+def test_a_pause_inside_the_budget_lets_the_next_pass_start(monkeypatch):
+    reclaims, clock = _scripted(monkeypatch, retry_seconds=1.0, wake=0.2)
+    assert reclaims.until_proven().outer is None
+    assert len(reclaims.passes) == 2 and clock[0] < 1.0
 
 
 def _owner_names_no_user(tmp_path, monkeypatch):
