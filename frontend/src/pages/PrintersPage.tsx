@@ -994,7 +994,7 @@ function TemperatureIndicator({ temp, goodThreshold = 28, fairThreshold = 35, on
       title={`Temperature: ${temp}°C - ${statusText}${onClick ? ' (click for history)' : ''}`}
     >
       <ThermoComponent className={compact ? "w-2.5 h-3" : "w-3 h-4"} />
-      <span className={`tabular-nums text-right ${compact ? 'text-[length:var(--pc-t10,10px)] w-8' : 'w-12'}`} style={{ color: textColor }}>{temp}°C</span>
+      <span className={`tabular-nums text-right whitespace-nowrap ${compact ? 'text-[length:var(--pc-t10,10px)] min-w-[calc(var(--pc-i4,1rem)*2)]' : 'w-12'}`} style={{ color: textColor }}>{temp}°C</span>
     </button>
   );
 }
@@ -5072,11 +5072,13 @@ const PrinterCard = memo(function PrinterCard({
 
                   {/* AMS Content */}
                   <div className="space-y-3">
-                    {/* Fit whole AMS units to the card width, not the viewport. The minimum
-                        is counted in --pc-i4 (1rem at M), so it grows with the card scale
-                        together with the slots it has to hold. */}
+                    {/* Regular AMS: up to two per row, one per row on a card too narrow for
+                        two. A column is never narrower than half the card (so never a third
+                        one, and a lone AMS keeps half the card instead of stretching) nor
+                        than what four slots need, counted in --pc-i4 (1rem at M) so it grows
+                        with the card scale. */}
                     {regularAms.length > 0 && (
-                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,calc(var(--pc-i4,1rem)*14)),1fr))] gap-3">
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(max(min(100%,calc(var(--pc-i4,1rem)*14)),calc((100%_-_0.75rem)/2)),1fr))] gap-3">
                         {regularAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
                         const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
@@ -5598,9 +5600,12 @@ const PrinterCard = memo(function PrinterCard({
                     </div>
                   )}
 
-                    {/* Single-slot units wrap without squeezing their contents. */}
-                    {(htAms.length > 0 || status.vt_tray.length > 0) && (
-                      <div className="flex flex-wrap items-start gap-3">
+                    {/* AMS-HT: a row of their own, up to three per row. A column is never
+                        narrower than a third of the card nor than the slot with its
+                        temperature and humidity need (in --pc-i4), so a narrow card shows
+                        fewer per row instead of squeezing them. */}
+                    {htAms.length > 0 && (
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(max(min(100%,calc(var(--pc-i4,1rem)*12)),calc((100%_-_1.5rem)/3)),1fr))] gap-3">
                       {/* HT AMS units - name/badge top, slot left, stats right */}
                       {htAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
@@ -5749,7 +5754,7 @@ const PrinterCard = memo(function PrinterCard({
                         );
 
                         return (
-                          <div key={ams.id} className="w-[calc(var(--pc-i4,1rem)*10)] max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+                          <div key={ams.id} className="min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
                             {/* Row 1: Label + Nozzle + Drying */}
                             <div className="flex items-center gap-1 mb-2">
                               {/* AMS name - hover to see serial, firmware, and edit friendly name */}
@@ -6047,7 +6052,10 @@ const PrinterCard = memo(function PrinterCard({
                           </div>
                         );
                       })}
-                      {/* External spool(s) - grouped in one card like regular AMS */}
+                      </div>
+                    )}
+
+                    {/* External spool(s): a row of their own, one compact tile */}
                       {status.vt_tray.length > 0 && showExternalSpool && (
                         <div className={`max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'w-[calc(var(--pc-i4,1rem)*6)]' : 'w-[calc(var(--pc-i4,1rem)*10)]'}`}>
                           <div className="flex items-center justify-center gap-1 mb-2">
@@ -6351,8 +6359,6 @@ const PrinterCard = memo(function PrinterCard({
                           </div>
                         </div>
                       )}
-                      </div>
-                    )}
                   </div>
                 </div>
               );
