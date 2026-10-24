@@ -107,9 +107,12 @@ export function PlateFitDialog({ door, onClose }: { door: PlateFitDoor; onClose:
       door.onApplied({ orderId: door.orderId, lineId: line.id, quantity: current.quantity, rows, revision: Date.now(), planSignature: JSON.stringify(baseline) });
       onClose();
     } catch (e) {
-      // Applying re-checks the option within its own short budget: a busy answer here means that check ran out of
-      // time, which a plain retry does not cure — the option is dropped and a new calculation is offered.
-      if (!persisted && e instanceof ApiError && e.code === 'plate_fit_busy') { setError(t('plateFit.errors.applyBusy')); setSelected(null); setAck(false); }
+      // A refused apply means the reviewed proposal no longer holds — its re-check ran out of time (busy, which a
+      // plain retry does not cure), or the farm or the order moved (stale, invalid_plan). Drop the whole review, so
+      // nothing of it can be chosen and applied again without a new calculation; a saved PATCH is never in here.
+      const refused = !persisted && e instanceof ApiError && ['plate_fit_busy', 'plate_fit_stale', 'plate_fit_invalid_plan'].includes(e.code ?? '');
+      if (refused) { sequence.current++; setData(null); setSelected(null); setAck(false); setQueueAck(false); }
+      if (refused && e.code === 'plate_fit_busy') setError(t('plateFit.errors.applyBusy'));
       else showError(e);
       if (!persisted && e instanceof ApiError && e.status === 409) { setSelected(null); setAck(false); }
     } finally { setBusy(false); }

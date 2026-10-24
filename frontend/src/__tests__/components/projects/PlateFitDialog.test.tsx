@@ -84,6 +84,25 @@ describe.each(['en-US', 'uk-UA'])('whole-plate quantity review (%s)', locale => 
     expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
     expect(door.onApplied).not.toHaveBeenCalled();
   });
+  it.each(['plate_fit_busy', 'plate_fit_invalid_plan', 'plate_fit_stale'])(
+    'a refused apply (%s) drops the whole review: nothing of it can be applied again without a new calculation',
+    async code => {
+      vi.mocked(api.updateOrderLine).mockRejectedValueOnce(new ApiError('refused', code === 'plate_fit_busy' ? 429 : 409, code));
+      await calculate();
+      fireEvent.click(screen.getByRole('checkbox', { name: /I understand that the quantity/ }));
+      fireEvent.click(screen.getByRole('button', { name: numberText(`Set quantity to ${(3000).toLocaleString()}`) }));
+      await screen.findByRole('alert');
+      expect(screen.queryByRole('button', { name: numberText(`${(3000).toLocaleString()} ·`) })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: numberText(`${(900).toLocaleString()} ·`) })).not.toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Set quantity to —' })).toBeDisabled();
+      expect(api.updateOrderLine).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Calculate' }));  // a new calculation is the way on
+      await screen.findByText(numberText(`${(1000).toLocaleString()} → ${(3000).toLocaleString()}`));
+      expect(api.getPlateFit).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('checkbox', { name: /I understand that the quantity/ })).not.toBeChecked();
+    },
+  );
   it('shows the greedy free-stock reservation before applying and rechecks the resulting plan', async () => {
     const reply = result([900, 3000]);
     reply.options[1] = { ...reply.options[1], from_finished: 2, from_kits: 3, stock_parts: { '1': 4 },

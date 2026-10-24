@@ -146,11 +146,11 @@ Measured on synthetic orders (one product of three parts on per-part plates for
 two models, up to 20 preceding lines, 100–5,000 parts, 8 or 24 lanes, with and
 without an operator absence window): the extended search found an applicable
 option in 22 of 30 runs where the ordinary one found none, never a farther one,
-and every option it offered applied; no candidate check exceeded 3 s, so the
+and the option the dialog preselects (one per run) applied every time; no candidate check exceeded 3 s, so the
 ordinary search was unchanged there. Applying 0, 5 or 15 s after the preview,
 with the farm's occupancy running down, refused nothing; after two lanes had
-started new two-hour prints, one extended option in four was refused as
-`invalid_plan`, as it must be — the reviewed runs no longer held.
+started new two-hour prints, one extended scenario in four was refused as
+`invalid_plan` at every pause, as it must be — the reviewed runs no longer held.
 
 Options reconsidered for this fix: the existing [SciPy milp interface](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.milp.html)
 remains the sparse-range filter. Rebuilding it for every adjacent quantity was

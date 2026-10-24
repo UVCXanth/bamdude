@@ -460,10 +460,12 @@ def _checked(snapshot: Snapshot, quantity: int, deadline: float) -> tuple[PlateF
     """A preview candidate's canonical check: ``greedy_option`` within ``CANDIDATE_SECONDS`` of its own start, never
     past ``deadline``. ``(option, False)`` found in time; ``(None, False)`` a completed rejection — proof that the
     quantity does not fit, whatever it took; ``(None, True)`` unknown: cut short, or found only after the candidate
-    budget, which confirm might not repeat in time. An unknown stops its direction as ``limited``."""
-    began = time.monotonic()
-    found, truncated = greedy_option(snapshot, quantity, deadline=min(deadline, began + CANDIDATE_SECONDS))
-    if truncated or (found is not None and time.monotonic() - began > CANDIDATE_SECONDS):
+    budget or past the caller's own deadline, which confirm might not repeat in time. An unknown stops its
+    direction as ``limited``. The deadline handed down does not stop a synchronous check by itself, so a found
+    option is judged by when it returned against the SAME limit it was given."""
+    limit = min(deadline, time.monotonic() + CANDIDATE_SECONDS)
+    found, truncated = greedy_option(snapshot, quantity, deadline=limit)
+    if truncated or (found is not None and time.monotonic() > limit):
         return None, True
     return found, False
 

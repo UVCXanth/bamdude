@@ -130,6 +130,24 @@ def test_the_current_quantity_is_found_only_within_its_three_seconds(monkeypatch
     assert checks.calls == [(7, 103.0)]  # start + 3, inside the caller's 130
 
 
+@pytest.mark.parametrize(
+    "seconds,expected", [(1.9, "found"), (2.0, "found"), (2.5, "limited")], ids=["inside", "at", "past"]
+)
+def test_a_found_option_must_also_land_inside_the_callers_shorter_deadline(monkeypatch, seconds, expected):
+    """Codex review PF-R1: the deadline handed to a check does not stop a synchronous one by itself, so a found
+    option that returns after its turn ended is unknown, even when it took less than the 3 candidate seconds."""
+    s = _one_part()
+    _Checks(monkeypatch, s, {7: ("found", seconds)})
+    found, status = fit.solve(s, 7, 7, 1, 102.0)
+    assert status == expected and (found is not None) == (expected == "found")
+
+
+def test_a_completed_rejection_past_the_callers_deadline_is_still_proof(monkeypatch):
+    s = _one_part()
+    _Checks(monkeypatch, s, {7: ("reject", 2.5)})
+    assert fit.solve(s, 7, 7, 1, 102.0) == (None, "none")  # «does not fit» is known, whatever it cost
+
+
 def test_a_check_never_runs_past_the_callers_earlier_deadline(monkeypatch):
     s = _one_part()
     checks = _Checks(monkeypatch, s, {7: ("found", 0.5)})
