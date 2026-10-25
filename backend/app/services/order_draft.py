@@ -133,7 +133,9 @@ def project(data: Inputs, entries: list[DraftEntry], *, visible=None):
             continue
         from backend.app.services.order_resources import recipe_permitted
 
-        if not recipe_permitted(
+        # A retained zero is an explicit exclusion during remainder planning,
+        # not a request to run this model. Keep identity/source checks above.
+        if entry.count > 0 and not recipe_permitted(
             getattr(data.ctx.project, "printer_resources", None), recipe.printer_model, allow_compatible=True
         ):
             issues.append({"entry_id": entry.entry_id, "code": "order_resources_changed"})

@@ -281,7 +281,9 @@ async def state(db, row, data, *, visible=None):
             else:
                 from backend.app.services.order_resources import permits
 
-                if not permits(getattr(data.ctx.project, "printer_resources", None), target.id, target.model):
+                if entry["count"] > 0 and not permits(
+                    getattr(data.ctx.project, "printer_resources", None), target.id, target.model
+                ):
                     out["issues"].append({"entry_id": entry["entry_id"], "code": "order_resources_changed"})
             if target and recipe and model_compatibility(recipe.printer_model, target.model) == "incompatible":
                 out["issues"].append({"entry_id": entry["entry_id"], "code": "target_incompatible"})

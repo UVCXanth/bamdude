@@ -52,3 +52,10 @@ PostgreSQL. No new permission is introduced: reading the editor needs order and
 printer read access; changing restrictions needs order update; whole-order
 queue replacement additionally needs queue read/delete-all. Printer-scoped API
 keys cannot manage a partial version of a whole-order policy.
+
+A zero-count working entry remains an explicit exclusion when restrictions
+change. It requests no printer work and cannot block remainder planning merely
+because its model or pinned machine is outside the new selection. Positive
+counts still require the current policy; source and line identities are checked
+even for zero entries. Reading current inputs and reviewing the remainder keeps
+the exclusion and schedules only allowed models.

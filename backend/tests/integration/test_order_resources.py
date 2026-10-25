@@ -78,6 +78,97 @@ def apply_body(proposal):
     }
 
 
+@pytest.mark.parametrize("count", [0, 1])
+@pytest.mark.parametrize("pinned", [False, True])
+async def test_resource_change_preserves_zero_exclusion_without_blocking_remainder(
+    committing_client, db_session, resource_shop, count, pinned
+):
+    """A forbidden zero row is an exclusion, never permission for a real run."""
+    from copy import deepcopy
+
+    s = resource_shop
+    metadata = deepcopy(s["file"].file_metadata)
+    metadata["sliced_for_model"] = "P1S"
+    other_file = LibraryFile(
+        filename="other-synthetic.gcode.3mf",
+        file_path="other-synthetic.gcode.3mf",
+        file_type="gcode",
+        file_size=1,
+        file_metadata=metadata,
+    )
+    db_session.add(other_file)
+    await db_session.flush()
+    other_plate = ProductPlate(product_id=s["plate"].product_id, library_file_id=other_file.id, plate_index=0)
+    db_session.add(other_plate)
+    await db_session.commit()
+    path = f"/api/v1/projects/{s['order']}/working-plan"
+    response = await committing_client.put(
+        path,
+        json={
+            "expected_revision": 0,
+            "entries": [
+                {
+                    "entry_id": "excluded-other-model",
+                    "line_id": s["line"],
+                    "plate_id": other_plate.id,
+                    "count": count,
+                    "manual": True,
+                    "protected_count": count,
+                    "target": {"kind": "printer", "printer_id": s["other"].id} if pinned else {"kind": "auto"},
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    await choose(committing_client, s, models=["A1 mini"])
+    state = (await committing_client.get(path)).json()
+    assert state["entries"][0]["count"] == count
+    assert state["inputs_changed"] is True
+    if count:
+        assert {issue["code"] for issue in state["issues"]} == {"order_resources_changed"}
+        return
+    assert state["issues"] == []
+    # Reading fresh inputs and autosaving the retained exclusion must recover.
+    saved = await committing_client.put(
+        path,
+        json={
+            "expected_revision": state["revision"],
+            "inputs_token": state["inputs_token"],
+            "entries": state["entries"],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    request = {
+        "expected_revision": saved.json()["revision"],
+        "kind": "remainder",
+        "inputs_token": saved.json()["inputs_token"],
+    }
+    proposal = await committing_client.post(path + "/replan", json=request)
+    assert proposal.status_code == 200, proposal.text
+    value = proposal.json()
+    assert any(e["plate_id"] == other_plate.id and e["count"] == 0 for e in value["entries"])
+    assert {e["plate_id"] for e in value["entries"] if e["count"]} == {s["plate"].id}
+    applied = await committing_client.post(
+        path + "/replan",
+        json={
+            **request,
+            "apply": True,
+            "proposal_token": value["proposal_token"],
+            "proposal_entries": value["entries"],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["issues"] == []
+    assert (await committing_client.get(f"/api/v1/projects/{s['order']}/printer-resources")).json()["resources"][
+        "models"
+    ] == ["A1 Mini"]
+    assert (await db_session.scalar(select(func.count()).select_from(AutoQueueItem))) == 0
+    other_file.file_hash = "f" * 64
+    await db_session.commit()
+    reread = (await committing_client.get(path)).json()
+    assert {issue["code"] for issue in reread["issues"]} == {"source_changed"}
+
+
 @pytest.mark.parametrize("line_only", [False, True])
 async def test_automatic_cross_model_rebalancing_cannot_escape_order_policy(
     committing_client, db_session, resource_shop, line_only
