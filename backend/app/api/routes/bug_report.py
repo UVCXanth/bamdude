@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,13 +137,17 @@ async def stop_logging(
 @router.post("/submit", response_model=BugReportResponse)
 async def submit_bug_report(
     report: BugReportRequest,
+    request: Request = None,
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Submit a bug report via the configured relay."""
     support_info = None
     if report.include_support_info:
         try:
-            support_info = await _collect_support_info()
+            from backend.app.core.api_key_scope import key_printer_scope
+
+            scope = key_printer_scope(request) if request is not None else None
+            support_info = await _collect_support_info(print_state_scope=scope)
             if report.debug_logs:
                 support_info["recent_logs"] = report.debug_logs
             # ⚠️ Only this path is budgeted. The relay prints the whole payload

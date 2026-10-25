@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 import psutil
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
@@ -1064,8 +1064,8 @@ async def _collect_git_backup_info(db: AsyncSession) -> dict:
     }
 
 
-async def _collect_support_info() -> dict:
-    """Collect all support information."""
+async def _collect_support_info(*, print_state_scope=None) -> dict:
+    """Collect all support information. ``print_state_scope`` narrows the print-state section to a key's printers."""
     from backend.app.services.farm_startup_guard import farm_startup_guard
 
     in_docker = is_running_in_docker()
@@ -1506,7 +1506,7 @@ async def _collect_support_info() -> dict:
         from backend.app.services.diagnostic_snapshot import collect_diagnostic_snapshot
 
         async with async_session() as db:
-            info["diagnostics"] = await collect_diagnostic_snapshot(db)
+            info["diagnostics"] = await collect_diagnostic_snapshot(db, print_state_scope=print_state_scope)
     except Exception:
         logger.warning("Failed to collect diagnostic snapshot", exc_info=True)
 
@@ -1644,6 +1644,7 @@ def _redact_raw_push_status(raw: dict) -> dict:
 
 @router.get("/bundle")
 async def generate_support_bundle(
+    request: Request = None,
     mqtt_printer_ids: str = "",
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
@@ -1692,7 +1693,10 @@ async def generate_support_bundle(
             sensitive_strings[cloud_email] = "[EMAIL]"
 
     # Collect support info
-    support_info = await _collect_support_info()
+    from backend.app.core.api_key_scope import key_printer_scope
+
+    scope = key_printer_scope(request) if request is not None else None
+    support_info = await _collect_support_info(print_state_scope=scope)
 
     # Create ZIP in memory
     zip_buffer = io.BytesIO()

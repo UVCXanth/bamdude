@@ -165,3 +165,67 @@ def test_findings_sorted_layer8_then_environment(tmp_path, monkeypatch):
 def test_every_signature_id_is_unique():
     ids = [s.id for s in SIGNATURES]
     assert len(ids) == len(set(ids))
+
+
+DISPATCH_LOGGER = "backend.app.services.background_dispatch"
+TRACKER_LOGGER = "backend.app.services.dispatch_stall_tracker"
+
+
+def test_a_stalled_dispatch_warning_is_a_finding(tmp_path, monkeypatch):
+    """Spec printer-runtime-stall r3 R5: the tracker's one aggregated WARNING names printer and job."""
+    _write_log(
+        tmp_path,
+        monkeypatch,
+        [
+            _line(
+                "WARNING",
+                TRACKER_LOGGER,
+                "Dispatch stalled without progress: printer=7 item=11 reason=dispatch_claim_changed "
+                "detail=current_run_conflict blocker_archive=19 attempts=3 span=60s",
+            )
+        ],
+    )
+    (finding,) = scan_logs().findings
+    assert finding.signature_id == "dispatch-stalled" and finding.count == 1
+    assert "printer=7" in finding.sample and "item=11" in finding.sample
+
+
+def test_old_unattributed_deferrals_are_a_fallback_finding(tmp_path, monkeypatch):
+    """A log written before the tracker: repeated INFO lines with no printer -- a cause not established."""
+    lines = [
+        _line("INFO", DISPATCH_LOGGER, f"Dispatch {n} deferred before publish: dispatch_claim_changed")
+        for n in range(5)
+    ]
+    _write_log(tmp_path, monkeypatch, lines)
+    (finding,) = scan_logs().findings
+    assert finding.signature_id == "dispatch-deferred-unattributed" and finding.count == 5
+
+
+def test_a_single_old_deferral_is_no_finding(tmp_path, monkeypatch):
+    _write_log(
+        tmp_path,
+        monkeypatch,
+        [_line("INFO", DISPATCH_LOGGER, "Dispatch 1 deferred before publish: dispatch_claim_changed")],
+    )
+    assert scan_logs().findings == []
+
+
+def test_attributed_deferrals_are_never_counted_twice(tmp_path, monkeypatch):
+    """The new INFO lines carry their printer: they belong to the tracker's WARNING, not to the fallback."""
+    lines = [
+        _line(
+            "INFO",
+            DISPATCH_LOGGER,
+            f"Dispatch {n} deferred before publish: dispatch_claim_changed printer=7 item=11 "
+            "detail=current_run_conflict blocker_archive=19",
+        )
+        for n in range(5)
+    ]
+    _write_log(tmp_path, monkeypatch, lines)
+    assert scan_logs().findings == []
+
+
+def test_other_signatures_still_ignore_info(tmp_path, monkeypatch):
+    """The fallback lowers its own level only: an INFO FTP line is still no finding."""
+    _write_log(tmp_path, monkeypatch, [_line("INFO", FTP_LOGGER, "FTP connection permission error to x")])
+    assert scan_logs().findings == []

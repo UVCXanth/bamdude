@@ -110,13 +110,18 @@ async def _run_log_health() -> Any:
         return {"error": str(e)}
 
 
-async def collect_diagnostic_snapshot(db: AsyncSession) -> dict[str, Any]:
+async def collect_diagnostic_snapshot(db: AsyncSession, *, print_state_scope=None) -> dict[str, Any]:
     """Return the three-section diagnostic snapshot.
 
     Always returns connection/VP/log-health probes plus bounded runtime
     counters for filament projection and its shared 3MF analysis. Each probe
     entry carries either ``result`` (success) or ``error`` (timeout /
     exception) so the maintainer can tell at a glance whether it ran.
+
+    ``print_state`` is the background observer's cached reading (spec
+    printer-runtime-stall r3 R5), narrowed to ``print_state_scope`` -- the
+    caller's printers -- so the exact cause is in the bundle before anyone
+    repairs anything. It repairs nothing and opens no printer session.
     """
     from backend.app.models.printer import Printer
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -165,6 +170,13 @@ async def collect_diagnostic_snapshot(db: AsyncSession) -> dict[str, Any]:
         snapshot["usage_projection"] = {"error": str(e)}
         snapshot["print_file_analysis"] = {"error": str(e)}
         snapshot["analysis_worker"] = {"error": str(e)}
+    try:
+        from backend.app.services.print_state_observer import print_state_observer
+
+        snapshot["print_state"] = print_state_observer.public_summary(print_state_scope)
+    except Exception as e:
+        logger.warning("Print-state diagnostic snapshot failed: %s", e, exc_info=True)
+        snapshot["print_state"] = {"error": str(e)}
 
     # Sanitize before returning. The diagnostic schemas embed printer/host IPs
     # (`PrinterDiagnosticResult.ip_address`, network-mode check params, VP

@@ -11606,6 +11606,13 @@ async def _application_lifespan(app: FastAPI):
     # Start background dispatch worker for send/start operations
     await background_dispatch.start()
 
+    # The read-only print-state observer: one page of the diagnostics every
+    # 15 s, round-robin, for System Health and the support bundle. It repairs
+    # nothing; Info always reads fresh (spec printer-runtime-stall r3 R5).
+    from backend.app.services.print_state_observer import print_state_observer
+
+    print_state_observer.start()
+
     # Start the 3MF download retry service (fallback archives with file_path="").
     # The startup sweep does sequential FTP calls (up to 60s each) and MUST NOT
     # block lifespan — run it as a fire-and-forget task so uvicorn accepts
@@ -11906,7 +11913,10 @@ async def _application_lifespan(app: FastAPI):
 
     # Shutdown
     from backend.app.services.print_run_binding import revoke_print_effects
+    from backend.app.services.print_state_observer import print_state_observer
 
+    # The observer reads what the services below own: it goes before they do.
+    await print_state_observer.stop()
     revoke_print_effects(printer_manager)
     await stop_part_render()  # its attempt ends with its proof before any worker or the broker goes
     from backend.app.services import part_images

@@ -160,6 +160,30 @@ SIGNATURES: tuple[LogSignature, ...] = (
         category="environment",
         wiki_anchor="database-is-locked",
     ),
+    LogSignature(
+        # The dispatch tracker's one WARNING per stalled episode (spec printer-runtime-stall r3 R5): the same
+        # job deferred again and again behind the same blocker, with no progress. The line names both.
+        id="dispatch-stalled",
+        patterns=_compile(r"Dispatch stalled without progress"),
+        severity="warning",
+        category="bug",
+        wiki_anchor="dispatch-stalled",
+        logger_prefix="backend.app.services.dispatch_stall_tracker",
+    ),
+    LogSignature(
+        # A log written before the tracker: the old INFO deferral line names neither printer nor job, so it
+        # can only say "repeated deferrals, cause not established" -- never assign them to a printer. Its own
+        # level, INFO, lowered for this signature alone; anchored to the line's end so the newer, attributed
+        # line (which belongs to ``dispatch-stalled``) is never counted twice.
+        id="dispatch-deferred-unattributed",
+        patterns=_compile(r"^Dispatch \d+ deferred before publish: dispatch_claim_changed$"),
+        severity="warning",
+        category="bug",
+        wiki_anchor="dispatch-stalled",
+        min_level="INFO",
+        logger_prefix="backend.app.services.background_dispatch",
+        min_count=3,
+    ),
 )
 
 

@@ -529,7 +529,7 @@ def decode_cursor(value):
             not isinstance(row, list)
             or len(row) != 3
             or type(row[0]) is not int
-            or row[1] not in {"header", "item", "archive", "runtime"}
+            or row[1] not in {"header", "item", "archive", "runtime", "episode"}
             or type(row[2]) is not int
         ):
             raise ValueError
@@ -539,6 +539,50 @@ def decode_cursor(value):
 
 
 async def list_issues(db, scope, *, printer_id=None, cursor=None):
+    result, _ = await list_issues_page(db, scope, printer_id=printer_id, cursor=cursor)
+    return result
+
+
+def _episode_rows(pids, after) -> dict[tuple, object]:
+    """One row per stalled job of this page (its latest stalled episode), keyed like every other row."""
+    from backend.app.services import dispatch_stall_tracker
+
+    rows = {}
+    for pid in pids:
+        for episode in dispatch_stall_tracker.snapshot(pid):
+            if not episode.stalled:
+                continue
+            row = (pid, "episode", episode.item_id or 0)
+            if (after is None or row > tuple(after)) and (row not in rows or rows[row].last_seen < episode.last_seen):
+                rows[row] = episode
+    return rows
+
+
+def _episode_issue(key, episode, item, runtime_rows) -> dict:
+    """R3 ``dispatch_no_progress``: the job, the attempts, the blocker -- and the row that explains it."""
+    related = (key[0], "runtime", episode.blocker_archive_id or 0)
+    return {
+        "code": "dispatch_no_progress",
+        "actions": [],
+        "blocked_reasons": [episode.detail or "unknown"],
+        "printer_id": key[0],
+        "queue_id": item.queue_id,
+        "kind": "episode",
+        "target_id": key[2],
+        "item_id": episode.item_id,
+        "archive_id": episode.blocker_archive_id,
+        "observed_at": None,
+        "live_mode": "unknown",
+        "started_at": None,
+        "completed_at": None,
+        "attempts": episode.count,
+        "span_seconds": int(episode.span),
+        "related": {"kind": "runtime", "target_id": related[2]} if related in runtime_rows else None,
+    }
+
+
+async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
+    """One page of the farm's print-state rows, and the printers it covered (the observer's cycle needs them)."""
     after = decode_cursor(cursor) if cursor else None
     stmt = select(Printer.id, Printer.name).order_by(Printer.id)
     if scope is not None:
@@ -603,11 +647,38 @@ async def list_issues(db, scope, *, printer_id=None, cursor=None):
             row = (pid, "runtime", run.archive_id if run is not None else 0)
             if after is None or row > tuple(after):
                 held.append(row)
-    rows = sorted(set(sql_rows) | set(held))
+    episodes = _episode_rows(pids, after)
+    rows = sorted(set(sql_rows) | set(held) | set(episodes))
     targets = rows[:100]
-    facts, _, _ = await read_facts(db, pids, targets)
+    facts, _, _ = await read_facts(db, pids, [t for t in targets if t[1] != "episode"])
+    # A stalled job is shown only while it still waits: one addressed read of the jobs this page names.
+    episode_items = [episodes[t].item_id for t in targets if t[1] == "episode" and episodes[t].item_id]
+    waiting = (
+        {
+            row.id: row
+            for row in (
+                await db.execute(
+                    select(PrintQueueItem.id, PrintQueueItem.queue_id, PrintQueueItem.status).where(
+                        PrintQueueItem.id.in_(episode_items)
+                    )
+                )
+            ).all()
+            if row.status in ("pending", "printing")
+        }
+        if episode_items
+        else {}
+    )
     issues = []
-    for key, f in facts.items():
+    for key in targets:
+        if key[1] == "episode":
+            item = waiting.get(episodes[key].item_id)
+            if item is not None:
+                issue = _episode_issue(key, episodes[key], item, set(held))
+                issues.append({**issue, "printer_name": names[key[0]]})
+            continue
+        f = facts.get(key)
+        if f is None:
+            continue
         issue = public_issue(key, f)
         if issue and f.runtime is not None:
             # A runtime divergence is shown once seen unchanged twice, 10 s apart: a run between its
@@ -628,7 +699,7 @@ async def list_issues(db, scope, *, printer_id=None, cursor=None):
         "next_cursor": next_cursor,
         "truncated": next_cursor is not None,
         "checked_at": datetime.now(timezone.utc),
-    }
+    }, pids
 
 
 async def make_preview(db, printer_id, kind, target_id, action, actor, *, confirmed_completed=False, note=""):

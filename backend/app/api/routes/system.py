@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import install_kind
-from backend.app.core.auth import RequirePermission
+from backend.app.core.api_key_scope import key_printer_scope
+from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
@@ -726,18 +727,38 @@ async def get_storage_usage(
     return await _get_storage_usage_cached(refresh=refresh, max_age_seconds=max_age_seconds)
 
 
-@router.get("/health", response_model=ScanResult)
+class SystemHealthResult(ScanResult):
+    #: The print-state observer's short summary (spec printer-runtime-stall r3 R5): counts and codes for the
+    #: caller's printers, linking to the print-state diagnostics. ``None`` without the rights to read those.
+    print_state: dict | None = None
+
+
+async def _print_state_mention(request: Request, creds: RequestCredentials) -> dict | None:
+    from backend.app.api.routes.print_state_recovery import READ
+    from backend.app.services.print_state_observer import print_state_observer
+
+    for gate in READ:
+        if not await creds.allows(gate):
+            return None
+    return print_state_observer.public_summary(key_printer_scope(request))
+
+
+@router.get("/health", response_model=SystemHealthResult)
 async def get_system_health(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SYSTEM_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Scan the recent application log against the known-issue catalog.
 
     Powers the self-service triage surfaces (System page + bug reporter).
-    Sample lines are sanitized before they leave the process.
+    Sample lines are sanitized before they leave the process. The print-state
+    mention is the background observer's cached reading, never a new scan.
     """
     sensitive_strings = await collect_sensitive_strings(db)
-    return await asyncio.to_thread(scan_logs, sensitive_strings=sensitive_strings)
+    result = await asyncio.to_thread(scan_logs, sensitive_strings=sensitive_strings)
+    return SystemHealthResult(**result.model_dump(), print_state=await _print_state_mention(request, creds))
 
 
 @router.get("/database", response_model=DbHealth)
