@@ -1140,7 +1140,13 @@ async def _order_delete_busy() -> dict:
         await a.flush()
         async with async_session() as b:
             outcome_b = await asyncio.wait_for(
-                _outcome(b, lambda: projects_routes.delete_project(order_id, _plain_request(), b, None)), timeout=30
+                _outcome(
+                    b,
+                    lambda: projects_routes.delete_project(
+                        project_id=order_id, request=_plain_request(), db=b, current_user=None
+                    ),
+                ),
+                timeout=30,
             )
         await a.commit()
 
