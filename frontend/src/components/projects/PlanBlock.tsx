@@ -49,7 +49,7 @@ export function PlanBlock({
   onPlateSelection,
   onPlateFit,
   onLeaveGuard,
-  onPrepareResources,
+  onPreparePlanAction,
 }: {
   order: Order;
   canEdit: boolean;
@@ -72,8 +72,8 @@ export function PlanBlock({
   onPlateSelection?: (selected: Record<number, number[]>) => void;
   onPlateFit?: () => void;
   onLeaveGuard?: (guard: (() => boolean) | null) => void;
-  /** Persist this editor before its owner opens order-routing settings. */
-  onPrepareResources?: (prepare: (() => Promise<boolean>) | null) => void;
+  /** Persist this editor before its owner opens an order-changing action. */
+  onPreparePlanAction?: (prepare: (() => Promise<boolean>) | null) => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -564,7 +564,7 @@ export function PlanBlock({
     return working.flush();
   };
   useEffect(() => {
-    onPrepareResources?.(async () => {
+    onPreparePlanAction?.(async () => {
       if (!plan || isFetching || !localEditsCurrent || !working.state || frozen || splitOff || overCap) return false;
       try {
         working.change(canonicalRef.current);
@@ -575,8 +575,8 @@ export function PlanBlock({
         return false;
       }
     });
-    return () => onPrepareResources?.(null);
-  }, [onPrepareResources, plan, isFetching, localEditsCurrent, working, frozen, splitOff, overCap, showToast, t]);
+    return () => onPreparePlanAction?.(null);
+  }, [onPreparePlanAction, plan, isFetching, localEditsCurrent, working, frozen, splitOff, overCap, showToast, t]);
   const savePlan = () => runPlanAction(async () => {
     working.change(canonicalRef.current);
     await working.save(canonicalRef.current);

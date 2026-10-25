@@ -75,10 +75,10 @@ export function OrderView({
   const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
-  const [resourceRevision, setResourceRevision] = useState(0);
-  const prepareResources = useRef<(() => Promise<boolean>) | null>(null);
-  const registerResourcePreparation = useCallback((prepare: (() => Promise<boolean>) | null) => {
-    prepareResources.current = prepare;
+  const [planActionRevision, setPlanActionRevision] = useState(0);
+  const preparePlanAction = useRef<(() => Promise<boolean>) | null>(null);
+  const registerPlanPreparation = useCallback((prepare: (() => Promise<boolean>) | null) => {
+    preparePlanAction.current = prepare;
   }, []);
   const [draftForecast, setDraftForecast] = useState<DraftForecastState>();
   const [fitDraft, setFitDraft] = useState<PlateFitDraft | null>(null);
@@ -275,9 +275,9 @@ export function OrderView({
           {actions.resources && <OrderPrinterResources orderId={order.id}
             editable={order.status === 'active' && hasPermission('orders:update')}
             onConfigure={() => { void (async () => {
-              if (!await prepareResources.current?.()) return;
+              if (!await preparePlanAction.current?.()) return;
               actions.resources?.({ orderId: order.id, onChanged: () => {
-                setFitDraft(null); setResourceRevision(value => value + 1);
+                setFitDraft(null); setPlanActionRevision(value => value + 1);
               } });
             })(); }} />}
           {order.status === 'active' && draftForecast && (
@@ -290,8 +290,8 @@ export function OrderView({
             />
           )}
           <PlanBlock
-            key={`${order.id}-${resourceRevision}`}
-            onPrepareResources={registerResourcePreparation}
+            key={`${order.id}-${planActionRevision}`}
+            onPreparePlanAction={registerPlanPreparation}
             order={order}
             fitDraft={fitDraft?.orderId === id ? fitDraft : null}
             onPlateSelection={rememberPlates}
