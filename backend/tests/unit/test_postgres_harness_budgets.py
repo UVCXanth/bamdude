@@ -26,7 +26,7 @@ def nested_budgets(source, default):
 
 def test_outer_watchdogs_leave_nested_suites_time_to_report_their_result():
     config = configparser.ConfigParser()
-    config.read(ROOT / "backend/tests/pytest.ini")
+    config.read(ROOT / "backend/tests/pytest.ini", encoding="utf-8")
     default = next(
         int(arg.split("=", 1)[1]) for arg in shlex.split(config["pytest"]["addopts"]) if arg.startswith("--timeout=")
     )
