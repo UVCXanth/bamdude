@@ -792,7 +792,10 @@ async def scenario_i() -> dict:
         async with async_session() as db:
             await SqlRecorder.tag(db, "d")
             outcome = await _runner()._outcome(
-                db, lambda: project_routes.delete_project(ids["order"], _req(), db, None)
+                db,
+                lambda: project_routes.delete_project(
+                    project_id=ids["order"], request=_req(), db=db, current_user=None
+                ),
             )
             gate_statements = [
                 i for i, (k, t, nw) in enumerate(recorder.log["d"]) if t == "products" and k == "LOCK NO KEY UPDATE"
