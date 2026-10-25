@@ -528,6 +528,74 @@ def has_runtime_context(manager: PrinterManager, printer_id: int) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class RunContextExpectation:
+    """The exact in-process context an addressed repair checked: the objects, and the admission's fields.
+
+    The binding is frozen and replaced on every change, so the object itself is its version. The admission is
+    mutated in place, so its fields are kept beside it (spec printer-runtime-stall r3 R7).
+    """
+
+    printer_id: int
+    current: PrintRunBinding
+    admission: PrintStartAdmission | None
+    admission_fields: tuple | None
+
+
+def capture_runtime_context(manager: PrinterManager, printer_id: int) -> RunContextExpectation | None:
+    current = _peek(manager, "_print_run_bindings").get(printer_id)
+    if current is None:
+        return None
+    admission = _peek(manager, "_print_start_admissions").get(printer_id)
+    fields = (
+        None
+        if admission is None
+        else (admission.phase, admission.subtask_id, admission.archive_id, admission.generation)
+    )
+    return RunContextExpectation(printer_id, current, admission, fields)
+
+
+def runtime_context_unchanged(manager: PrinterManager, expected: RunContextExpectation) -> bool:
+    """Whether the context is still exactly what was checked, with nothing working around it. No side effect."""
+    pid = expected.printer_id
+    if getattr(manager, "_print_lifecycle_stopping", False) is True:
+        return False
+    if _peek(manager, "_print_run_bindings").get(pid) is not expected.current:
+        return False
+    admission = _peek(manager, "_print_start_admissions").get(pid)
+    if admission is not expected.admission:
+        return False
+    if admission is not None and (
+        (admission.phase, admission.subtask_id, admission.archive_id, admission.generation) != expected.admission_fields
+        or admission.phase != "processed"
+    ):
+        return False
+    if pid in _peek(manager, "_print_start_resolutions") or _peek(manager, "_pending_print_terminals").get(pid):
+        return False
+    if any(bound == pid for bound, _ in _peek(manager, "_print_run_finishing_bindings")):
+        return False
+    generation = expected.current.effect_generation
+    if _peek(manager, "_print_effect_generations").get(pid) != generation:
+        return False
+    marker = _peek(manager, "_print_terminal_generations").get(pid)
+    return marker is None or marker <= generation
+
+
+def release_runtime_context(manager: PrinterManager, expected: RunContextExpectation) -> None:
+    """Remove the checked run and its processed start, and mark its terminal handled -- call only right after
+    :func:`runtime_context_unchanged` answered True, with no await between. The activity generation is NOT
+    advanced: a late unbound terminal of this run must stay a duplicate (``accept_unbound_completion``)."""
+    pid = expected.printer_id
+    _current(manager).pop(pid, None)
+    if expected.admission is not None:
+        _start_admissions(manager).pop(pid, None)
+    accepted = getattr(manager, "_print_terminal_generations", None)
+    if not isinstance(accepted, dict):
+        accepted = {}
+        manager._print_terminal_generations = accepted
+    accepted[pid] = expected.current.effect_generation
+
+
 def finishing_print_runs(manager: PrinterManager, printer_id: int) -> tuple[PrintRunBinding, ...]:
     """Addressed terminal leases still being processed for one printer."""
 

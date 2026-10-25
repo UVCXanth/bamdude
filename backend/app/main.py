@@ -1161,6 +1161,38 @@ def run_config_registrations(printer_id: int) -> dict[str, tuple[bool, object]]:
     }
 
 
+def capture_run_config(printer_id: int) -> tuple:
+    """Presence, the object and a deep copy of both registrations, for :func:`run_config_unchanged`."""
+    from copy import deepcopy
+
+    return tuple(
+        (printer_id in registry, registry.get(printer_id), deepcopy(registry.get(printer_id)))
+        for registry in (_active_macro_selection, _active_swap_config)
+    )
+
+
+def run_config_unchanged(printer_id: int, expected: tuple) -> bool:
+    """Whether both registrations are still the very objects, with the very content, that were checked."""
+    for registry, (present, value, content) in zip(
+        (_active_macro_selection, _active_swap_config), expected, strict=True
+    ):
+        if (printer_id in registry) != present:
+            return False
+        if present and (registry[printer_id] is not value or registry[printer_id] != content):
+            return False
+    return True
+
+
+def release_run_config(printer_id: int, expected: tuple) -> None:
+    """Forget what dispatch registered for a finished run -- call only right after :func:`run_config_unchanged`
+    answered True. Its finish macros are not run: this is a selection, not an owed effect."""
+    for registry, (present, _value, _content) in zip(
+        (_active_macro_selection, _active_swap_config), expected, strict=True
+    ):
+        if present:
+            registry.pop(printer_id, None)
+
+
 def register_swap_config(printer_id: int, options: dict):
     """Register in-memory swap-macro config for the current print on *printer_id*.
 
