@@ -22,6 +22,11 @@ def json_value(value):
     raise TypeError(type(value).__name__)
 
 
+def incarnation() -> str:
+    """This process's identity: recorded with an intent, so history can tell an ended process's from ours."""
+    return _INCARNATION
+
+
 def canonical(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=json_value, allow_nan=False).encode()
 

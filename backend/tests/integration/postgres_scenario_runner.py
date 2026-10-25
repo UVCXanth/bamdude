@@ -1175,6 +1175,10 @@ async def _main(mode: str) -> dict:
         from backend.tests.integration.print_state_recovery_scenarios import run
 
         return await run()
+    if mode == "runtime_recovery":
+        from backend.tests.integration.runtime_recovery_scenarios import run
+
+        return await run()
     if mode == "print_recovery_swap":
         from backend.tests.integration.print_recovery_swap_pg_scenarios import scenario_integrated_lock_order
 

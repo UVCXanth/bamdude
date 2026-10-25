@@ -257,6 +257,15 @@ class TestPrintStateRecovery:
             assert (result[pair]["first"], result[pair]["second"]) == ("ok", "ok"), (pair, result)
             assert result[pair]["waited"] >= 1, (pair, result)
 
+    def test_the_runtime_repair_reacquires_its_guards_and_protects_a_new_start(self, tmp_path_factory):
+        """Spec printer-runtime-stall r3 A16: two commits, the guards taken again after the first."""
+        url = _pg_url()
+        _wipe(url)
+        result = _run("runtime_recovery", tmp_path_factory.mktemp("pg_runtime_recovery"), url)
+        assert result == dict.fromkeys(
+            ("new_start_sees_the_pause", "one_clear_per_token", "b_between_commits_untouched"), True
+        )
+
     def test_operator_recovery_and_existing_writers_serialize(self, tmp_path_factory):
         url = _pg_url()
         _wipe(url)

@@ -500,6 +500,18 @@ def plan_action(f: RecoveryFacts, action: str, *, confirmed_completed=False) -> 
         raise ValueError("recovery_not_allowed")
     q, i, a = f.queue, f.item, f.archive
     plan = {"item": {}, "archive": {}, "queue": {}, "delete_item": False}
+    if action == RUNTIME_ACTION:
+        # Rows are not touched: the queue is paused (the flag alone, never its status) and the run's context
+        # goes from memory. The operator resumes the queue once the printer is checked (spec r3 R7, R8).
+        r = f.runtime
+        plan["queue"] = {"is_paused": True}
+        plan["runtime"] = {
+            "archive_id": r["current"]["archive_id"],
+            "admission": r["admission"] is not None,
+            "macro_selection": r["macro_selection"]["present"],
+            "swap_config": r["swap_config"]["present"],
+        }
+        return plan
     if action == "close_interrupted_attempt":
         # The end time is the apply's own clock, outside the plan, so the preview's plan hash holds.
         code, detail = interrupted_close(a)

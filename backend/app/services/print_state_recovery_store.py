@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import time
 from contextlib import AsyncExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import and_, func, literal, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
@@ -25,7 +26,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import dispatch_phase, print_state_recovery_preview as previews, queue_sources
 from backend.app.services.archive_write_scope import load_active_archive_for_write
-from backend.app.services.print_state_recovery import RecoveryFacts, classify, plan_action, utc
+from backend.app.services.print_state_recovery import RUNTIME_ACTION, RecoveryFacts, classify, plan_action, utc
 from backend.app.services.queue_ops import claim_lanes
 from backend.app.utils.failure_reasons import row_class
 
@@ -745,6 +746,9 @@ async def make_preview(db, printer_id, kind, target_id, action, actor, *, confir
         else None,
         "archive_preserved": True,
         "expires_in": previews.TTL,
+        # The pause, a pause that was there already, the gate and a residual preheat: what the operator
+        # must know before an in-memory repair (R7b, R9). Absent for the database repairs.
+        **({"runtime": _runtime_view(f)} if f.runtime is not None else {}),
     }
 
 
@@ -765,6 +769,13 @@ def public_plan(plan):
 async def apply_preview(session_factory, payload, actor, actor_label, *, recheck=None):
     if payload.get("actor") != actor or payload.get("epoch") != queue_sources.current_epoch():
         raise ValueError("recovery_changed")
+    if payload.get("action") == RUNTIME_ACTION:
+        # Shielded: a client that goes away after the first commit does not leave the protocol half done --
+        # it runs to its outcome, which history then shows (R8.8).
+        operation = asyncio.ensure_future(_apply_runtime(session_factory, payload, actor, actor_label, recheck))
+        _runtime_operations.add(operation)
+        operation.add_done_callback(_runtime_operations.discard)
+        return await asyncio.shield(operation)
     key = (payload["printer_id"], payload["kind"], payload["target_id"])
     nonce = payload["nonce"]
     input_hash = previews.digest(payload)
@@ -917,3 +928,245 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
     except Exception:
         logger.warning("operator recovery committed; event delivery failed action=%s", nonce)
     return result
+
+
+# --- The in-memory repair (spec printer-runtime-stall r3 R6, R8) -------------------------------------------------
+#
+# Two commits, because a database transaction cannot hold process memory: the intent and the queue's pause
+# first, then -- under the same guards taken again -- revalidation, the synchronous compare-and-clear and the
+# outcome. Nothing in memory changes before the first commit is confirmed; a refusal after it keeps the pause;
+# an outcome that could not be recorded is reported as unconfirmed and never retried. A nonce with an intent
+# never clears twice.
+
+_runtime_operations: set[asyncio.Task] = set()
+
+
+def outcome_id(nonce: str) -> str:
+    """The outcome row's own id, derived from the intent's nonce: one per operation, found without a scan."""
+    return str(uuid5(NAMESPACE_URL, f"bamdude:print-state-recovery:outcome:{nonce}"))
+
+
+def _utc_now() -> datetime:
+    # Python's UTC, never a server default (local time on a PostgreSQL whose zone is not UTC).
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _as_previewed(f: RecoveryFacts, was_paused: bool) -> RecoveryFacts:
+    """The facts with the pause this protocol set taken back out, to compare with what the preview saw."""
+    return replace(f, queue={**f.queue, "is_paused": was_paused}) if f.queue else f
+
+
+def _runtime_response(intent: dict, outcome: dict | None) -> dict:
+    return {
+        **{k: v for k, v in intent.items() if k not in ("phase", "incarnation", "digest")},
+        "operation_id": intent["operation_id"],
+        "outcome": outcome["outcome"] if outcome else "outcome_unconfirmed",
+        "reason": outcome.get("reason") if outcome else None,
+        "queue_paused": True,
+        "queue_was_paused": intent["before"]["queue_was_paused"],
+    }
+
+
+async def _runtime_replay(db, prior, actor: str, input_hash: str) -> dict:
+    """The known answer for a nonce that already has its intent -- never a second compare-and-clear."""
+    if prior.actor != actor or prior.input_hash != input_hash:
+        raise ValueError("recovery_changed")
+    outcome = await db.get(PrintStateRecoveryAction, outcome_id(prior.id), populate_existing=True)
+    return _runtime_response(prior.result, outcome.result if outcome else None)
+
+
+def _final_release(key, f: RecoveryFacts, payload: dict, was_paused: bool) -> bool:
+    """The last check and the compare-and-clear, with no await between them (R8.4).
+
+    The runtime facts and the telemetry are read again here, synchronously; the revision then proves they are
+    the very objects the preview saw, and the coordinator removes exactly those -- or nothing.
+    """
+    from backend.app.services import runtime_context_release
+    from backend.app.services.printer_manager import printer_manager
+
+    now = replace(f, runtime=runtime_snapshot(key[0]), live=live_snapshot(key[0]))
+    issue = classify(now)
+    if (
+        issue is None
+        or RUNTIME_ACTION not in issue["actions"]
+        or revision(_as_previewed(now, was_paused)) != payload["revision"]
+    ):
+        return False
+    expected = runtime_context_release.capture(printer_manager, key[0])
+    current = now.runtime["current"]
+    if expected is None or current is None or id(expected.run.current) != current["ref"]:
+        return False
+    return runtime_context_release.release(printer_manager, expected)
+
+
+def _audit_row(nonce_or_id, actor, actor_label, key, queue_id, archive_id, input_hash, result):
+    return PrintStateRecoveryAction(
+        id=nonce_or_id,
+        created_at=_utc_now(),
+        actor=actor,
+        actor_label=actor_label,
+        printer_id=key[0],
+        queue_id=queue_id,
+        item_id=None,
+        archive_id=archive_id,
+        action=RUNTIME_ACTION,
+        input_hash=input_hash,
+        result=result,
+    )
+
+
+async def _take_guards(db, guards, queue_id, archive_id):
+    """Local archive lock, local lane lock, then the database's: the one order of every archive + lane writer."""
+    await guards.enter_async_context(claim_lanes(db, [queue_id], archive_id=archive_id))
+    if archive_id is not None:
+        await load_active_archive_for_write(db, archive_id)
+    await db.scalar(select(PrinterQueue).where(PrinterQueue.id == queue_id).with_for_update())
+
+
+async def _apply_runtime(session_factory, payload, actor, actor_label, recheck):
+    key = (payload["printer_id"], "runtime", payload["target_id"])
+    nonce = payload["nonce"]
+    input_hash = previews.digest(payload)
+    async with queue_sources.storage_mutation():
+        async with session_factory() as preflight:
+            if recheck:
+                await recheck(payload["action"], preflight)
+            prior = await preflight.get(PrintStateRecoveryAction, nonce)
+            if prior:
+                return await _runtime_replay(preflight, prior, actor, input_hash)
+            facts, _, _ = await read_facts(preflight, [key[0]], [key])
+            f = facts.get(key)
+            if f is None or f.queue is None:
+                raise ValueError("recovery_changed")
+            queue_id = f.queue["id"]
+            archive_id = f.archive["id"] if f.archive else None
+
+        # First commit: the intent and the pause. Until it is confirmed, memory is untouched.
+        async with session_factory() as db, AsyncExitStack() as guards:
+            await _take_guards(db, guards, queue_id, archive_id)
+            prior = await db.get(PrintStateRecoveryAction, nonce, populate_existing=True)
+            if prior:
+                if recheck:
+                    await recheck(payload["action"], db)
+                return await _runtime_replay(db, prior, actor, input_hash)
+            facts, queues, _ = await read_facts(db, [key[0]], [key], locked=True)
+            f = facts.get(key)
+            if f is None or revision(f) != payload["revision"] or queue_sources.current_epoch() != payload["epoch"]:
+                raise ValueError("recovery_changed")
+            plan = plan_action(f, payload["action"])
+            if previews.digest(plan) != payload["plan_hash"]:
+                raise ValueError("recovery_changed")
+            if recheck:
+                await recheck(payload["action"], db)
+            if previews.clock() > payload["expires"]:
+                raise ValueError("recovery_preview_expired")
+            was_paused = bool(f.queue["is_paused"])
+            current = f.runtime["current"]
+            intent = json.loads(
+                previews.canonical(
+                    {
+                        "id": nonce,
+                        "phase": "intent",
+                        "operation_id": nonce,
+                        "action": RUNTIME_ACTION,
+                        "printer_id": key[0],
+                        "queue_id": queue_id,
+                        "item_id": None,
+                        "archive_id": archive_id,
+                        "identities": {
+                            "queue": f.queue["recovery_identity"],
+                            "archive": (f.archive or {}).get("recovery_identity"),
+                        },
+                        "before": {
+                            "queue": f.queue,
+                            "queue_was_paused": was_paused,
+                            "runtime": {
+                                "archive_id": current["archive_id"],
+                                "sequence": current["sequence"],
+                                "origin": current["origin"],
+                                **plan["runtime"],
+                            },
+                        },
+                        "after": public_plan(plan),
+                        "note": payload["note"],
+                        "reason_codes": [],
+                        "archive_preserved": True,
+                        "incarnation": previews.incarnation(),
+                        "digest": payload["revision"],
+                        "at": datetime.now(timezone.utc),
+                    }
+                )
+            )
+            # The flag only: the queue's status says what the printer is doing and is not ours to change.
+            queues[key[0]].is_paused = True
+            db.add(_audit_row(nonce, actor, actor_label, key, queue_id, archive_id, input_hash, intent))
+            await db.commit()
+        logger.info("operator print-state recovery action=%s printer=%s phase=intent queue_paused=1", nonce, key[0])
+
+        # Second commit: the guards again (PostgreSQL released them at the first commit), the facts, the rights
+        # and the epoch afresh, the compare-and-clear, the outcome.
+        outcome, reason, applied = "not_applied_changed", None, False
+        async with session_factory() as db, AsyncExitStack() as guards:
+            await _take_guards(db, guards, queue_id, archive_id)
+            try:
+                if recheck:
+                    await recheck(payload["action"], db)
+            except Exception:  # noqa: BLE001 - a revoked or changed authority, whatever form its refusal takes
+                reason = "rights_changed"
+            if reason is None:
+                facts, _, _ = await read_facts(db, [key[0]], [key], locked=True)
+                f2 = facts.get(key)
+                if queue_sources.current_epoch() != payload["epoch"]:
+                    reason = "restored"
+                elif previews.clock() > payload["expires"]:
+                    reason = "preview_expired"
+                elif (
+                    f2 is None
+                    or not f2.queue
+                    or not f2.queue["is_paused"]
+                    # Last, and only when every check above held: the synchronous compare-and-clear.
+                    or not _final_release(key, f2, payload, was_paused)
+                ):
+                    reason = "context_changed"
+                else:
+                    outcome, applied = "applied", True
+            record = json.loads(
+                previews.canonical(
+                    {
+                        "id": outcome_id(nonce),
+                        "phase": "outcome",
+                        "operation_id": nonce,
+                        "action": RUNTIME_ACTION,
+                        "outcome": outcome,
+                        "reason": reason,
+                        "at": datetime.now(timezone.utc),
+                    }
+                )
+            )
+            db.add(_audit_row(outcome_id(nonce), actor, actor_label, key, queue_id, archive_id, input_hash, record))
+            try:
+                await db.commit()
+            except Exception:  # noqa: BLE001 - the outcome is unknown to history; what happened is not undone
+                logger.warning(
+                    "operator print-state recovery action=%s printer=%s outcome=%s could not be recorded",
+                    nonce,
+                    key[0],
+                    outcome,
+                    exc_info=True,
+                )
+                if applied:
+                    record = None
+        logger.info(
+            "operator print-state recovery action=%s printer=%s phase=outcome outcome=%s reason=%s",
+            nonce,
+            key[0],
+            outcome if record else "outcome_unconfirmed",
+            reason,
+        )
+    from backend.app.core.websocket import ws_manager
+
+    try:
+        await ws_manager.broadcast({"type": "queue_changed", "printer_id": key[0]})
+    except Exception:
+        logger.warning("operator recovery committed; event delivery failed action=%s", nonce)
+    return _runtime_response(intent, record)

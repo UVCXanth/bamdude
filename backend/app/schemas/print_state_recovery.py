@@ -8,12 +8,14 @@ RecoveryAction = Literal[
     "release_orphan_header",
     "delete_stale_item",
     "close_interrupted_attempt",
+    "clear_terminal_runtime_context",
 ]
 
 
 class RecoveryPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["item", "header"]
+    #: ``runtime`` targets a printer's held run by its execution archive id.
+    kind: Literal["item", "header", "runtime"]
     target_id: int = Field(gt=0, le=2_147_483_647)
     action: RecoveryAction
     confirmed_completed: StrictBool = False

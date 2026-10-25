@@ -19,7 +19,7 @@ import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
   | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
-  | 'close_interrupted_attempt';
+  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context';
 /** A run the printer's process still holds in memory (kind ``runtime``): what the operator reads beside it. */
 export interface PrintStateRuntimeView {
   context: { archive_id: number; queue_item_id: number | null; origin: string } | null;
@@ -39,17 +39,38 @@ export interface PrintStateIssuePage {
   issues: PrintStateIssue[]; next_cursor: string | null; truncated: boolean; checked_at: string;
 }
 export interface PrintStatePreviewInput {
-  kind: 'item' | 'header'; target_id: number; action: PrintStateAction; confirmed_completed: boolean; note: string;
+  kind: 'item' | 'header' | 'runtime'; target_id: number; action: PrintStateAction; confirmed_completed: boolean;
+  note: string;
+}
+/** What an in-memory repair removes: the held run, and whether its start and dispatch's registrations go too. */
+export interface PrintStateRuntimeRelease {
+  archive_id: number; admission: boolean; macro_selection: boolean; swap_config: boolean;
 }
 export interface PrintStatePreview {
   estimate?: { started_at: string; duration_seconds: number; completed_at: string } | null;
   preview_token: string; action: PrintStateAction; archive_preserved: boolean; expires_in: number;
   before: Record<'queue' | 'item' | 'archive', Record<string, unknown>>;
-  after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & { delete_item: boolean };
+  after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & {
+    delete_item: boolean; runtime?: PrintStateRuntimeRelease;
+  };
+  /** Present for the in-memory repair only. */
+  runtime?: Omit<PrintStateRuntimeView, 'age_seconds'>;
+}
+/** How an in-memory repair ended: applied, refused after its pause, or unknown to history. */
+export type PrintStateRuntimeOutcome = 'applied' | 'not_applied_changed' | 'outcome_unconfirmed';
+/** The outcome row of an in-memory repair, as history attaches it to its intent. */
+export interface PrintStateOutcomeRecord {
+  id: string; operation_id: string; outcome: Exclude<PrintStateRuntimeOutcome, 'outcome_unconfirmed'>;
+  reason: string | null;
 }
 export interface PrintStateAudit {
   id: string; action: PrintStateAction; printer_id: number; queue_id: number;
   item_id: number | null; archive_id: number | null; note?: string; actor_label?: string; created_at?: string;
+  /** Apply of the in-memory repair: its answer. */
+  operation_id?: string; reason?: string | null; queue_paused?: boolean; queue_was_paused?: boolean;
+  outcome?: PrintStateRuntimeOutcome | PrintStateOutcomeRecord | null;
+  /** History of the in-memory repair: an intent whose process ended before an outcome was recorded. */
+  process_ended?: boolean;
 }
 
 export class ApiError extends Error {

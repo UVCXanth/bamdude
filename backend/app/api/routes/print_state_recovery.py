@@ -40,6 +40,9 @@ WRITE_PERMISSIONS = {
     ),
     "delete_stale_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL, Permission.QUEUE_DELETE_ALL),
     "close_interrupted_attempt": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    # The in-memory repair pauses a queue and sends nothing to the printer: the read rights and the queue's
+    # update right (spec printer-runtime-stall r3 R6).
+    "clear_terminal_runtime_context": (Permission.QUEUE_UPDATE_ALL,),
 }
 WRITE = {name: tuple(require_permission(p) for p in perms) for name, perms in WRITE_PERMISSIONS.items()}
 
@@ -205,9 +208,17 @@ async def history(
                 )
             ).all()
         )
-        return {
-            "actions": [
-                {"created_at": row.created_at, "actor_label": row.actor_label, **row.result} for row in rows[:50]
-            ],
-            "next_cursor": rows[49].id if len(rows) > 50 else None,
-        }
+        actions = []
+        for row in rows[:50]:
+            phase = row.result.get("phase") if isinstance(row.result, dict) else None
+            if phase == "outcome":
+                continue  # shown inside its intent, wherever the page boundary fell
+            action = {"created_at": row.created_at, "actor_label": row.actor_label, **row.result}
+            if phase == "intent":
+                # The pair of an in-memory repair, read by the outcome's own id; an intent with no outcome
+                # proves nothing, and one of an ended process is said to be so.
+                outcome = await db.get(PrintStateRecoveryAction, store.outcome_id(row.id))
+                action["outcome"] = outcome.result if outcome is not None else None
+                action["process_ended"] = outcome is None and row.result.get("incarnation") != tokens.incarnation()
+            actions.append(action)
+        return {"actions": actions, "next_cursor": rows[49].id if len(rows) > 50 else None}
