@@ -88,6 +88,10 @@ def test_order_plan_publication_and_cancel_use_database_locks(tmp_path):
     assert result.returncode == 0, result.stdout[-12000:] + result.stderr[-3000:]
 
 
+# This test owns a whole nested suite, not one transaction. Its outer watchdog
+# must outlive subprocess.run's suite budget so that the child is reaped and its
+# result is reported. Every child test still has its own 90-second deadline.
+@pytest.mark.timeout(960)
 def test_post_rebuild_transactions_on_postgres(tmp_path):
     """Dispatch attempts, interrupted dispatch and the tail journal on independent connections:
     no writer waits on a lock its own caller holds (post-rebuild D03/D08, I09, F09)."""
@@ -118,6 +122,7 @@ def test_post_rebuild_transactions_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+@pytest.mark.timeout(660)
 def test_telemetry_day_window_on_postgres(tmp_path):
     """The telemetry day's bounds compared by PostgreSQL itself: the same boundary rows as SQLite,
     aware UTC bounds through asyncpg (telemetry-day-window T08)."""
@@ -143,6 +148,7 @@ def test_telemetry_day_window_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+@pytest.mark.timeout(420)
 def test_queue_bulk_retry_concurrency(tmp_path):
     """The same real-runner matrix on independent PostgreSQL connections."""
     url = _pg_url()
@@ -172,6 +178,7 @@ def test_queue_bulk_retry_concurrency(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+@pytest.mark.timeout(420)
 def test_autoqueue_waiting_projection_and_notification_lifecycle(tmp_path):
     url = _pg_url()
     _wipe(url)

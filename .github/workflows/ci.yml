@@ -284,7 +284,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Run PostgreSQL scenarios
-        timeout-minutes: 10
+        # Includes nested transaction suites (the largest has a 15-minute
+        # subprocess budget). Per-scenario watchdogs remain in force inside.
+        timeout-minutes: 25
         env:
           TEST_POSTGRES_URL: postgresql://bamdude:bamdude@localhost:5432/bamdude_ci
         run: |
@@ -407,7 +409,9 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Run tests
-        timeout-minutes: 10
+        # The full suite took 588s on the 0.7.2 runner; keep headroom above
+        # that aggregate duration without changing Vitest's per-test limits.
+        timeout-minutes: 15
         working-directory: frontend
         run: npm run test:run
 
