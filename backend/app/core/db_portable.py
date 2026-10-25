@@ -482,11 +482,14 @@ async def _add_foreign_key(
             if attempt == 2:
                 logger.error("Could not add FK %s on %s: %s", label, tbl, e)
                 return f"{tbl}.{label}: {e}"
-            on = " AND ".join(f"p.{pc} = c.{cc}" for cc, pc in zip(ccols, pcols, strict=True))
-            notnull = " AND ".join(f"c.{cc} IS NOT NULL" for cc in ccols)
+            # Column names are raw catalog/model identifiers. Table references
+            # arrive already formatted (regclass from import, quoted by model
+            # reconciliation), so do not quote those a second time.
+            on = " AND ".join(f"p.{_quote(pc)} = c.{_quote(cc)}" for cc, pc in zip(ccols, pcols, strict=True))
+            notnull = " AND ".join(f"c.{_quote(cc)} IS NOT NULL" for cc in ccols)
             orphans = f"WHERE {notnull} AND NOT EXISTS (SELECT 1 FROM {parent} p WHERE {on})"
             if set_null:
-                assigns = ", ".join(f"{cc} = NULL" for cc in ccols)
+                assigns = ", ".join(f"{_quote(cc)} = NULL" for cc in ccols)
                 repair = f"UPDATE {tbl} c SET {assigns} {orphans}"  # noqa: S608
             else:
                 repair = f"DELETE FROM {tbl} c {orphans}"  # noqa: S608
@@ -670,13 +673,13 @@ async def _reconcile_foreign_keys(engine, models_metadata) -> None:
         if drop:
             try:
                 async with engine.begin() as conn:
-                    await conn.execute(text(f'ALTER TABLE {tbl} DROP CONSTRAINT "{drop}"'))
+                    await conn.execute(text(f"ALTER TABLE {_quote(tbl)} DROP CONSTRAINT {_quote(drop)}"))
             except Exception as e:  # noqa: BLE001
                 failed.append(f"{label}: {e}")
                 continue
         ddl = str(AddConstraint(fk).compile(dialect=engine.dialect))
         err = await _add_foreign_key(
-            engine, tbl, label, ddl, parent, cols, pcols, _fk_rule(fk.ondelete) == "SET NULL", repaired
+            engine, _quote(tbl), label, ddl, _quote(parent), cols, pcols, _fk_rule(fk.ondelete) == "SET NULL", repaired
         )
         (failed if err else done).append(err or label)
     if done:
@@ -882,7 +885,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                 ).all()
                 saved_db_fks = [(r[0], r[1], r[2], r[3], list(r[4]), list(r[5])) for r in rows]
                 for tbl, conname, *_ in saved_db_fks:
-                    await conn.execute(text(f'ALTER TABLE {tbl} DROP CONSTRAINT "{conname}"'))
+                    await conn.execute(text(f"ALTER TABLE {tbl} DROP CONSTRAINT {_quote(conname)}"))
                 logger.info("Dropped %d foreign keys for the duration of the import", len(saved_db_fks))
 
             # Phase 2: Import data
@@ -905,7 +908,10 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                     continue
 
                 col_list = ", ".join(_quote(c) for c in columns)
-                param_list = ", ".join(f":{c}" for c in columns)
+                # Bind names are SQL syntax too: never derive them from an
+                # imported column's spelling (spaces, quotes, colons, etc.).
+                bind_names = {c: f"v{i}" for i, c in enumerate(columns)}
+                param_list = ", ".join(f":{bind_names[c]}" for c in columns)
                 insert_sql = text(
                     f"INSERT INTO {_quote(table_name)} ({col_list}) VALUES ({param_list})"  # noqa: S608
                 )
@@ -935,7 +941,13 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                 now = datetime.now()  # noqa: DTZ005
 
                 def _convert_row(
-                    row, cols=columns, bools=bool_columns, dts=datetime_columns, nn=not_null_defaults, _n=now
+                    row,
+                    cols=columns,
+                    bools=bool_columns,
+                    dts=datetime_columns,
+                    nn=not_null_defaults,
+                    _n=now,
+                    binds=bind_names,
                 ):
                     result = {}
                     for c in cols:
@@ -950,7 +962,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                                     val = datetime.fromisoformat(val)  # noqa: DTZ011
                                 except ValueError:
                                     pass
-                        result[c] = val
+                        result[binds[c]] = val
                     return result
 
                 count = 0
@@ -987,9 +999,14 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
             # stops and says why.
             if is_postgres():
                 failed, repaired = [], []
-                model_rules = _model_fk_rules(metadata)
+                # Catalog table references use regclass's SQL spelling, whereas
+                # model names are raw identifiers (e.g. "child table").
+                model_rules = {
+                    (engine.dialect.identifier_preparer.quote(tbl), cols): rules
+                    for (tbl, cols), rules in _model_fk_rules(metadata).items()
+                }
                 for tbl, conname, cdef, parent, ccols, pcols in saved_db_fks:
-                    ddl = f'ALTER TABLE {tbl} ADD CONSTRAINT "{conname}" {cdef}'
+                    ddl = f"ALTER TABLE {tbl} ADD CONSTRAINT {_quote(conname)} {cdef}"
                     # The repair follows the MODEL's ON DELETE rule for this key where
                     # the model still has it — the file's own spelling rarely carries
                     # one (SQLite never enforced it), and conform_imported_schema is

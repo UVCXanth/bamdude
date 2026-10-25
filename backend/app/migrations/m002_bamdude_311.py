@@ -419,7 +419,9 @@ async def upgrade(conn):
             new_cols = await get_table_columns(conn, "git_backup_config")
             shared = [c for c in old_cols if c in new_cols]
             if shared:
-                cols = ", ".join(shared)
+                # Identifier quoting only: preserve this released migration's
+                # data/schema semantics when replaying an imported legacy DB.
+                cols = ", ".join(conn.dialect.identifier_preparer.quote_identifier(c) for c in shared)
                 await conn.execute(
                     text(f"INSERT INTO git_backup_config ({cols}) SELECT {cols} FROM github_backup_config")
                 )  # noqa: S608
@@ -432,7 +434,7 @@ async def upgrade(conn):
             new_cols = await get_table_columns(conn, "git_backup_logs")
             shared = [c for c in old_cols if c in new_cols]
             if shared:
-                cols = ", ".join(shared)
+                cols = ", ".join(conn.dialect.identifier_preparer.quote_identifier(c) for c in shared)
                 await conn.execute(text(f"INSERT INTO git_backup_logs ({cols}) SELECT {cols} FROM github_backup_logs"))  # noqa: S608
         await conn.execute(text("DROP TABLE github_backup_logs"))
 

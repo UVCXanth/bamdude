@@ -38,7 +38,8 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Tailscale CLI only (no tailscaled — the daemon runs on the host).
+# Install the Tailscale package for its CLI; it also ships tailscaled, which
+# BamDude does not launch — the daemon used here runs on the host.
 # `services/virtual_printer/tailscale.py` shells out to `tailscale status --json`
 # via the host's socket, which the user mounts in through docker-compose when
 # they want the tailnet IP / MagicDNS name on the VP card. Without the binary
