@@ -344,7 +344,7 @@ sudo lsof -i :8000  # Linux/macOS
 
 ### Native Installation
 - Python 3.12+ (automatically installed if missing)
-- Node.js 18+ (automatically installed if missing)
+- Node.js 22.22.0+ (automatically installed if missing or older)
 - Git (automatically installed if missing)
 - ~500MB disk space
 

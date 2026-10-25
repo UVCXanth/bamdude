@@ -846,21 +846,30 @@ sign_python_for_tcc() {
 }
 
 check_node_version() {
-    # Returns 0 if Node.js 20+ is available, 1 otherwise
+    # The frontend's react-router dependency requires Node.js >=22.22.0.
     if ! command -v node &>/dev/null; then
         return 1
     fi
 
-    local version
-    version=$(node --version 2>/dev/null | sed 's/^v//')
-    local major
-    major=$(echo "$version" | cut -d'.' -f1)
+    local version major minor
+    if ! version=$(node --version 2>/dev/null); then
+        log_warn "Could not read Node.js version (need 22.22.0+)"
+        return 1
+    fi
+    # Validate before arithmetic; reject incomplete/prerelease output and
+    # bound the components so malformed output cannot overflow Bash integers.
+    if [[ ! "$version" =~ ^v([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})$ ]]; then
+        log_warn "Unrecognized Node.js version (need 22.22.0+)"
+        return 1
+    fi
+    major=$((10#${BASH_REMATCH[1]}))
+    minor=$((10#${BASH_REMATCH[2]}))
 
-    if [[ "$major" -ge 20 ]]; then
-        log_success "Found Node.js v$version"
+    if (( major > 22 || (major == 22 && minor >= 22) )); then
+        log_success "Found Node.js $version"
         return 0
     else
-        log_warn "Found Node.js v$version (need 20+)"
+        log_warn "Found Node.js $version (need 22.22.0+)"
         return 1
     fi
 }
@@ -890,7 +899,7 @@ install_nodejs() {
             brew link --overwrite node@22
             ;;
         *)
-            log_error "Please install Node.js 20+ manually: https://nodejs.org/"
+            log_error "Please install Node.js 22.22.0+ manually: https://nodejs.org/"
             exit 1
             ;;
     esac
@@ -903,12 +912,12 @@ build_frontend() {
 
     cd "$INSTALL_PATH/frontend"
 
-    # Check for Node.js 20+
+    # Check the exact minimum before and after installing Node.js.
     if ! check_node_version; then
         install_nodejs
         # Verify installation
         if ! check_node_version; then
-            log_error "Failed to install Node.js 20+. Please install manually."
+            log_error "Failed to install Node.js 22.22.0+. Please install manually."
             exit 1
         fi
     fi
