@@ -230,8 +230,9 @@ async def test_forecast_projects_ranks_ahead_and_splits_across_models(db_session
     assert f.now_seconds == H and f.now_eta == NOW + timedelta(hours=1)
     # After the urgent order's four hooks: 4 + 3 = 7 prints on 3 machines → 3 h.
     assert f.after_seconds == 3 * H
-    (row,) = f.lines[0].rows
-    assert row.proposed_split is not None and sum(row.proposed_split.values()) == 3
+    assert len(f.lines[0].rows) == 2
+    assert all(row.proposed_split is None for row in f.lines[0].rows)
+    assert {row["model"]: row["prints"] for row in f.by_model} == {"P1S": 2, "X1C": 1}
     assert f.machine_seconds == 3 * H and farm_free.free_seconds == 0
 
 
@@ -343,14 +344,15 @@ async def test_a_closed_order_answers_an_empty_forecast(committing_client, db_se
 
 
 @pytest.mark.asyncio
-async def test_the_order_route_carries_lines_and_the_proposed_split(committing_client, db_session, farm):
+async def test_the_order_route_carries_lines_and_separate_model_rows(committing_client, db_session, farm):
     product = farm["product"]
     o, line_id = await _order(db_session, product.id, 3, name="D")
     body = (await committing_client.get(f"/api/v1/projects/{o}/forecast")).json()
     (line,) = body["lines"]
     assert line["line_id"] == line_id and line["now_seconds"] == H and line["eta_complete"] is True
-    (row,) = line["rows"]
-    assert sum(row["proposed_split"].values()) == 3
+    assert len(line["rows"]) == 2
+    assert all(row["proposed_split"] is None for row in line["rows"])
+    assert {row["model"]: row["prints"] for row in body["by_model"]} == {"P1S": 2, "X1C": 1}
     assert (await committing_client.get("/api/v1/projects/999999/forecast")).status_code == 404
 
 
