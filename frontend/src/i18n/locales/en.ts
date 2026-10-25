@@ -6867,6 +6867,7 @@ export default {
         plan_enqueued: 'Plan sent to the queue — prints: {{prints}}',
         line_rebalanced: 'Line rebalanced: {{product}}',
         surplus_banked: 'Surplus banked to free stock — parts: {{parts}}',
+        parts_recounted: 'Parts recounted for {{product}}: {{parts}}',
         procurement_updated: 'Purchased part {{part}}: {{from}} → {{to}}',
         attachment_added: 'Attachment added: {{filename}}',
         attachment_removed: 'Attachment removed: {{filename}}',

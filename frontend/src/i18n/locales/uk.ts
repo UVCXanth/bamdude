@@ -6986,6 +6986,7 @@ export default {
         plan_enqueued: 'План у черзі — друків: {{prints}}',
         line_rebalanced: 'Перебалансовано позицію «{{product}}»',
         surplus_banked: 'Надлишок списано у вільний залишок — деталей: {{parts}}',
+        parts_recounted: 'Перераховано деталі «{{product}}»: {{parts}}',
         procurement_updated: 'Купівельна деталь «{{part}}»: {{from}} → {{to}}',
         attachment_added: 'Додано вкладення: {{filename}}',
         attachment_removed: 'Видалено вкладення: {{filename}}',
