@@ -21,13 +21,26 @@ FeedPolicy = Literal["auto", "ams_only", "external_only"]
 class RoutingDeferred(Exception):
     """No publish occurred: current evidence cannot authorize this attempt."""
 
-    def __init__(self, reason: str, *, revision: str | None = None, params: dict | None = None):
+    def __init__(
+        self,
+        reason: str,
+        *,
+        revision: str | None = None,
+        params: dict | None = None,
+        detail: str | None = None,
+        blocker_archive_id: int | None = None,
+    ):
         self.reason = reason
         self.revision = revision
         #: Same facts a ``RoutingResult`` carries, for the deferral an operator
         #: reads on the queue row. Empty for the refusals that are about the
         #: source or the claim rather than about a channel.
         self.params = params or {}
+        #: Which branch refused, for diagnostics only (``background_dispatch.CLAIM_DETAILS``); the public
+        #: ``reason`` and the operator's sentence do not change with it. ``None`` where nobody knows.
+        self.detail = detail
+        #: The execution archive of the run that held the printer, when that is what refused.
+        self.blocker_archive_id = blocker_archive_id
         super().__init__(reason)
 
 

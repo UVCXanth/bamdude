@@ -1865,6 +1865,9 @@ async def retry_failed_item(
             await update_queue_counters(db, item.queue_id)
             await db.commit()
         _end_capture_cooldowns([item.id])
+        from backend.app.services import dispatch_stall_tracker
+
+        dispatch_stall_tracker.new_incarnation(item.id)
     except QueueSourceError as exc:
         raise refusal(exc) from exc
 

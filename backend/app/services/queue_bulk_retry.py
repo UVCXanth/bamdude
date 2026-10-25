@@ -107,4 +107,9 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash)
     except BaseException:
         await db.rollback()
         raise
+    from backend.app.services import dispatch_stall_tracker
+
+    for item_id in retried:
+        # A new intent: what this row fails at from now on is a new stall episode, never the old one's tail.
+        dispatch_stall_tracker.new_incarnation(item_id)
     return {"retried": retried, "left_in_place": left, "not_attempted": []}

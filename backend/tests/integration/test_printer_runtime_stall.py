@@ -295,13 +295,24 @@ async def test_every_stalled_attempt_is_a_new_job_and_archive_behind_one_blocker
     assert current_print_run(printer_manager, printer_id).archive_id == stale_id
 
 
-@pytest.mark.xfail(strict=True, reason="R4 typed deferral detail lands in plan Task 2")
+@pytest.fixture
+def stall_clock(monkeypatch):
+    from backend.app.services import dispatch_stall_tracker as tracker
+
+    fake = FakeClock()
+    monkeypatch.setattr(tracker, "clock", fake)
+    tracker.reset()
+    yield fake
+    tracker.reset()
+
+
+@pytest.mark.parametrize("kind", ["library", "archive"])
 async def test_a_stalled_attempt_names_its_printer_item_and_blocker(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime, caplog
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime, stall_clock, caplog, kind
 ):
-    """R4: the deferral says which printer and job it was, and what held it -- never a guess."""
+    """R4: the deferral says which printer and job it was, and what held it -- never a guess. Both runners."""
     queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
-        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch, kind
     )
     printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
     stale_id = (await a_stale_context_on(db_session, printer_id)).id
@@ -314,3 +325,174 @@ async def test_a_stalled_attempt_names_its_printer_item_and_blocker(
     line = deferrals[-1]
     assert f"printer={printer_id}" in line and f"item={item_id}" in line, line
     assert "detail=current_run_conflict" in line and f"blocker_archive={stale_id}" in line, line
+
+
+async def test_the_real_loop_becomes_one_stalled_episode(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime, stall_clock, caplog
+):
+    """A11: every attempt is a new job and archive, the episode is one -- and one WARNING says so."""
+    from backend.app.services import dispatch_stall_tracker as tracker
+
+    queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
+    stale_id = (await a_stale_context_on(db_session, printer_id)).id
+
+    with caplog.at_level(logging.WARNING, logger=tracker.__name__):
+        for _ in range(4):
+            await one_tick(scheduler, spawned)
+            stall_clock.advance(40)
+    (episode,) = tracker.snapshot(printer_id)
+    assert (episode.item_id, episode.detail, episode.blocker_archive_id) == (item_id, "current_run_conflict", stale_id)
+    assert episode.count == 4 and episode.stalled
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and f"printer={printer_id}" in warnings[0]
+
+
+async def a_claimed_item(db, printer_factory):
+    from backend.app.services.background_dispatch import PrintDispatchJob
+
+    printer = await printer_factory()
+    queue = PrinterQueue(printer_id=printer.id, status="printing")
+    db.add(queue)
+    await db.flush()
+    item = PrintQueueItem(
+        queue_id=queue.id,
+        status="printing",
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        auto_eject=False,
+    )
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    job = PrintDispatchJob(
+        id=1,
+        kind="print_library_file",
+        source_id=None,
+        source_name="part.3mf",
+        printer_id=printer.id,
+        printer_name=printer.name,
+        queue_item_id=item.id,
+        claim_started_at=item.started_at,
+        routing_intent=item.filament_routing,
+        options={"auto_eject": False, "auto_eject_settings": None},
+    )
+    return printer, queue, item, job
+
+
+@pytest.mark.parametrize(
+    ("change", "detail"),
+    [
+        ("delete", "claim_missing"),
+        ("status", "claim_released"),
+        ("started_at", "claim_restarted"),
+        ("routing", "routing_changed"),
+        ("auto_eject", "auto_eject_changed"),
+        ("auto_eject_settings", "auto_eject_changed"),
+    ],
+)
+async def test_the_final_claim_check_names_what_changed(db_session, printer_factory, change, detail):
+    """R4: every branch of ``_verify_routing_claim`` has its own detail; the public code stays the same."""
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    _printer, _queue, item, job = await a_claimed_item(db_session, printer_factory)
+    if change == "delete":
+        await db_session.delete(item)
+    elif change == "status":
+        item.status = "pending"
+    elif change == "started_at":
+        item.started_at = item.started_at + timedelta(seconds=5)
+    elif change == "routing":
+        item.filament_routing = '{"mode": "pinned"}'
+    elif change == "auto_eject":
+        item.auto_eject = True
+    else:
+        item.auto_eject_settings = {"lift": 5}
+    await db_session.commit()
+
+    with pytest.raises(RoutingDeferred) as raised:
+        await BackgroundDispatchService()._verify_routing_claim(db_session, job)
+    assert raised.value.reason == "dispatch_claim_changed"
+    assert raised.value.detail == detail
+
+
+@pytest.mark.parametrize(("change", "detail"), [("delete", "claim_missing"), ("status", "claim_released")])
+async def test_a_claim_lost_before_routing_is_named(db_session, printer_factory, change, detail):
+    from contextlib import AsyncExitStack
+
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    _printer, _queue, item, job = await a_claimed_item(db_session, printer_factory)
+    if change == "delete":
+        await db_session.delete(item)
+    else:
+        item.status = "pending"
+    await db_session.commit()
+
+    async with AsyncExitStack() as pins:
+        with pytest.raises(RoutingDeferred) as raised:
+            await BackgroundDispatchService()._prepare_filament_routing(db_session, job, pins)
+    assert (raised.value.reason, raised.value.detail) == ("dispatch_claim_changed", detail)
+
+
+async def test_a_job_repointed_during_its_copy_is_named(
+    db_session, test_engine, printer_factory, archive_factory, monkeypatch
+):
+    """R4: the source link moved while the descriptor-less copy ran."""
+    from contextlib import AsyncExitStack
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from backend.app.services import queue_source_capture
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    printer, _queue, item, job = await a_claimed_item(db_session, printer_factory)
+    source = await archive_factory(printer.id, status="completed")
+    other = await archive_factory(printer.id, status="completed")
+    item.archive_id = source.id
+    await db_session.commit()
+    job.kind, job.source_id = "reprint_archive", source.id
+    job.original_archive_id, job.original_library_file_id = source.id, None
+    other_id, item_id = other.id, item.id
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def copy_while_the_job_moves(*_args, **_kwargs):
+        async with factory() as elsewhere:
+            row = await elsewhere.get(PrintQueueItem, item_id)
+            row.archive_id = other_id
+            await elsewhere.commit()
+        return SimpleNamespace(descriptor=object())
+
+    monkeypatch.setattr(queue_source_capture, "plan_capture", lambda **_: object())
+    monkeypatch.setattr(queue_source_capture, "capture_for_dispatch", copy_while_the_job_moves)
+    monkeypatch.setattr(queue_source_capture, "discard_staged", AsyncMock())
+
+    async with AsyncExitStack() as pins:
+        with pytest.raises(RoutingDeferred) as raised:
+            await BackgroundDispatchService()._capture_descriptorless_source(db_session, job, pins)
+    assert (raised.value.reason, raised.value.detail) == ("dispatch_claim_changed", "source_link_changed")
+
+
+@pytest.mark.parametrize("how", ["single", "block"])
+async def test_a_retry_starts_a_new_episode(db_session, printer_factory, stall_clock, how):
+    """R4: the operator's Retry is a new incarnation of the job, so its failures are counted afresh."""
+    from backend.app.services import dispatch_stall_tracker as tracker
+    from backend.tests.integration.test_dispatch_attempt_verdicts import _retry
+
+    printer, queue, item, _job = await a_claimed_item(db_session, printer_factory)
+    for _ in range(2):
+        tracker.observe_deferral(printer.id, item.id, "dispatch_claim_changed", "current_run_conflict", 19)
+        stall_clock.advance(30)
+    item.status = "failed"
+    queue.status = "idle"
+    await db_session.commit()
+
+    await _retry(db_session, queue.id, item.id, how)
+    tracker.observe_deferral(printer.id, item.id, "dispatch_claim_changed", "current_run_conflict", 19)
+
+    episodes = tracker.snapshot(printer.id)
+    assert len(episodes) == 2 and not any(e.stalled for e in episodes)

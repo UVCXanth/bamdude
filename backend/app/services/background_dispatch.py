@@ -34,7 +34,7 @@ from backend.app.models.printer import Printer
 # ⚠️ Module scope on purpose: the ``finally`` below calls into this, and a
 # dispatch that dies before reaching the local import would raise NameError
 # from inside the cleanup — masking the real exception.
-from backend.app.services import dispatch_phase, preheat as preheat_service
+from backend.app.services import dispatch_phase, dispatch_stall_tracker, preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
     UploadReport,
@@ -274,6 +274,50 @@ def mark_unobserved(archive_id: int | None) -> None:
 
 def attempt_unobserved(archive_id: int | None) -> bool:
     return archive_id is not None and archive_id in _unobserved_attempts
+
+
+#: Which branch refused a ``dispatch_claim_changed`` (spec printer-runtime-stall r3 R4) -- one per raise site.
+#: Diagnostics only: the public reason and the operator's sentence are the same for all of them.
+CLAIM_DETAILS = frozenset(
+    {
+        "claim_missing",  # the job's row is gone
+        "claim_released",  # the row is no longer printing (cancelled, released, completed)
+        "claim_restarted",  # the row was claimed again: another attempt owns it
+        "routing_changed",  # the operator changed the filament routing
+        "auto_eject_changed",  # the operator changed auto-eject or its settings
+        "source_link_changed",  # the row was re-pointed while its copy was taken
+        "current_run_conflict",  # another run is bound to the printer (``bind_prepared_print_run``)
+    }
+)
+
+
+def _claim_change_detail(item, job) -> str | None:
+    """The first reason this attempt no longer owns its row, or ``None`` while it still does."""
+    if item is None:
+        return "claim_missing"
+    if item.status != "printing":
+        return "claim_released"
+    if item.started_at != job.claim_started_at:
+        return "claim_restarted"
+    if item.filament_routing != job.routing_intent:
+        return "routing_changed"
+    if bool(item.auto_eject) != bool(job.options.get("auto_eject")) or item.auto_eject_settings != job.options.get(
+        "auto_eject_settings"
+    ):
+        return "auto_eject_changed"
+    return None
+
+
+def _bind_conflict(printer_id: int) -> RoutingDeferred:
+    """The refusal of a prepared bind, naming the run that holds the printer (read without an await)."""
+    from backend.app.services.print_run_binding import current_print_run
+
+    holder = current_print_run(printer_manager, printer_id)
+    return RoutingDeferred(
+        "dispatch_claim_changed",
+        detail="current_run_conflict",
+        blocker_archive_id=holder.archive_id if holder is not None else None,
+    )
 
 
 #: Where an attempt's untyped failure happened, read by :func:`dispatch_failure_code`.
@@ -2183,7 +2227,9 @@ class BackgroundDispatchService:
 
         item = await db.get(PrintQueueItem, job.queue_item_id) if job.queue_item_id else None
         if item is None or item.status != "printing":
-            raise RoutingDeferred("dispatch_claim_changed")
+            raise RoutingDeferred(
+                "dispatch_claim_changed", detail="claim_missing" if item is None else "claim_released"
+            )
         job.options["auto_eject"] = item.auto_eject
         job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
@@ -2244,7 +2290,7 @@ class BackgroundDispatchService:
 
         item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
         if (item.archive_id, item.library_file_id) != (job.original_archive_id, job.original_library_file_id):
-            raise RoutingDeferred("dispatch_claim_changed")
+            raise RoutingDeferred("dispatch_claim_changed", detail="source_link_changed")
         job.source = staged.descriptor
         await self._anchor_routing_to_copy(job, staged)
 
@@ -2309,14 +2355,8 @@ class BackgroundDispatchService:
         from backend.app.models.print_queue import PrintQueueItem
 
         item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
-        if (
-            item is None
-            or item.status != "printing"
-            or item.started_at != job.claim_started_at
-            or item.filament_routing != job.routing_intent
-            or bool(item.auto_eject) != bool(job.options.get("auto_eject"))
-            or item.auto_eject_settings != job.options.get("auto_eject_settings")
-        ):
+        detail = _claim_change_detail(item, job)
+        if detail is not None:
             from backend.app.models.printer_queue import PrinterQueue
 
             queue = (
@@ -2334,7 +2374,7 @@ class BackgroundDispatchService:
                     or (item and item.status == "printing" and item.started_at != job.claim_started_at)
                 )
             )
-            raise RoutingDeferred("dispatch_claim_changed")
+            raise RoutingDeferred("dispatch_claim_changed", detail=detail)
 
     async def _handle_routing_deferred(self, job, exc):
         from backend.app.services.filament_deferred import defer_claim
@@ -2386,7 +2426,19 @@ class BackgroundDispatchService:
             await db.commit()
         if released:
             await scheduler.release_prepared_dispatch(job.printer_id)
-        logger.info("Dispatch %s deferred before publish: %s", job.id, exc.reason)
+        detail = getattr(exc, "detail", None)
+        blocker = getattr(exc, "blocker_archive_id", None)
+        logger.info(
+            "Dispatch %s deferred before publish: %s printer=%s item=%s detail=%s blocker_archive=%s",
+            job.id,
+            exc.reason,
+            job.printer_id,
+            job.queue_item_id,
+            detail or "unknown",
+            blocker,
+        )
+        # Facts, never the sentence: the tracker groups attempts of one job behind one blocker (R4).
+        dispatch_stall_tracker.observe_deferral(job.printer_id, job.queue_item_id, exc.reason, detail, blocker)
         if not job.awaited_by_scheduler:
             # Only when THIS attempt still owned its row (or had none): a row the
             # operator cancelled, another attempt reclaimed or somebody deleted is
@@ -2870,7 +2922,8 @@ class BackgroundDispatchService:
                     # only A's execution archive and CAS-releases only A's
                     # claim; B's manager binding survives untouched.
                     job.foreign_claim = True
-                    raise RoutingDeferred("dispatch_claim_changed")
+                    raise _bind_conflict(job.printer_id)
+                dispatch_stall_tracker.observe_progress(job.printer_id, job.queue_item_id)
                 register_expected_print(
                     job.printer_id,
                     remote_filename,
@@ -3828,7 +3881,8 @@ class BackgroundDispatchService:
                     # See the reprint branch: B won while A prepared, so A
                     # defers without rewriting B's run address or queue claim.
                     job.foreign_claim = True
-                    raise RoutingDeferred("dispatch_claim_changed")
+                    raise _bind_conflict(job.printer_id)
+                dispatch_stall_tracker.observe_progress(job.printer_id, job.queue_item_id)
                 register_expected_print(
                     job.printer_id,
                     remote_filename,
