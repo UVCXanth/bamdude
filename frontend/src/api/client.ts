@@ -27,9 +27,16 @@ export interface PrintStateRuntimeView {
   temperatures: Record<'bed' | 'bed_target' | 'chamber' | 'chamber_target', number | null> | null;
   age_seconds: number;
 }
-export interface PrintStateIssue extends Partial<PrintStateRuntimeView> {
+/** A queued job whose start keeps being deferred behind the same blocker (kind ``episode``). */
+export interface PrintStateEpisodeView {
+  attempts: number; span_seconds: number;
+  /** The row that explains it -- the context holding the printer -- when that row is on the page. */
+  related: { kind: 'runtime'; target_id: number } | null;
+}
+export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial<PrintStateEpisodeView> {
   /** ``null`` only for a runtime row of a printer that has no queue: shown, never repairable. */
-  printer_id: number; printer_name: string; queue_id: number | null; kind: 'item' | 'header' | 'archive' | 'runtime';
+  printer_id: number; printer_name: string; queue_id: number | null;
+  kind: 'item' | 'header' | 'archive' | 'runtime' | 'episode';
   target_id: number;
   item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
   blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';
@@ -4583,6 +4590,18 @@ export interface SystemHealthResult {
     environment: number;
     bug: number;
   };
+  /** The print-state observer's cached reading for the caller's printers; ``null`` without the read rights. */
+  print_state?: PrintStateHealth | null;
+}
+
+/** One short mention of the print-state diagnostics: counts and codes, never a repair. */
+export interface PrintStateHealth {
+  by_code: Record<string, number>;
+  printers: { printer_id: number; codes: string[] }[];
+  checked_at: string | null;
+  /** ``unavailable`` when the last background read failed -- never read as a healthy farm. */
+  error: string | null;
+  coverage: { cycle_complete: boolean; truncated: boolean; checked: number };
 }
 
 // Long-lived camera-stream tokens (#1108)

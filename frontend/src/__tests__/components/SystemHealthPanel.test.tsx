@@ -72,3 +72,45 @@ describe('SystemHealthPanel', () => {
     );
   });
 });
+
+describe('SystemHealthPanel print-state mention', () => {
+  function renderWith(result: SystemHealthResult) {
+    render(<I18nextProvider i18n={i18n}><SystemHealthPanel result={result} showPrintState /></I18nextProvider>);
+  }
+  const coverage = { cycle_complete: true, truncated: false, checked: 3 };
+
+  it('mentions print-state problems once, with a link to the diagnostics and no repair', () => {
+    renderWith({ ...BASE, print_state: {
+      by_code: { terminal_runtime_context: 1, dispatch_no_progress: 1 }, error: null, checked_at: '2026-10-01T12:00:00Z',
+      printers: [{ printer_id: 7, codes: ['dispatch_no_progress', 'terminal_runtime_context'] }], coverage,
+    } });
+    expect(screen.getByText(/2 print-state problems on 1 printer/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open print state diagnostics' })).toHaveAttribute('href', '#print-state');
+    expect(screen.queryByRole('button', { name: /Release/ })).not.toBeInTheDocument();
+  });
+
+  it('never calls an incomplete or failed check healthy', () => {
+    renderWith({ ...BASE, print_state: { by_code: {}, error: null, checked_at: null, printers: [],
+      coverage: { cycle_complete: false, truncated: true, checked: 0 } } });
+    expect(screen.getByText(/has not finished checking every printer/)).toBeInTheDocument();
+  });
+
+  it('says when the check is unavailable', () => {
+    renderWith({ ...BASE, print_state: { by_code: {}, error: 'unavailable', checked_at: null, printers: [],
+      coverage: { cycle_complete: false, truncated: true, checked: 0 } } });
+    expect(screen.getByText(/print-state check is unavailable/i)).toBeInTheDocument();
+  });
+
+  it('stays silent without the read rights', () => {
+    render(<I18nextProvider i18n={i18n}><SystemHealthPanel result={{ ...BASE, print_state: null }} showPrintState /></I18nextProvider>);
+    expect(screen.queryByText(/print-state/i)).not.toBeInTheDocument();
+  });
+
+  it('stays silent in the bug reporter, which has no diagnostics to link to', () => {
+    render(<I18nextProvider i18n={i18n}><SystemHealthPanel result={{ ...BASE, print_state: {
+      by_code: { terminal_runtime_context: 1 }, error: null, checked_at: null, printers: [{ printer_id: 7, codes: ['terminal_runtime_context'] }],
+      coverage,
+    } }} /></I18nextProvider>);
+    expect(screen.queryByText(/print-state problem/i)).not.toBeInTheDocument();
+  });
+});

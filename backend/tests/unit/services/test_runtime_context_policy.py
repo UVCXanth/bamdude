@@ -153,7 +153,7 @@ def test_only_a_fresh_idle_printer_may_be_released(telemetry, reason):
 
 
 @pytest.mark.parametrize("owner", OWNERS)
-@pytest.mark.parametrize(("value", "reason"), [(True, "owner_active"), (None, "owner_unknown")])
+@pytest.mark.parametrize(("value", "reason"), [(True, "context_owner_active"), (None, "context_owner_unknown")])
 def test_any_live_owner_or_an_unknown_one_keeps_the_context(owner, value, reason):
     base = facts()
     issue = classify(changed(base, owners={**base.runtime["owners"], owner: value}))
@@ -165,18 +165,18 @@ def test_a_missing_owner_answer_is_unknown_not_false():
     owners = dict(base.runtime["owners"])
     owners.pop("macro_tasks")
     issue = classify(changed(base, owners=owners))
-    assert issue["actions"] == [] and "owner_unknown" in issue["blocked_reasons"]
+    assert issue["actions"] == [] and "context_owner_unknown" in issue["blocked_reasons"]
 
 
 @pytest.mark.parametrize(
     ("field", "value", "reason"),
     [
         ("resolution", True, "start_in_progress"),
-        ("resolution", None, "owner_unknown"),
+        ("resolution", None, "context_owner_unknown"),
         ("pending_terminal", True, "terminal_buffered"),
         ("finishing", 1, "finishing_in_progress"),
-        ("finishing", None, "owner_unknown"),
-        ("terminal_accepted", None, "owner_unknown"),
+        ("finishing", None, "context_owner_unknown"),
+        ("terminal_accepted", None, "context_owner_unknown"),
     ],
 )
 def test_runtime_work_around_the_run_keeps_it(field, value, reason):

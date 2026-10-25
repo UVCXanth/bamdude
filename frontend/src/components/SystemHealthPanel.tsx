@@ -1,7 +1,7 @@
 import type { ElementType } from 'react';
 import { useTranslation } from 'react-i18next';
 import { XCircle, AlertTriangle, CheckCircle2, ExternalLink, Wrench, ServerCog, Bug } from 'lucide-react';
-import type { LogFinding, LogFindingCategory, SystemHealthResult } from '../api/client';
+import type { LogFinding, LogFindingCategory, PrintStateHealth, SystemHealthResult } from '../api/client';
 
 const WIKI_TROUBLESHOOTING = 'https://docs.bamdude.top/reference/troubleshooting/';
 
@@ -74,31 +74,67 @@ function FindingCard({ finding }: { finding: LogFinding }) {
 }
 
 /**
+ * One short mention of the print-state diagnostics (spec printer-runtime-stall r3 R5): how many problems
+ * the background check sees, and a link to the rows themselves -- never a second repair button. A check
+ * that failed or has not covered every printer yet says so instead of looking healthy.
+ */
+function PrintStateMention({ state }: { state: PrintStateHealth }) {
+  const { t } = useTranslation();
+  const count = Object.values(state.by_code).reduce((sum, n) => sum + n, 0);
+  const partial = !state.coverage.cycle_complete;
+  if (!state.error && count === 0 && !partial) return null;
+  return (
+    <div className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-300 space-y-1">
+      {state.error ? (
+        <p>{t('systemHealth.printState.unavailable')}</p>
+      ) : (
+        <>
+          {count > 0 && <p>{t('systemHealth.printState.problems', { count, printers: state.printers.length })}</p>}
+          {partial && <p>{t('systemHealth.printState.partial')}</p>}
+        </>
+      )}
+      <a href="#print-state" className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline">
+        {t('systemHealth.printState.open')}
+      </a>
+    </div>
+  );
+}
+
+/**
  * Presentational panel for a log-health scan result. Shared by the System page
  * section and the bug-report bubble so both surfaces look identical.
+ * ``showPrintState`` -- only where the print-state diagnostics are on the page to link to.
  */
-export function SystemHealthPanel({ result }: { result: SystemHealthResult }) {
+export function SystemHealthPanel({ result, showPrintState = false }: { result: SystemHealthResult; showPrintState?: boolean }) {
   const { t } = useTranslation();
+  const mention = showPrintState && result.print_state ? <PrintStateMention state={result.print_state} /> : null;
 
   if (!result.log_available) {
     return (
-      <div className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-        {t('systemHealth.logUnavailable')}
+      <div className="space-y-3">
+        {mention}
+        <div className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+          {t('systemHealth.logUnavailable')}
+        </div>
       </div>
     );
   }
 
   if (result.findings.length === 0) {
     return (
-      <div className="rounded-lg bg-bambu-green/10 border border-bambu-green/30 px-4 py-3 text-sm text-bambu-green flex items-center gap-2">
-        <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-        <span>{t('systemHealth.clean', { times: result.scanned_entries })}</span>
+      <div className="space-y-3">
+        {mention}
+        <div className="rounded-lg bg-bambu-green/10 border border-bambu-green/30 px-4 py-3 text-sm text-bambu-green flex items-center gap-2">
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+          <span>{t('systemHealth.clean', { times: result.scanned_entries })}</span>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      {mention}
       {result.findings.map((finding) => (
         <FindingCard key={finding.signature_id} finding={finding} />
       ))}

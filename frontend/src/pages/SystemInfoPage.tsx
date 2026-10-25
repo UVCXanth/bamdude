@@ -547,7 +547,7 @@ export function SystemInfoPage() {
           </button>
         </div>
         {systemHealth ? (
-          <SystemHealthPanel result={systemHealth} />
+          <SystemHealthPanel result={systemHealth} showPrintState />
         ) : (
           <LoadingBlock label={t('common.loading')} className="py-4 text-bambu-gray" />
         )}

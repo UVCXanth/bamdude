@@ -1,10 +1,41 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, ApiError, type PrintStateAction, type PrintStateIssue, type PrintStatePreview } from '../api/client';
+import { api, ApiError, type PrintStateAction, type PrintStateAudit, type PrintStateIssue, type PrintStatePreview } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { PrintStatePreheatNote } from './PrintStateRuntimeNotes';
 import { formatDateTime } from '../utils/date';
 import { failureText } from '../utils/failureText';
+
+/** What the in-memory repair takes from memory, from the server's preview -- nothing else is touched. */
+function RuntimeRelease({ preview }: { preview: PrintStatePreview }) {
+  const { t } = useTranslation();
+  const release = preview.after.runtime;
+  if (!release) return null;
+  return <div className="space-y-1">
+    <p>{t('printStateRecovery.runtime.releases', { archive: release.archive_id })}</p>
+    <ul className="list-disc pl-5">
+      {release.admission && <li>{t('printStateRecovery.runtime.releaseAdmission')}</li>}
+      {release.macro_selection && <li>{t('printStateRecovery.runtime.releaseMacros')}</li>}
+      {release.swap_config && <li>{t('printStateRecovery.runtime.releaseSwap')}</li>}
+    </ul>
+    {preview.before.queue.is_paused === true && <p className="text-amber-700 dark:text-amber-300">{t('printStateRecovery.runtime.alreadyPaused')}</p>}
+    {preview.runtime?.plate_gate && <p>{t('printStateRecovery.runtime.plateGate')}</p>}
+    <PrintStatePreheatNote pinned={preview.runtime?.preheat_pinned} temperatures={preview.runtime?.temperatures} />
+  </div>;
+}
+
+/** How the in-memory repair ended -- said as it is, including "not recorded". */
+function RuntimeOutcome({ result }: { result: PrintStateAudit }) {
+  const { t } = useTranslation();
+  const outcome = typeof result.outcome === 'string' ? result.outcome : 'outcome_unconfirmed';
+  return <div role="status" className="space-y-1">
+    <p className="font-medium">{t(`printStateRecovery.outcome.${outcome}`)}</p>
+    {result.reason && <p className="text-xs text-bambu-gray">{t(`printStateRecovery.outcomeReasons.${result.reason}`)}</p>}
+    <p>{t('printStateRecovery.runtime.pausedNow')}</p>
+    {outcome !== 'applied' && <p>{t('printStateRecovery.runtime.notCancelled')}</p>}
+  </div>;
+}
 
 export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: {
   issue: PrintStateIssue; action: PrintStateAction; onClose: () => void; onApplied: () => void;
@@ -16,8 +47,10 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PrintStateAudit | null>(null);
   const estimate = action === 'fill_estimated_end_and_align';
   const close = action === 'close_interrupted_attempt';
+  const runtime = action === 'clear_terminal_runtime_context';
   const shown = (key: string, value: unknown): string => {
     if (value === null || value === undefined) return '—';
     if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null);
@@ -32,11 +65,11 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const prepare = async () => {
     setBusy(true); setError(null); setPreview(null); setConfirmed(false);
     try {
-      const result = await api.previewPrintState(issue.printer_id, {
-        kind: issue.kind as 'item' | 'header', target_id: issue.target_id, action,
+      const answer = await api.previewPrintState(issue.printer_id, {
+        kind: issue.kind as 'item' | 'header' | 'runtime', target_id: issue.target_id, action,
         confirmed_completed: completed, note,
       });
-      setPreview(result);
+      setPreview(answer);
     } catch (e) {
       setError(e instanceof ApiError && e.status === 409 ? t('printStateRecovery.changed') : t('printStateRecovery.failed'));
     } finally { setBusy(false); }
@@ -45,8 +78,12 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
     if (!preview || !confirmed || busy) return;
     setBusy(true); setError(null);
     try {
-      await api.applyPrintState(issue.printer_id, preview.preview_token);
-      onApplied(); onClose();
+      const answer = await api.applyPrintState(issue.printer_id, preview.preview_token);
+      onApplied();
+      // The in-memory repair answers with its outcome, which the operator must read before leaving:
+      // the queue is paused whatever it was, and an unrecorded result needs the history.
+      if (runtime) setResult(answer);
+      else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setPreview(null); setConfirmed(false); setError(t('printStateRecovery.changed'));
@@ -61,12 +98,17 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   return <Modal title={t(`printStateRecovery.actions.${action}`)} onClose={onClose} closeDisabled={busy} size="lg">
     <div className="p-4 space-y-4 text-sm">
       <p className="break-words">{issue.printer_name} · {t('printStateRecovery.target', {
-        item: issue.item_id ?? '—', archive: issue.archive_id ?? '—',
+        item: issue.item_id ?? issue.context?.queue_item_id ?? '—', archive: issue.archive_id ?? '—',
       })}</p>
       <p>{t('printStateRecovery.preserved')}</p>
       {estimate && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.estimate')}</p>}
       {close && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.interruptedUncertain')}</p>}
-      {!preview && <>
+      {runtime && <div className="space-y-1 text-amber-700 dark:text-amber-300">
+        <p>{t('printStateRecovery.runtime.willPause')}</p>
+        <p>{t('printStateRecovery.runtime.notPlate')}</p>
+      </div>}
+      {result && <RuntimeOutcome result={result} />}
+      {!preview && !result && <>
         {estimate && <label className="flex gap-2 items-start">
           <input type="checkbox" checked={completed} onChange={e => setCompleted(e.target.checked)} />
           <span>{t('printStateRecovery.completedConfirmation')}</span>
@@ -77,7 +119,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         </label>
         <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed)}>{t('printStateRecovery.preview')}</Button>
       </>}
-      {preview && <>
+      {preview && !result && <>
+        {runtime && <RuntimeRelease preview={preview} />}
         {preview.estimate && <p className="text-amber-700 dark:text-amber-300">{t('printStateRecovery.estimatedLabel')}: {' '}
           {formatDateTime(preview.estimate.started_at)} + {preview.estimate.duration_seconds}s → {formatDateTime(preview.estimate.completed_at)}
         </p>}
@@ -94,7 +137,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         </div>
         {close
           ? <p>{t('printStateRecovery.interruptedNext')}</p>
-          : Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
+          : !runtime && Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
         <label className="flex gap-2 items-start"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
           <span>{t('printStateRecovery.confirm')}</span></label>
         <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}
@@ -102,7 +145,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       </>}
       {error && <p role="alert" className="text-red-600 dark:text-red-300">{error}</p>}
       {busy && <p role="status">{t('common.loading')}</p>}
-      <Button variant="secondary" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
+      <Button variant="secondary" onClick={onClose} disabled={busy}>{t(result ? 'common.close' : 'common.cancel')}</Button>
     </div>
   </Modal>;
 }

@@ -230,25 +230,25 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
     for name in RUNTIME_OWNERS:
         value = owners.get(name)
         if value is True:
-            reasons.add("owner_active")
+            reasons.add("context_owner_active")
         elif value is not False:
-            reasons.add("owner_unknown")
+            reasons.add("context_owner_unknown")
     for name, busy_reason in (("resolution", "start_in_progress"), ("pending_terminal", "terminal_buffered")):
         value = r.get(name)
         if value is True:
             reasons.add(busy_reason)
         elif value is not False:
-            reasons.add("owner_unknown")
+            reasons.add("context_owner_unknown")
     finishing = r.get("finishing")
     if type(finishing) is not int:
-        reasons.add("owner_unknown")
+        reasons.add("context_owner_unknown")
     elif finishing:
         reasons.add("finishing_in_progress")
     if not isinstance(r.get("terminal_accepted"), bool):
-        reasons.add("owner_unknown")
+        reasons.add("context_owner_unknown")
     generation = r.get("effect_generation")
     if type(generation) is not int:
-        reasons.add("owner_unknown")
+        reasons.add("context_owner_unknown")
     elif generation != current.get("effect_generation"):
         reasons.add("activity_changed")
     reasons.update(_admission_reasons(r.get("admission"), current))
