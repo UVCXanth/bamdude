@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Fleet-aware order plans retain separate counts for equivalent plates on different printer models when becoming a shared working draft. Initial plans and reviewed remainder/rebuild proposals no longer collapse the second model into the first file; forecasts continue to follow the exact reviewed files.
+
 ## [0.7.2] - 2026-10-25
 
 Images: `ghcr.io/kainpl/bamdude:0.7.2` / `kainpl/bamdude:0.7.2` (`:latest` tracks this release).
