@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Bundled NATS uses a patched Go toolchain.** Updated embedded-nats to 2.15.0.3, rebuilt with Go 1.26.10 to remove the fixable Go standard-library findings from the bundled server. The NATS version, broker protocol, stored data and recovery behavior are unchanged.
+
 - **Imported database identifiers are quoted during restore.** Foreign-key repair and legacy backup-setting copies now preserve column and constraint names containing spaces, quotes or SQL keywords. Restore also uses independent parameter names when copying rows, so an imported column name cannot become SQL bind syntax. Existing databases are not rewritten or migrated by this fix.
 
 - **Native installer checks the full Node.js minimum.** Node.js older than 22.22.0 no longer passes the frontend prerequisite check merely because its major version is 20 or newer. The existing Node 22 installation path and its subsequent version check remain in place.
