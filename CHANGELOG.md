@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Orders can restrict planning and new queue assignments to selected printer models and machines without unlinking product plates. A reviewed remaining-work action removes replaceable jobs that have not started and prepares a new shared draft; running and protected jobs stay, and sending the new plan remains explicit.
+
 ## [0.7.2] - 2026-10-25
 
 Images: `ghcr.io/kainpl/bamdude:0.7.2` / `kainpl/bamdude:0.7.2` (`:latest` tracks this release).

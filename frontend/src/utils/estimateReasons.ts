@@ -11,6 +11,7 @@
 export const ORDER_ESTIMATE_REASONS = [
   'unknown_time',
   'unroutable',
+  'printer_resources',
   'material_mismatch',
   'needs_slicing',
   'no_plate',

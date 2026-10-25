@@ -86,6 +86,7 @@ def from_context(ctx, recipes, queued, price, *, baseline=None):
         [
             ctx.project.status,
             ctx.project.order_print_options,
+            getattr(ctx.project, "printer_resources", None),
             ctx.project.auto_eject_enabled,
             {line.id: line.plan_identity for line in ctx.lines},
             [
@@ -129,6 +130,13 @@ def project(data: Inputs, entries: list[DraftEntry], *, visible=None):
             continue
         if not recipe.sliced or not line_accepts_materials(line, recipe.materials):
             issues.append({"entry_id": entry.entry_id, "code": "source_incompatible"})
+            continue
+        from backend.app.services.order_resources import recipe_permitted
+
+        if not recipe_permitted(
+            getattr(data.ctx.project, "printer_resources", None), recipe.printer_model, allow_compatible=True
+        ):
+            issues.append({"entry_id": entry.entry_id, "code": "order_resources_changed"})
             continue
         counted = {p.part_id for p in figures[line.id].parts if p.per > 0 and p.kind == "printed"}
         yield_ = line_yield(recipe, counted)
@@ -310,7 +318,7 @@ async def preview(
         plans = await plan_for_orders(db, walk, capacity=ff.capacity_from_snapshot(snapshot))
         plans[project_id] = plan
         f = await simulate(snapshot, plans, walk, project_id, now)
-        accepting = Counter(ff.model_key(p.model) for p in snapshot.printers if p.accepts_new_work)
+        accepting = ff.accepting_models(snapshot, project_id)
         f.by_model = ff.by_model(plan, accepting)
         f.machine_seconds = answer["workload"]["total_seconds"]
         f.late = complete and ff.eta_is_late(f.now_eta if f.eta_complete else None, data.ctx.project.due_date)

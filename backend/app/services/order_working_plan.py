@@ -278,7 +278,12 @@ async def state(db, row, data, *, visible=None):
             recipe = recipes.get(entry["plate_id"])
             if target is None or target.archived:
                 out["issues"].append({"entry_id": entry["entry_id"], "code": "target_unavailable"})
-            elif recipe and model_compatibility(recipe.printer_model, target.model) == "incompatible":
+            else:
+                from backend.app.services.order_resources import permits
+
+                if not permits(getattr(data.ctx.project, "printer_resources", None), target.id, target.model):
+                    out["issues"].append({"entry_id": entry["entry_id"], "code": "order_resources_changed"})
+            if target and recipe and model_compatibility(recipe.printer_model, target.model) == "incompatible":
                 out["issues"].append({"entry_id": entry["entry_id"], "code": "target_incompatible"})
     return out
 

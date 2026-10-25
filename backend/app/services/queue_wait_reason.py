@@ -16,6 +16,7 @@ WaitCode = Literal[
     # The source copy found the spool busy; the scheduler asks again after its bounded cooldown.
     "source_capture",
     "unknown",
+    "order_resources",
 ]
 
 

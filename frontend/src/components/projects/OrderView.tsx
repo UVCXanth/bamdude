@@ -28,6 +28,7 @@ import { WorkshopPanel } from '../workshop/WorkshopPanel';
 import { forecastView } from './orderForecastView';
 import { OrderForecastPanel } from './OrderForecastPanel';
 import { OrderFilamentPanel } from './OrderFilamentPanel';
+import { OrderPrinterResources } from './OrderPrinterResources';
 import { ORDER_SECTIONS, sectionParam, type OrderSection } from './orderSections';
 import { WorkshopTabPanel, WorkshopTabs } from '../workshop/WorkshopTabs';
 import { useOrderPlan } from '../../hooks/useOrderPlan';
@@ -74,6 +75,11 @@ export function OrderView({
   const forgetOrder = useForgetOnUnmount(['project', id]);
 
   const [planDraftChanged, setPlanDraftChanged] = useState(false);
+  const [resourceRevision, setResourceRevision] = useState(0);
+  const prepareResources = useRef<(() => Promise<boolean>) | null>(null);
+  const registerResourcePreparation = useCallback((prepare: (() => Promise<boolean>) | null) => {
+    prepareResources.current = prepare;
+  }, []);
   const [draftForecast, setDraftForecast] = useState<DraftForecastState>();
   const [fitDraft, setFitDraft] = useState<PlateFitDraft | null>(null);
   const plateSelection = useRef<Record<number, number[]>>({});
@@ -266,6 +272,14 @@ export function OrderView({
       case 'plan':
         return (
           <div className="space-y-4">
+          {actions.resources && <OrderPrinterResources orderId={order.id}
+            editable={order.status === 'active' && hasPermission('orders:update')}
+            onConfigure={() => { void (async () => {
+              if (!await prepareResources.current?.()) return;
+              actions.resources?.({ orderId: order.id, onChanged: () => {
+                setFitDraft(null); setResourceRevision(value => value + 1);
+              } });
+            })(); }} />}
           {order.status === 'active' && draftForecast && (
             <OrderForecastPanel
               view={forecastNow}
@@ -276,7 +290,8 @@ export function OrderView({
             />
           )}
           <PlanBlock
-            key={order.id}
+            key={`${order.id}-${resourceRevision}`}
+            onPrepareResources={registerResourcePreparation}
             order={order}
             fitDraft={fitDraft?.orderId === id ? fitDraft : null}
             onPlateSelection={rememberPlates}

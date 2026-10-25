@@ -136,6 +136,7 @@ class FarmSnapshot:
     assumptions: tuple[str, ...] = ()
     allow_compatible: bool = False
     operator_hours: OperatorHours | None = None
+    order_resources: dict[int, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -288,6 +289,7 @@ class _State:
     #: printer, so these sum to ``farm_unknown`` minus the staged jobs.
     machine_unknown: Counter = field(default_factory=Counter)
     operator_hours: OperatorHours | None = None
+    order_resources: dict[int, dict] = field(default_factory=dict)
 
     def farm_finish(self) -> float:
         return max((m.free_at for m in self.machines), default=0.0)
@@ -420,6 +422,7 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
         assumptions=tuple(snapshot.assumptions),
         allow_compatible=snapshot.allow_compatible,
         operator_hours=snapshot.operator_hours,
+        order_resources=snapshot.order_resources,
     )
     for machine in snapshot.printers:
         m = _Machine(
@@ -440,6 +443,13 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             t = float(machine.running_seconds) + m.gap
         t = max(t, m.waiting)
         for row in machine.queued:
+            from backend.app.services.order_resources import permits
+
+            if not row.started and not permits(
+                snapshot.order_resources.get(row.order_id), machine.printer_id, machine.model
+            ):
+                state.unroutable[row.order_id] += 1
+                continue
             if row.seconds is None:
                 state.farm_unknown += 1
                 state.machine_unknown[machine.printer_id] += 1
@@ -469,7 +479,10 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             if job.order_id is not None:
                 state.unknown[job.order_id] += 1
             continue
-        target = _earliest(state.machines, model_key(job.target_model), allow_compatible=state.allow_compatible)
+        from backend.app.services.order_resources import permits
+
+        machines = [m for m in state.machines if permits(state.order_resources.get(job.order_id), m.printer_id, m.key)]
+        target = _earliest(machines, model_key(job.target_model), allow_compatible=state.allow_compatible)
         if target is None:
             if job.order_id is not None:
                 state.unroutable[job.order_id] += 1
@@ -543,6 +556,9 @@ def _place(state: _State, jobs: list[PrintJob]) -> dict[int, list[_Print]]:
                 if job.printer_id is None
                 else [m for m in state.machines if m.printer_id == job.printer_id]
             )
+            from backend.app.services.order_resources import permits
+
+            machines = [m for m in machines if permits(state.order_resources.get(job.order_id), m.printer_id, m.key)]
             machine = _earliest(machines, model_key(option.model), allow_compatible=state.allow_compatible)
             if machine is None:
                 continue
@@ -636,6 +652,7 @@ def _eta(now: datetime, seconds: float | None) -> tuple[datetime | None, int | N
 REASON_ORDER = (
     "unknown_time",
     "unroutable",
+    "printer_resources",
     "material_mismatch",
     "needs_slicing",
     "no_plate",
@@ -648,7 +665,7 @@ def incomplete_reasons(plan: OrderPlan | None, unknown: int, unroutable: int) ->
     """Why the production estimate of an order is not whole (OR5a): prints without an
     estimate, prints no machine takes, the parts no plan covers — each by the one rule
     ``plan_engine`` gave it, counted in part units — and a plan the guard stopped."""
-    units = dict.fromkeys(("material_mismatch", "needs_slicing", "no_plate"), 0)
+    units = dict.fromkeys(("material_mismatch", "needs_slicing", "no_plate", "printer_resources"), 0)
     for line in plan.lines if plan else []:
         for pid, code in line.unsatisfiable_reasons.items():
             units[code] += line.outstanding_before.get(pid, 0)
@@ -662,6 +679,16 @@ def incomplete_reasons(plan: OrderPlan | None, unknown: int, unroutable: int) ->
     if plan is not None and plan.truncated:
         reasons.append(("truncated", None))
     return reasons
+
+
+def accepting_models(snapshot: FarmSnapshot, order_id: int) -> Counter:
+    from backend.app.services.order_resources import permits
+
+    return Counter(
+        model_key(p.model)
+        for p in snapshot.printers
+        if p.accepts_new_work and permits(snapshot.order_resources.get(order_id), p.printer_id, p.model)
+    )
 
 
 def by_model(plan: OrderPlan | None, accepting: dict[str | None, int]) -> list[dict]:
@@ -892,7 +919,13 @@ async def _load_operator_hours(db: AsyncSession, now: datetime) -> OperatorHours
     )
 
 
-async def load_snapshot(db: AsyncSession, now: datetime, *, exclude_auto_ids: tuple[int, ...] = ()) -> FarmSnapshot:
+async def load_snapshot(
+    db: AsyncSession,
+    now: datetime,
+    *,
+    exclude_auto_ids: tuple[int, ...] = (),
+    exclude_printer_ids: tuple[int, ...] = (),
+) -> FarmSnapshot:
     """What the farm already owes, from its database rows.
 
     A held completion uses the existing automatic-predecessor proof only to
@@ -1069,6 +1102,7 @@ async def load_snapshot(db: AsyncSession, now: datetime, *, exclude_auto_ids: tu
                     selectinload(PrintQueueItem.queue_source),
                 )
                 .where(PrintQueueItem.status == "pending", PrintQueueItem.queue_id.in_(list(machines)))
+                .where(PrintQueueItem.id.notin_(exclude_printer_ids))
                 .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
             )
         )
@@ -1101,6 +1135,13 @@ async def load_snapshot(db: AsyncSession, now: datetime, *, exclude_auto_ids: tu
         assumptions=caveats,
         allow_compatible=allow_compatible,
         operator_hours=operator_hours,
+        order_resources=dict(
+            (
+                await db.execute(
+                    select(Project.id, Project.printer_resources).where(Project.printer_resources.is_not(None))
+                )
+            ).all()
+        ),
     )
 
 
@@ -1190,13 +1231,8 @@ async def forecast_projects(
     for pid in wanted:
         if pid not in out and pid in status_of:
             out[pid] = _empty_forecast(pid)
-    accepting: dict[str | None, int] = {}
-    for machine in snapshot.printers:
-        if machine.accepts_new_work:
-            key = model_key(machine.model)
-            accepting[key] = accepting.get(key, 0) + 1
     for pid, forecast in out.items():
         # OR4 — the rule /deadlines applies, on the same numbers; OR6 from the plan in hand.
         forecast.late = eta_is_late(forecast.now_eta if forecast.eta_complete else None, due_of.get(pid))
-        forecast.by_model = by_model(plans.get(pid), accepting)
+        forecast.by_model = by_model(plans.get(pid), accepting_models(snapshot, pid))
     return simulate_farm(snapshot), out

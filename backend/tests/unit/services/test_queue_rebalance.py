@@ -202,6 +202,7 @@ def test_the_reason_list_is_closed():
         "home_model_idle",
         "no_faster_model",
         "cooldown",
+        "order_resources",
     )
 
 

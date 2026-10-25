@@ -840,6 +840,10 @@ class AutoQueueScheduler:
             if lane_held_in_process(db, printer.id):
                 raise AutoPlacementConflict("lane_busy")
             async with queue_claim_scope(db, printer.id):
+                from backend.app.services.order_resources import allowed
+
+                if not await allowed(db, item.project_id, printer.id, lock=True, project_line_id=item.project_line_id):
+                    raise AutoPlacementConflict("item_changed")
                 occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
                 printer_queue = occupancy.queue
                 require_auto_placement(occupancy)

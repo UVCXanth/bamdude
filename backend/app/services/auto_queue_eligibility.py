@@ -163,10 +163,15 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
             )
 
     result = await db.execute(query)
+    from backend.app.services.order_resources import permits, policy_for
+
+    resources = await policy_for(db, item.project_id, project_line_id=item.project_line_id)
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     exact, compatible = [], []
     for printer in result.scalars().all():
+        if not permits(resources, printer.id, printer_manager.effective_model_for(printer.id, printer.model)):
+            continue
         verdict = model_compatibility(normalized_model, printer_manager.effective_model_for(printer.id, printer.model))
         if verdict == "exact":
             exact.append(printer)

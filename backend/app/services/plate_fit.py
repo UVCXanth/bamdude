@@ -175,7 +175,18 @@ async def load(
                 bucket[p.id] = max(0, bucket.get(p.id, 0) - recipe.yield_by_part.get(p.id, 0))
     supply = await stock_offers.load_supply(db, ctx)
     capacity = await plan_engine._current_fleet_capacity(db, exclude_auto_ids=tuple(item.id for item in removable))
+    from backend.app.services.order_resources import constrained, permits, recipe_permitted
+
+    resources = getattr(ctx.project, "printer_resources", None)
+    capacity.machines = [m for m in capacity.machines if permits(resources, m.printer_id, m.model)]
     all_candidates = recipes.get(line.product_id, [])
+    if constrained(resources):
+        all_candidates = [
+            c
+            for c in all_candidates
+            if recipe_permitted(resources, c[2].printer_model, allow_compatible=capacity.allow_compatible)
+            and capacity.eligible(plan_engine._model_key(c[2].printer_model))
+        ]
     if plate_ids is None:
         plan = await plan_engine.plan_for_order(db, order_id, capacity=capacity.copy())
         valid = {
@@ -287,6 +298,7 @@ async def load(
     )
     payload = {
         "order": order_id,
+        "printer_resources": resources,
         "line": line_id,
         "quantity": line.quantity,
         "configuration": line.config_key,

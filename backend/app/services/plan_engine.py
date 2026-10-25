@@ -1128,7 +1128,11 @@ def plan_lines(
     The names ride out with the plan (see :class:`OrderPlan`) — they come from
     the context this function was handed, so no caller need re-read them.
     """
+    from backend.app.services.order_resources import constrained, permits, recipe_permitted
+
+    resources = getattr(ctx.project, "printer_resources", None)
     if capacity is not None:
+        capacity.machines = [m for m in capacity.machines if permits(resources, m.printer_id, m.model)]
         capacity.auto_eject = bool(ctx.project.auto_eject_enabled)
     plans: list[LinePlan] = []
     truncated = False
@@ -1146,7 +1150,16 @@ def plan_lines(
         # An unsliced plate has no filaments to match a material against, so it
         # is listed whole — the operator slices it and it becomes a candidate.
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
-        candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
+        candidates = [
+            row
+            for row in recipes
+            if row[2].sliced
+            and line_accepts_materials(line, row[2].materials)
+            and recipe_permitted(
+                resources, row[2].printer_model, allow_compatible=bool(capacity and capacity.allow_compatible)
+            )
+            and (not constrained(resources) or capacity is None or capacity.eligible(_model_key(row[2].printer_model)))
+        ]
         rows, surplus, line_truncated = cover(
             outstanding, candidates, counted, price_per_gram, capacity, deadline=deadline
         )
@@ -1169,6 +1182,8 @@ def plan_lines(
             pid: "material_mismatch" if pid in made_sliced else "needs_slicing" if pid in made_unsliced else "no_plate"
             for pid in unsatisfiable
         }
+        if constrained(resources):
+            reasons.update({pid: "printer_resources" for pid in unsatisfiable if pid in made_sliced})
         plans.append(
             LinePlan(
                 line_id=line.id,
@@ -1198,6 +1213,9 @@ async def queued_yield_by_line(
     recipes_by_product: dict[int, list[Candidate]],
     lines: list[ProjectLine],
     counted_by_line: dict[int, set[int]],
+    *,
+    exclude_auto_ids: tuple[int, ...] = (),
+    exclude_printer_ids: tuple[int, ...] = (),
 ) -> dict[int, dict[int, int]]:
     """How much each line already has coming: ``line_id → part_id → parts queued``.
 
@@ -1273,7 +1291,9 @@ async def queued_yield_by_line(
         (
             await db.execute(
                 select(PrintQueueItem.project_line_id, PrintQueueItem.library_file_id, PrintQueueItem.plate_id).where(
-                    PrintQueueItem.project_line_id.in_(line_ids), *queued_printer_row_conditions()
+                    PrintQueueItem.project_line_id.in_(line_ids),
+                    *queued_printer_row_conditions(),
+                    PrintQueueItem.id.notin_(exclude_printer_ids),
                 )
             )
         ).all()
@@ -1283,6 +1303,7 @@ async def queued_yield_by_line(
                 select(AutoQueueItem.project_line_id, AutoQueueItem.library_file_id, AutoQueueItem.plate_id).where(
                     AutoQueueItem.project_line_id.in_(line_ids),
                     *awaiting_auto_row_conditions(),
+                    AutoQueueItem.id.notin_(exclude_auto_ids),
                 )
             )
         ).all()
@@ -1306,6 +1327,7 @@ async def queued_yield_by_line(
                     PrintQueueItem.project_id.in_(project_ids),
                     PrintQueueItem.project_line_id.is_(None),
                     *queued_printer_row_conditions(),
+                    PrintQueueItem.id.notin_(exclude_printer_ids),
                 )
             )
         ).all()
@@ -1316,6 +1338,7 @@ async def queued_yield_by_line(
                     AutoQueueItem.project_id.in_(project_ids),
                     AutoQueueItem.project_line_id.is_(None),
                     *awaiting_auto_row_conditions(),
+                    AutoQueueItem.id.notin_(exclude_auto_ids),
                 )
             )
         ).all()
@@ -1357,7 +1380,9 @@ async def queued_yield_by_line(
     return out
 
 
-async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = ()) -> FleetCapacity:
+async def _current_fleet_capacity(
+    db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = (), exclude_printer_ids: tuple[int, ...] = ()
+) -> FleetCapacity:
     """Read the forecast-owned farm snapshot through its narrow planning adapter.
 
     The pure covering functions above accept only :class:`FleetCapacity`; they
@@ -1372,7 +1397,11 @@ async def _current_fleet_capacity(db: AsyncSession, *, exclude_auto_ids: tuple[i
     # asks its snapshot loader for a capacity-only view.
     from backend.app.services.farm_forecast import capacity_from_snapshot, load_snapshot
 
-    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow(), exclude_auto_ids=exclude_auto_ids))
+    return capacity_from_snapshot(
+        await load_snapshot(
+            db, datetime.utcnow(), exclude_auto_ids=exclude_auto_ids, exclude_printer_ids=exclude_printer_ids
+        )
+    )
 
 
 async def plan_for_orders(
