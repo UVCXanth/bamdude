@@ -145,6 +145,7 @@ describe('i18n locale parity', () => {
  */
 describe('the rebalance refusal codes are the backend’s closed list', () => {
   const SKIP_REASONS = [
+    'order_resources',
     'not_found',
     'already_assigned',
     'not_filed',
@@ -251,7 +252,7 @@ describe('every order journal kind has a sentence', () => {
  * a missing key would render the code itself (CL5).
  */
 describe('every estimate reason has a label', () => {
-  const ORDER_REASONS = ['unknown_time', 'unroutable', 'material_mismatch', 'needs_slicing', 'no_plate', 'unplanned_parts', 'truncated'];
+  const ORDER_REASONS = ['unknown_time', 'unroutable', 'printer_resources', 'material_mismatch', 'needs_slicing', 'no_plate', 'unplanned_parts', 'truncated'];
   const PRODUCT_REASONS = [
     'no_plate',
     'needs_slicing',
