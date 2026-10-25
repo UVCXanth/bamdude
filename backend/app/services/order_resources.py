@@ -154,6 +154,7 @@ async def pending(db, project_id):
     from backend.app.models.auto_queue import AutoQueueItem
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.project_line import ProjectLine
+    from backend.app.services.order_queue import awaiting_auto_row_conditions
     from backend.app.services.queue_rebalance import refusal as auto_refusal
 
     lines = select(ProjectLine.id).where(ProjectLine.project_id == project_id)
@@ -177,8 +178,7 @@ async def pending(db, project_id):
                 select(AutoQueueItem)
                 .where(
                     or_(AutoQueueItem.project_id == project_id, AutoQueueItem.project_line_id.in_(lines)),
-                    AutoQueueItem.status == "pending",
-                    AutoQueueItem.assigned_to_item_id.is_(None),
+                    *awaiting_auto_row_conditions(),
                 )
                 .order_by(AutoQueueItem.id)
                 .limit(10001)

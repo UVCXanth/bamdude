@@ -31,6 +31,7 @@ from backend.app.migrations import (
     m197_order_auto_eject as m197,
     m198_auto_eject_camera_settings as m198,
     m199_order_print_options as m199,
+    m209_order_printer_resources as m209,
 )
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
@@ -206,12 +207,14 @@ async def _run_upgrade(engine):
         # The assertions read through the CURRENT ``Project`` model, so the
         # columns later migrations add to the table m158 rebuilds must exist too:
         # ``contact_id`` (m190), ``stage`` and ``responsible_id`` (m191),
-        # and the opt-in auto-eject flag/policy (m197/m198).
+        # the opt-in auto-eject flag/policy (m197/m198), print options (m199),
+        # and order-local printer restrictions (m209).
         await m190.upgrade(conn)
         await m191.upgrade(conn)
         await m197.upgrade(conn)
         await m198.upgrade(conn)
         await m199.upgrade(conn)
+        await m209.upgrade(conn)
 
 
 @pytest.mark.asyncio
@@ -293,6 +296,7 @@ async def test_every_project_becomes_a_product_with_a_single_line(db_session, te
 
     project = await db_session.get(Project, ids["order"])
     assert project.price == 12.5
+    assert project.printer_resources is None
 
 
 @pytest.mark.asyncio
