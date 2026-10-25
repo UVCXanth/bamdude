@@ -147,6 +147,12 @@ def clear_pin(printer_id: int) -> None:
     _pinned.pop(printer_id, None)
 
 
+def pinned(printer_id: int) -> list[str] | None:
+    """Read-only: what preheat sent and nothing has unwound yet -- a record, not a measured heater."""
+    what = _pinned.get(printer_id)
+    return sorted(what) if what else None
+
+
 async def _get_setting_str(db: AsyncSession, key: str) -> str | None:
     """Read a raw settings value. Lazy import of ``get_setting`` mirrors the rest of
     background_dispatch — the settings route pulls in schemas that would otherwise

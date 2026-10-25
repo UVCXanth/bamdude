@@ -65,6 +65,11 @@ def defer_queue_repair_during_completion(printer_id: int):
             _live_completions.pop(printer_id)
 
 
+def live_completion_active(printer_id: int) -> bool:
+    """Read-only: a live completion of this printer is between its archive and queue writes."""
+    return _live_completions.get(printer_id, 0) > 0
+
+
 # Printer gcode_state values that mean a print is still in progress — an
 # orphan archive matching one of these is left untouched (the live status
 # already re-armed the fresh client's completion tracking).

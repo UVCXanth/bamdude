@@ -488,6 +488,46 @@ def current_print_run(manager: PrinterManager, printer_id: int) -> PrintRunBindi
     return _current(manager).get(printer_id)
 
 
+def _peek(manager: PrinterManager, name: str) -> dict:
+    """A registry as it is, without creating it: diagnostics must not write even an empty dict."""
+    registry = getattr(manager, name, None)
+    return registry if isinstance(registry, dict) else {}
+
+
+def start_admission(manager: PrinterManager, printer_id: int) -> PrintStartAdmission | None:
+    """The live start claim, for read-only diagnostics. Mutable: compare its fields, not only the object."""
+    return _peek(manager, "_print_start_admissions").get(printer_id)
+
+
+def start_resolution(manager: PrinterManager, printer_id: int) -> PrintStartResolution | None:
+    return _peek(manager, "_print_start_resolutions").get(printer_id)
+
+
+def has_pending_terminal(manager: PrinterManager, printer_id: int) -> bool:
+    return bool(_peek(manager, "_pending_print_terminals").get(printer_id))
+
+
+def effect_generation(manager: PrinterManager, printer_id: int) -> int | None:
+    """The printer's current activity, which every effect token is fenced by."""
+    return _peek(manager, "_print_effect_generations").get(printer_id)
+
+
+def terminal_accepted(manager: PrinterManager, printer_id: int, generation: int) -> bool:
+    """Whether an unbound terminal of ``generation`` is already deduplicated (``accept_unbound_completion``)."""
+    return _peek(manager, "_print_terminal_generations").get(printer_id) == generation
+
+
+def has_runtime_context(manager: PrinterManager, printer_id: int) -> bool:
+    """Anything of a run this process still holds for the printer: a binding, a start, a finish, a terminal."""
+    return bool(
+        _peek(manager, "_print_run_bindings").get(printer_id)
+        or _peek(manager, "_print_start_admissions").get(printer_id)
+        or _peek(manager, "_print_start_resolutions").get(printer_id)
+        or _peek(manager, "_pending_print_terminals").get(printer_id)
+        or any(pid == printer_id for pid, _ in _peek(manager, "_print_run_finishing_bindings"))
+    )
+
+
 def finishing_print_runs(manager: PrinterManager, printer_id: int) -> tuple[PrintRunBinding, ...]:
     """Addressed terminal leases still being processed for one printer."""
 

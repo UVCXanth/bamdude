@@ -538,6 +538,12 @@ _untrusted_timelapse_baselines: set[int] = set()
 _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
 
 
+def has_bed_cooldown(printer_id: int) -> bool:
+    """Read-only: a completion's bed-cooldown watch is still running for this printer."""
+    task = _bed_cooldown_tasks.get(printer_id)
+    return task is not None and not task.done()
+
+
 async def stop_bed_cooldown_tasks(printer_id: int | None = None) -> None:
     tasks = {task for owner, task in _bed_cooldown_tasks.items() if printer_id is None or owner == printer_id}
     for task in tasks:
@@ -1141,6 +1147,18 @@ def register_macro_selection(printer_id: int, options: dict) -> None:
 def clear_macro_selection(printer_id: int) -> None:
     """Forget the selection — the print it belonged to is over."""
     _active_macro_selection.pop(printer_id, None)
+
+
+def run_config_registrations(printer_id: int) -> dict[str, tuple[bool, object]]:
+    """Read-only: what dispatch registered for the print on *printer_id*, as ``(present, the object itself)``.
+
+    The objects, not copies: an addressed repair compares their identity and content before it removes
+    them (spec printer-runtime-stall-diagnostics r3 R7a). An empty selection is present — it is an answer.
+    """
+    return {
+        "macro_selection": (printer_id in _active_macro_selection, _active_macro_selection.get(printer_id)),
+        "swap_config": (printer_id in _active_swap_config, _active_swap_config.get(printer_id)),
+    }
 
 
 def register_swap_config(printer_id: int, options: dict):

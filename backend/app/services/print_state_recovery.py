@@ -16,13 +16,30 @@ OUTCOMES = {
     "aborted": "cancelled",
     "stopped": "cancelled",
 }
+#: The one in-memory repair (spec printer-runtime-stall-diagnostics r3 R6): a finished run's context.
+RUNTIME_ACTION = "clear_terminal_runtime_context"
 ACTIONS = (
     "align_terminal_item",
     "fill_estimated_end_and_align",
     "release_orphan_header",
     "delete_stale_item",
     "close_interrupted_attempt",
+    RUNTIME_ACTION,
 )
+#: Every in-process owner that can still use a run, read by ``print_state_recovery_store.runtime_snapshot``.
+#: A missing or ``None`` answer is unknown, never "no owner".
+RUNTIME_OWNERS = (
+    "dispatch_in_flight",
+    "dispatch_work",
+    "completion_scope",
+    "live_completion",
+    "swap_sending",
+    "macro_tasks",
+    "plug_off",
+    "bed_cooldown",
+    "archive_download",
+)
+_IDLE_STATES = ("IDLE", "FINISH", "FAILED")
 #: Dispatch phases our dispatch never saw running (``services/dispatch_phase.UNACCEPTED``).
 UNACCEPTED_PHASES = ("prepared", "sending", "sent")
 _INTERRUPTED = "The dispatch was interrupted"
@@ -48,6 +65,9 @@ class RecoveryFacts:
     #: printer's verdict (``background_dispatch.attempt_unobserved``, D-R4). The live owner
     #: says so itself; it is not a proof that any owner ended.
     unobserved: bool = False
+    #: The printer's in-process context as plain data (``print_state_recovery_store.runtime_snapshot``);
+    #: set only for the ``runtime`` kind, whose ``item`` is always None.
+    runtime: dict | None = None
 
 
 def utc(value):
@@ -85,6 +105,171 @@ def effects_pending(archive: dict | None, *, intents: bool = True) -> bool:
             "completion_effects",
         )
     )
+
+
+def runtime_effect_debt(extra) -> list[str]:
+    """What a finished run's archive still owes, read strictly (spec r3 R7.5, R7a).
+
+    Unlike :func:`effects_pending` it understands the swap claim: ``finished`` is settled, any other stage is
+    debt, and a stage it cannot read is unreadable -- never "nothing owed". Every other completion record is
+    left to its owner and vetoes.
+    """
+    if extra is None:
+        return []
+    if not isinstance(extra, dict):
+        return ["effects_unreadable"]
+    debt = set()
+    pending = extra.get("swap_macro_events_pending")
+    if pending is not None:
+        if not isinstance(pending, list):
+            debt.add("effects_unreadable")
+        elif pending:
+            debt.add("swap_debt")
+    if "bamdude_terminal_effects" in extra:
+        effects = extra["bamdude_terminal_effects"]
+        if not isinstance(effects, dict):
+            debt.add("effects_unreadable")
+        else:
+            for name, record in effects.items():
+                if name != "swap_change_table":
+                    debt.add("effects_pending")
+                    continue
+                stage = record.get("stage") if isinstance(record, dict) else None
+                if stage == "finished":
+                    continue
+                debt.add("swap_debt" if stage in ("owed", "attempted", "failed") else "effects_unreadable")
+    if any(key in extra for key in ("swap_hold", "auto_eject_pending", "cleanup_pending", "completion_effects")):
+        debt.add("effects_pending")
+    return sorted(debt)
+
+
+def _nonzero_id(value) -> str | None:
+    text = str(value or "").strip()
+    return text if text and text != "0" else None
+
+
+def _admission_reasons(admission, current: dict) -> list[str]:
+    """Only a processed start of THIS run may go with it: a copied archive id or generation proves nothing."""
+    if admission is None:
+        return []
+    if not isinstance(admission, dict):
+        return ["admission_unproven"]
+    if admission.get("phase") == "processing":
+        return ["start_in_progress"]
+    run_ids = {_nonzero_id(current.get("observed_subtask_id")), _nonzero_id(current.get("expected_submission_id"))}
+    run_ids.discard(None)
+    started = _nonzero_id(admission.get("subtask_id"))
+    if (
+        admission.get("phase") != "processed"
+        or admission.get("archive_id") != current.get("archive_id")
+        or admission.get("generation") != current.get("effect_generation")
+        or started is None
+        or started not in run_ids
+    ):
+        return ["admission_unproven"]
+    return []
+
+
+def _registration_reasons(registration) -> list[str]:
+    if not isinstance(registration, dict) or not isinstance(registration.get("present"), bool):
+        return ["registration_unreadable"]
+    if registration["present"] and registration.get("valid") is not True:
+        return ["registration_unreadable"]
+    return []
+
+
+def _classify_runtime(f: RecoveryFacts) -> dict | None:
+    """A printer's in-process context against its database rows (spec r3 R3, R7).
+
+    Shown whenever the two disagree; released only when every precondition holds. The plate gate and a
+    residual preheat are facts for the operator, never a veto (R7b, A21).
+    """
+    r = f.runtime
+    current = r.get("current")
+    if current is None:
+        lingering = set()
+        if r.get("resolution") or r.get("admission") is not None:
+            lingering.add("start_in_progress")
+        if r.get("finishing"):
+            lingering.add("finishing_in_progress")
+        if r.get("pending_terminal"):
+            lingering.add("terminal_buffered")
+        if not lingering:
+            return None
+        return {"code": "runtime_context_unresolved", "actions": [], "blocked_reasons": sorted(lingering)}
+
+    q, a = f.queue, f.archive
+    telemetry = r.get("telemetry") if isinstance(r.get("telemetry"), dict) else {}
+    state = telemetry.get("state")
+    fresh_idle = telemetry.get("fresh") is True and state in _IDLE_STATES
+    reasons = set()
+    code = "terminal_runtime_context"
+    if a is None or a.get("deleted_at") is not None:
+        code = "runtime_context_unresolved"
+        reasons.add("archive_missing")
+    elif a.get("printer_id") != f.printer_id or (q is not None and a.get("queue_id") != q["id"]):
+        code = "runtime_context_unresolved"
+        reasons.add("archive_foreign")
+    elif a.get("status") not in OUTCOMES:
+        if not fresh_idle:
+            return None  # a print in progress, or a printer we cannot see: nothing contradicts the run
+        code = "runtime_context_unresolved"
+        reasons.add("archive_not_terminal")
+    if a is not None:
+        extra = a.get("extra_data")
+        if isinstance(extra, dict) and extra.get("recovered_outcome_uncertain"):
+            reasons.add("outcome_unknown")
+        if not a.get("recovery_identity"):
+            reasons.add("identity_missing")
+        reasons.update(runtime_effect_debt(extra))
+
+    if not fresh_idle:
+        reasons.add("live_busy" if telemetry.get("fresh") is True and state in ("RUNNING", "PAUSE") else "live_unknown")
+
+    owners = r.get("owners") if isinstance(r.get("owners"), dict) else {}
+    for name in RUNTIME_OWNERS:
+        value = owners.get(name)
+        if value is True:
+            reasons.add("owner_active")
+        elif value is not False:
+            reasons.add("owner_unknown")
+    for name, busy_reason in (("resolution", "start_in_progress"), ("pending_terminal", "terminal_buffered")):
+        value = r.get(name)
+        if value is True:
+            reasons.add(busy_reason)
+        elif value is not False:
+            reasons.add("owner_unknown")
+    finishing = r.get("finishing")
+    if type(finishing) is not int:
+        reasons.add("owner_unknown")
+    elif finishing:
+        reasons.add("finishing_in_progress")
+    if not isinstance(r.get("terminal_accepted"), bool):
+        reasons.add("owner_unknown")
+    generation = r.get("effect_generation")
+    if type(generation) is not int:
+        reasons.add("owner_unknown")
+    elif generation != current.get("effect_generation"):
+        reasons.add("activity_changed")
+    reasons.update(_admission_reasons(r.get("admission"), current))
+    reasons.update(_registration_reasons(r.get("macro_selection")))
+    reasons.update(_registration_reasons(r.get("swap_config")))
+
+    if q is None:
+        reasons.add("queue_missing")
+    else:
+        if not q.get("recovery_identity"):
+            reasons.add("identity_missing")
+        if (
+            q.get("status") == "printing"
+            or q.get("current_item_id") is not None
+            or f.active_item_ids
+            or f.printing_archive_ids
+        ):
+            reasons.add("queue_busy")
+
+    actions = [RUNTIME_ACTION] if code == "terminal_runtime_context" and not reasons else []
+    return {"code": code, "actions": actions, "blocked_reasons": sorted(reasons)}
 
 
 def estimated_end(f: RecoveryFacts):
@@ -182,6 +367,8 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
 
 
 def classify(f: RecoveryFacts) -> dict | None:
+    if f.runtime is not None:
+        return _classify_runtime(f)
     q, i, a = f.queue, f.item, f.archive
     interrupted = _interrupted_dispatch(f)
     if interrupted is not None:

@@ -65,6 +65,10 @@ class ArchiveDownloadRetryService:
         self._in_progress: set[int] = set()
         self._lock = asyncio.Lock()
 
+    def in_progress(self, archive_id: int) -> bool:
+        """Read-only: a download or attach for this archive is running now."""
+        return archive_id in self._in_progress
+
     @asynccontextmanager
     async def claim(self, archive_id: int) -> AsyncIterator[None]:
         """Hold the in-progress guard for a download this service isn't running.

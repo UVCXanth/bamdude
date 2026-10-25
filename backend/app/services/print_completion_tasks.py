@@ -56,6 +56,11 @@ class PrintCompletionTasks:
                 _scopes.discard(self)
 
 
+def has_open_scope(printer_id: int) -> bool:
+    """Read-only: a completion of this printer still owns consumers or has not cleaned up."""
+    return any(scope.printer_id == printer_id for scope in _scopes)
+
+
 async def stop_print_completion_tasks(printer_id: int | None = None) -> None:
     """Cancel and drain this service's work before runtime/database teardown."""
     tasks = {task for scope in _scopes if printer_id is None or scope.printer_id == printer_id for task in scope.tasks}

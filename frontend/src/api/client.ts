@@ -20,8 +20,17 @@ import { farmRead, farmReadBudget } from './farmReadBudget';
 export type PrintStateAction =
   | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
   | 'close_interrupted_attempt';
-export interface PrintStateIssue {
-  printer_id: number; printer_name: string; queue_id: number; kind: 'item' | 'header' | 'archive'; target_id: number;
+/** A run the printer's process still holds in memory (kind ``runtime``): what the operator reads beside it. */
+export interface PrintStateRuntimeView {
+  context: { archive_id: number; queue_item_id: number | null; origin: string } | null;
+  queue_paused: boolean | null; plate_gate: boolean | null; preheat_pinned: string[] | null;
+  temperatures: Record<'bed' | 'bed_target' | 'chamber' | 'chamber_target', number | null> | null;
+  age_seconds: number;
+}
+export interface PrintStateIssue extends Partial<PrintStateRuntimeView> {
+  /** ``null`` only for a runtime row of a printer that has no queue: shown, never repairable. */
+  printer_id: number; printer_name: string; queue_id: number | null; kind: 'item' | 'header' | 'archive' | 'runtime';
+  target_id: number;
   item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
   blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';
   observed_at: number | null; started_at: string | null; completed_at: string | null;

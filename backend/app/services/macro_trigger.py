@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 _event_tasks: dict[asyncio.Task, int] = {}
 
 
+def has_event_tasks(printer_id: int) -> bool:
+    """Read-only: an event macro scheduled for this printer is still running."""
+    return any(owner == printer_id and not task.done() for task, owner in _event_tasks.items())
+
+
 async def stop_event_macro_tasks(printer_id: int | None = None) -> None:
     tasks = {task for task, owner in _event_tasks.items() if printer_id is None or owner == printer_id}
     for task in tasks:

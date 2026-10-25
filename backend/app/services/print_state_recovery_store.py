@@ -31,6 +31,12 @@ from backend.app.utils.failure_reasons import row_class
 
 logger = logging.getLogger(__name__)
 _observations: dict[tuple, float] = {}
+#: The monotonic clock the runtime rows measure stability and age by (a test moves it).
+clock = time.monotonic
+#: First sight of each runtime observation, bounded like ``_observations``.
+_runtime_observations: dict[tuple, float] = {}
+_RUNTIME_STABLE_SECONDS = 10
+_SHOWN_TEMPERATURES = ("bed", "bed_target", "chamber", "chamber_target")
 _ITEM_FIELDS = (
     "id",
     "recovery_identity",
@@ -128,6 +134,150 @@ def live_snapshot(printer_id: int) -> dict:
     }
 
 
+def _ask(question) -> bool | None:
+    """One owner's answer, or unknown: an accessor that fails proves nothing either way."""
+    try:
+        return bool(question())
+    except Exception:  # noqa: BLE001 - an unknown owner is a veto, never a crash of the reader
+        logger.warning("print-state runtime owner could not be read", exc_info=True)
+        return None
+
+
+def _registration(entry, valid) -> dict:
+    present, value = entry
+    if not present:
+        return {"present": False, "ref": None, "value": None, "valid": True}
+    if not valid(value):
+        return {"present": True, "ref": id(value), "value": None, "valid": False}
+    return {"present": True, "ref": id(value), "value": json.loads(json.dumps(value)), "valid": True}
+
+
+def _macro_selection_valid(value) -> bool:
+    return isinstance(value, list) and all(type(i) is int for i in value)
+
+
+def _swap_config_valid(value) -> bool:
+    if not isinstance(value, dict) or set(value) != {"swap_macro_events"}:
+        return False
+    events = value["swap_macro_events"]
+    return isinstance(events, list) and all(isinstance(e, str) for e in events)
+
+
+def runtime_snapshot(printer_id: int) -> dict:
+    """The printer's in-process context as plain data (spec r3 R2). Reads only; resolves, cancels, clears nothing.
+
+    Object references are ``id()``s: they let an addressed repair later prove it removes the very objects
+    that were checked. An owner whose accessor fails is ``None`` -- unknown, never "no owner".
+    """
+    from backend.app import main
+    from backend.app.services import preheat, swap_terminal
+    from backend.app.services.archive_download_retry import archive_download_retry
+    from backend.app.services.background_dispatch import background_dispatch
+    from backend.app.services.macro_trigger import has_event_tasks
+    from backend.app.services.print_completion_tasks import has_open_scope
+    from backend.app.services.print_reconciliation import live_completion_active
+    from backend.app.services.print_run_binding import (
+        PrintStartAdmission,
+        current_print_run,
+        effect_generation,
+        finishing_print_runs,
+        has_pending_terminal,
+        start_admission,
+        start_resolution,
+        terminal_accepted,
+    )
+    from backend.app.services.print_scheduler import scheduler
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.smart_plug_manager import smart_plug_manager
+
+    state, received, stale = printer_manager.peek_status(printer_id)
+    fresh = bool(state and state.connected and received is not None and not stale)
+    run = current_print_run(printer_manager, printer_id)
+    admission = start_admission(printer_manager, printer_id)
+    if admission is None:
+        started = None
+    elif isinstance(admission, PrintStartAdmission):
+        started = {
+            "ref": id(admission),
+            "phase": admission.phase,
+            "subtask_id": admission.subtask_id,
+            "archive_id": admission.archive_id,
+            "generation": admission.generation,
+        }
+    else:
+        started = "unknown"
+    archive_id = run.archive_id if run is not None else None
+    owners = {
+        "dispatch_in_flight": _ask(lambda: scheduler.has_dispatch_in_flight(printer_id)),
+        "dispatch_work": _ask(lambda: background_dispatch.has_work_for_printer(printer_id)),
+        "completion_scope": _ask(lambda: has_open_scope(printer_id)),
+        "live_completion": _ask(lambda: live_completion_active(printer_id)),
+        "swap_sending": _ask(lambda: archive_id is not None and swap_terminal.sending(archive_id)),
+        "macro_tasks": _ask(lambda: has_event_tasks(printer_id)),
+        "plug_off": _ask(lambda: smart_plug_manager.has_pending_auto_off(printer_id)),
+        "bed_cooldown": _ask(lambda: main.has_bed_cooldown(printer_id)),
+        "archive_download": _ask(lambda: archive_id is not None and archive_download_retry.in_progress(archive_id)),
+    }
+    registrations = main.run_config_registrations(printer_id)
+    temperatures = getattr(state, "temperatures", None) if fresh else None
+    return {
+        "telemetry": {"fresh": fresh, "state": getattr(state, "state", None) if state is not None else None},
+        "current": None
+        if run is None
+        else {
+            "ref": id(run),
+            "archive_id": run.archive_id,
+            "sequence": run.sequence,
+            "origin": run.origin,
+            "queue_item_id": run.queue_item_id,
+            "expected_submission_id": run.expected_submission_id,
+            "observed_subtask_id": run.observed_subtask_id,
+            "effect_generation": run.effect_generation,
+            "client_generation": run.client_generation,
+        },
+        "admission": started,
+        "resolution": start_resolution(printer_manager, printer_id) is not None,
+        "pending_terminal": has_pending_terminal(printer_manager, printer_id),
+        "finishing": len(finishing_print_runs(printer_manager, printer_id)),
+        "effect_generation": effect_generation(printer_manager, printer_id),
+        "terminal_accepted": terminal_accepted(printer_manager, printer_id, run.effect_generation)
+        if run is not None
+        else False,
+        "owners": owners,
+        "macro_selection": _registration(registrations["macro_selection"], _macro_selection_valid),
+        "swap_config": _registration(registrations["swap_config"], _swap_config_valid),
+        "preheat_pinned": preheat.pinned(printer_id),
+        "plate_gate": _ask(lambda: printer_manager.is_awaiting_plate_clear(printer_id)),
+        # Shown beside a residual preheat; never part of the revision (they move every second).
+        "temperatures": {k: temperatures.get(k) for k in _SHOWN_TEMPERATURES}
+        if isinstance(temperatures, dict)
+        else None,
+    }
+
+
+def _runtime_age(key, f, issue) -> float:
+    """Seconds this exact observation has been seen unchanged (spec r3 R3: two equal sightings 10 s apart)."""
+    r = f.runtime
+    current = r.get("current") or {}
+    stamp = (
+        key,
+        issue["code"],
+        tuple(issue["blocked_reasons"]),
+        current.get("ref"),
+        current.get("sequence"),
+        (f.archive or {}).get("status"),
+        r["telemetry"].get("state"),
+        queue_sources.current_epoch(),
+    )
+    now = clock()
+    for old in list(_runtime_observations):
+        if now - _runtime_observations[old] > 300:
+            _runtime_observations.pop(old, None)
+    if len(_runtime_observations) >= 1000 and stamp not in _runtime_observations:
+        _runtime_observations.pop(next(iter(_runtime_observations)))
+    return now - _runtime_observations.setdefault(stamp, now)
+
+
 def unknown_inbound_refs() -> bool:
     allowed = {("auto_queue_items", "assigned_to_item_id"), ("calibration_session", "print_queue_item_id")}
     for table in Base.metadata.tables.values():
@@ -171,7 +321,8 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
         ).all()
     )
     aid = {i.archive_id for i in items.values() if i.archive_id}
-    aid.update(key for _, kind, key in targets if kind == "archive")
+    # A runtime row names its run's execution archive: loaded by that id, never by scanning history.
+    aid.update(key for _, kind, key in targets if kind == "archive" or (kind == "runtime" and key))
     archives = {
         a.id: a
         for a in (
@@ -217,19 +368,28 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     now = datetime.now(timezone.utc)
     for pid, kind, key in targets:
         q = qs.get(pid)
-        if q is None:
+        runtime = None
+        if kind == "runtime":
+            # A printer with no queue still has its row; it only cannot be repaired (R7.3).
+            runtime = runtime_snapshot(pid)
+            if ((runtime["current"] or {}).get("archive_id") or 0) != key:
+                continue  # the run this row named is not the one held now
+        elif q is None:
             continue
         item = items.get(key) if kind == "item" else None
         if kind == "item" and (item is None or item.queue_id != q.id):
             continue
-        current = items.get(q.current_item_id)
-        archive = (
-            archives.get(item.archive_id)
-            if item
-            else archives.get(key)
-            if kind == "archive"
-            else (archives.get(current.archive_id) if current and current.queue_id == q.id else None)
-        )
+        current = items.get(q.current_item_id) if q is not None else None
+        if kind == "runtime":
+            archive = archives.get(key) if key else None
+        else:
+            archive = (
+                archives.get(item.archive_id)
+                if item
+                else archives.get(key)
+                if kind == "archive"
+                else (archives.get(current.archive_id) if current and current.queue_id == q.id else None)
+            )
         if kind == "header" and key != q.id:
             continue
         if kind == "archive" and (archive is None or archive.printer_id != pid):
@@ -253,8 +413,8 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
                 or acounts.get(pid, 0) != 1
             ):
                 live = {**live, "mode": "unknown"}
-        active = tuple(i.id for i in items.values() if i.queue_id == q.id and i.status == "printing")
-        if counts.get(q.id, 0) > len(active):
+        active = tuple(i.id for i in items.values() if q is not None and i.queue_id == q.id and i.status == "printing")
+        if q is not None and counts.get(q.id, 0) > len(active):
             active += (-1,)
         references = set(refs.get(key, ())) if item else set()
         if item:
@@ -294,6 +454,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             now,
             owner_ended=owner_ended(current_boot, archive),
             unobserved=attempt_unobserved(archive.id) if archive is not None else False,
+            runtime=runtime,
         )
     return result, qs, (items, archives)
 
@@ -310,7 +471,28 @@ def revision(f: RecoveryFacts) -> str:
     data = asdict(f)
     data.pop("now")
     data["live"].pop("observed_at", None)
+    if data.get("runtime"):
+        data["runtime"].pop("temperatures", None)
     return previews.digest(data)
+
+
+def _runtime_view(f: RecoveryFacts) -> dict:
+    """What the operator reads beside a runtime row: the held run, the pause, the gate, a residual preheat."""
+    r = f.runtime
+    current = r.get("current")
+    return {
+        "context": None
+        if current is None
+        else {
+            "archive_id": current["archive_id"],
+            "queue_item_id": current["queue_item_id"],
+            "origin": current["origin"],
+        },
+        "queue_paused": f.queue.get("is_paused") if f.queue else None,
+        "plate_gate": r.get("plate_gate"),
+        "preheat_pinned": r.get("preheat_pinned"),
+        "temperatures": r.get("temperatures"),
+    }
 
 
 def public_issue(key, f):
@@ -321,7 +503,7 @@ def public_issue(key, f):
     return {
         **issue,
         "printer_id": f.printer_id,
-        "queue_id": f.queue["id"],
+        "queue_id": f.queue["id"] if f.queue else None,
         "kind": key[1],
         "target_id": key[2],
         "item_id": f.item["id"] if f.item else None,
@@ -330,6 +512,7 @@ def public_issue(key, f):
         "live_mode": f.live["mode"],
         "started_at": (visible_archive or {}).get("started_at"),
         "completed_at": (visible_archive or {}).get("completed_at"),
+        **(_runtime_view(f) if f.runtime is not None else {}),
     }
 
 
@@ -346,7 +529,7 @@ def decode_cursor(value):
             not isinstance(row, list)
             or len(row) != 3
             or type(row[0]) is not int
-            or row[1] not in {"header", "item", "archive"}
+            or row[1] not in {"header", "item", "archive", "runtime"}
             or type(row[2]) is not int
         ):
             raise ValueError
@@ -407,12 +590,32 @@ async def list_issues(db, scope, *, printer_id=None, cursor=None):
                 and_(candidates.c.pid == pid, candidates.c.kind == kind, candidates.c.target > target),
             )
         )
-    rows = (await db.execute(query.limit(101))).all()
-    targets = [tuple(row) for row in rows[:100]]
+    sql_rows = [tuple(row) for row in (await db.execute(query.limit(101))).all()]
+    # In-process contexts are candidates too (spec r3 R2): one row per printer of this page, ordered
+    # with the database rows by the same key, so the cursor walks both exactly once.
+    from backend.app.services.print_run_binding import current_print_run, has_runtime_context
+    from backend.app.services.printer_manager import printer_manager
+
+    held = []
+    for pid in pids:
+        if has_runtime_context(printer_manager, pid):
+            run = current_print_run(printer_manager, pid)
+            row = (pid, "runtime", run.archive_id if run is not None else 0)
+            if after is None or row > tuple(after):
+                held.append(row)
+    rows = sorted(set(sql_rows) | set(held))
+    targets = rows[:100]
     facts, _, _ = await read_facts(db, pids, targets)
     issues = []
     for key, f in facts.items():
         issue = public_issue(key, f)
+        if issue and f.runtime is not None:
+            # A runtime divergence is shown once seen unchanged twice, 10 s apart: a run between its
+            # terminal and its finishing lease is not a problem. Display only; apply re-reads everything.
+            age = _runtime_age(key, f, issue)
+            if age < _RUNTIME_STABLE_SECONDS:
+                continue
+            issue = {**issue, "age_seconds": round(age)}
         if issue:
             issues.append({**issue, "printer_name": names[key[0]]})
     next_cursor = (

@@ -49,6 +49,14 @@ class SmartPlugManager:
         self._history_task: asyncio.Task | None = None
         self._last_schedule_check: dict[tuple[int, str], str] = {}  # (plug_id, action) -> local date/minute
 
+    def has_pending_auto_off(self, printer_id: int) -> bool:
+        """Read-only: a delayed turn-off scheduled by this printer's completion is still waiting."""
+        for plug_id, owner in self._pending_off_printers.items():
+            task = self._pending_off.get(plug_id)
+            if owner == printer_id and task is not None and not task.done():
+                return True
+        return False
+
     async def get_service_for_plug(self, plug: "SmartPlug", db: AsyncSession | None = None):
         """The single place a plug type becomes a driver.
 

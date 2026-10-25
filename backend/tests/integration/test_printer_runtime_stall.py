@@ -1,0 +1,316 @@
+"""A printer whose finished run is still held in memory, and the dispatch loop it causes.
+
+Spec: vault ``60-specs/printer-runtime-stall-diagnostics-spec.md`` (r3). The paths here are the
+production ones -- the connect-edge sweep, the bound-terminal acceptance, the real scheduler and
+runner with device I/O faked -- and every printer observation is synthetic. These fixtures build
+the broken state on purpose; they do not claim to be the cause of any user's log.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from backend.app.models.archive import PrintArchive
+from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer_queue import PrinterQueue
+from backend.app.services import print_state_recovery_store as store
+from backend.app.services.print_run_binding import bind_prepared_print_run, bind_print_run, current_print_run
+from backend.app.services.printer_manager import printer_manager
+from backend.tests.integration.test_dispatch_attempt_verdicts import a_job_and_its_dispatch, one_tick
+from backend.tests.integration.test_dispatch_without_original import (  # noqa: F401 - fixtures
+    clean_spool_state,
+    sessions,
+)
+from backend.tests.unit.services.test_terminal_queue_repair import telemetry  # noqa: F401 - fixture
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+_RUNTIME_REGISTRIES = (
+    "_print_run_bindings",
+    "_print_run_finishing_bindings",
+    "_print_start_resolutions",
+    "_pending_print_terminals",
+    "_print_start_admissions",
+    "_print_effect_generations",
+    "_print_terminal_generations",
+)
+
+
+class FakeClock:
+    """The monotonic clock the diagnostics read, moved by the test alone."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = FakeClock()
+    monkeypatch.setattr(store, "clock", fake)
+    monkeypatch.setattr(store, "_runtime_observations", {})
+    return fake
+
+
+async def listed(db, clock, printer_id, *, code="terminal_runtime_context"):
+    """Two equal observations at least ten seconds apart -- what the panel needs before it shows a row."""
+    first = await store.list_issues(db, None)
+    assert not [r for r in first["issues"] if r["printer_id"] == printer_id and r["kind"] == "runtime"], first
+    clock.advance(11)
+    page = await store.list_issues(db, None)
+    return next((r for r in page["issues"] if r["printer_id"] == printer_id and r["code"] == code), None), page
+
+
+@pytest.fixture
+def runtime(monkeypatch):
+    """The empty in-process context a fresh server has, for this test only."""
+    from backend.app import main
+
+    for name in _RUNTIME_REGISTRIES:
+        monkeypatch.setattr(printer_manager, name, {}, raising=False)
+    # The plate gate's in-memory mirror is process-wide too, and printer ids repeat between tests.
+    monkeypatch.setattr(printer_manager, "_awaiting_plate_clear", set())
+    monkeypatch.setattr(main, "_active_swap_config", {})
+    monkeypatch.setattr(main, "_active_macro_selection", {})
+    return printer_manager
+
+
+async def a_dispatched_run_the_sweep_closes(db, printer_factory, archive_factory, telemetry):
+    """A queued print A whose finish was missed while the link was down, closed by the connect-edge sweep.
+
+    Everything is the production path: the dispatch's own binding and macro registration, then
+    ``_reconcile`` against a printer that reports FINISH for A's file.
+    """
+    from backend.app import main
+    from backend.app.services.print_reconciliation import _reconcile
+
+    printer = await printer_factory()
+    queue = PrinterQueue(printer_id=printer.id, status="printing")
+    db.add(queue)
+    await db.flush()
+    started = datetime.now(timezone.utc) - timedelta(hours=2)
+    archive = await archive_factory(
+        printer.id,
+        queue_id=queue.id,
+        filename="cube.gcode.3mf",
+        status="printing",
+        started_at=started,
+        completed_at=None,
+        created_at=started,
+        extra_data={},
+    )
+    item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing", started_at=started)
+    pending = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
+    db.add_all([item, pending])
+    await db.flush()
+    queue.current_item_id = item.id
+    await db.commit()
+
+    run = bind_prepared_print_run(
+        printer_manager,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        queue_item_id=item.id,
+        claim_started_at=started,
+        expected_submission_id="111",
+    )
+    assert run is not None
+    # What every Print dialog dispatch registers after its start: an empty selection is a real answer.
+    main.register_macro_selection(printer.id, {"selected_macro_ids": []})
+
+    telemetry.state = "FINISH"
+    closed = await _reconcile(db, printer.id, "FINISH", "cube.gcode.3mf")
+    await db.commit()
+    assert closed == [archive.id]
+    return printer, queue, archive, item, pending, run
+
+
+async def test_a_reconciled_run_whose_context_stayed_is_shown(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, runtime, clock, monkeypatch
+):
+    """A01: the sweep closes A in the database and leaves A bound in memory; the diagnostics say so."""
+    from backend.app import main
+
+    monkeypatch.setattr(
+        main, "async_session", async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    )
+    printer, queue, archive, item, pending, run = await a_dispatched_run_the_sweep_closes(
+        db_session, printer_factory, archive_factory, telemetry
+    )
+    printer_id, queue_id, archive_id, item_id, pending_id = printer.id, queue.id, archive.id, item.id, pending.id
+
+    db_session.expire_all()
+    assert (await db_session.get(PrintArchive, archive_id)).status == "completed"
+    closed_queue = await db_session.get(PrinterQueue, queue_id)
+    assert closed_queue.status == "idle" and not closed_queue.is_paused and closed_queue.current_item_id is None
+    assert (await db_session.get(PrintQueueItem, pending_id)).status == "pending"
+    # The sweep never touched the in-process context.
+    assert current_print_run(printer_manager, printer_id) is run
+    # A late terminal for A cannot release it: the archive is no longer printing.
+    assert await main._accept_bound_terminal_run(printer_id, run, {"status": "completed"}) is None
+    assert current_print_run(printer_manager, printer_id) is run
+    # And every next attempt on this printer is refused at its bind.
+    assert (
+        bind_prepared_print_run(
+            printer_manager, printer_id=printer_id, archive_id=archive_id + 1000, queue_item_id=pending_id
+        )
+        is None
+    )
+
+    issue, page = await listed(db_session, clock, printer_id)
+    assert issue is not None, page["issues"]
+    assert issue["archive_id"] == archive_id and issue["kind"] == "runtime" and issue["target_id"] == archive_id
+    assert issue["queue_id"] == queue_id and issue["item_id"] is None
+    # The empty selection every Print dialog registers is no veto (R7a); nothing else holds A.
+    assert issue["actions"] == ["clear_terminal_runtime_context"], issue["blocked_reasons"]
+    assert issue["context"] == {"archive_id": archive_id, "queue_item_id": item_id, "origin": "dispatch"}
+    assert issue["queue_paused"] is False
+
+
+async def test_reading_the_runtime_context_changes_nothing(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, runtime, clock, monkeypatch
+):
+    """GET is a read: no registry, no row, no reconnect path (spec r3 R1, R2)."""
+    from copy import copy
+
+    from backend.app import main
+
+    monkeypatch.setattr(
+        main, "async_session", async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    )
+    printer, *_ = await a_dispatched_run_the_sweep_closes(db_session, printer_factory, archive_factory, telemetry)
+
+    def registries():
+        state = {name: copy(getattr(printer_manager, name, {})) for name in _RUNTIME_REGISTRIES}
+        state["macro"] = copy(main._active_macro_selection)
+        state["swap"] = copy(main._active_swap_config)
+        return state
+
+    before = registries()
+    monkeypatch.setattr(
+        printer_manager, "get_status", lambda *_: (_ for _ in ()).throw(AssertionError("reconnect path"))
+    )
+    await listed(db_session, clock, printer.id)
+    assert registries() == before
+    assert not db_session.new and not db_session.dirty and not db_session.deleted
+
+
+async def test_a_printer_without_a_queue_still_has_its_row(
+    db_session, printer_factory, archive_factory, telemetry, runtime, clock
+):
+    """A runtime-only context is shown, but nothing can be repaired without a real queue (R7.3)."""
+    printer = await printer_factory()
+    archive = await a_stale_context_on(db_session, printer.id)
+    telemetry.state = "FINISH"
+
+    issue, page = await listed(db_session, clock, printer.id)
+    assert issue is not None, page["issues"]
+    assert issue["queue_id"] is None and issue["actions"] == []
+    assert "queue_missing" in issue["blocked_reasons"]
+    assert issue["archive_id"] == archive.id
+
+
+async def test_runtime_rows_page_with_their_printers(db_session, printer_factory, telemetry, runtime, clock):
+    """More printers than one page: every runtime row is seen exactly once (A14)."""
+    printers = [await printer_factory(name=f"p{n}") for n in range(23)]
+    for p in printers:
+        await a_stale_context_on(db_session, p.id)
+    telemetry.state = "FINISH"
+
+    async def walk():
+        seen, cursor = [], None
+        for _ in range(10):
+            page = await store.list_issues(db_session, None, cursor=cursor)
+            seen.extend((r["printer_id"], r["kind"], r["target_id"]) for r in page["issues"] if r["kind"] == "runtime")
+            cursor = page["next_cursor"]
+            if not cursor:
+                return seen
+        raise AssertionError("the walk did not end")
+
+    await walk()
+    clock.advance(11)
+    seen = await walk()
+    assert len(seen) == len(set(seen)) == 23
+    assert {pid for pid, _, _ in seen} == {p.id for p in printers}
+
+
+async def a_stale_context_on(db, printer_id: int) -> PrintArchive:
+    """A finished run A on this printer that stayed bound in memory."""
+    started = datetime.now(timezone.utc) - timedelta(hours=3)
+    stale = PrintArchive(
+        printer_id=printer_id,
+        filename="stale.gcode.3mf",
+        file_path="archives/stale.gcode.3mf",
+        file_size=1,
+        status="completed",
+        started_at=started,
+        completed_at=started + timedelta(hours=1),
+        extra_data={},
+    )
+    db.add(stale)
+    await db.commit()
+    bind_print_run(
+        printer_manager, printer_id=printer_id, archive_id=stale.id, expected_submission_id="111", origin="dispatch"
+    )
+    return stale
+
+
+async def test_every_stalled_attempt_is_a_new_job_and_archive_behind_one_blocker(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime
+):
+    """Baseline: the loop the incident showed -- a new job and execution archive each time, one blocker."""
+    queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
+    stale_id = (await a_stale_context_on(db_session, printer_id)).id
+
+    for _ in range(3):
+        await one_tick(scheduler, spawned)
+        db_session.expire_all()
+        row = await db_session.get(PrintQueueItem, item_id)
+        assert row.status == "pending" and row.started_at is None, row.error_message
+
+    db_session.expire_all()
+    attempts = (
+        await db_session.execute(
+            select(PrintArchive.id, PrintArchive.status, PrintArchive.extra_data).where(
+                PrintArchive.printer_id == printer_id, PrintArchive.status != "completed"
+            )
+        )
+    ).all()
+    assert len({a.id for a in attempts}) == 3
+    assert all(a.status == "cancelled" and a.extra_data.get("dispatch_aborted") for a in attempts)
+    mqtt._client.publish.assert_not_called()
+    assert current_print_run(printer_manager, printer_id).archive_id == stale_id
+
+
+@pytest.mark.xfail(strict=True, reason="R4 typed deferral detail lands in plan Task 2")
+async def test_a_stalled_attempt_names_its_printer_item_and_blocker(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime, caplog
+):
+    """R4: the deferral says which printer and job it was, and what held it -- never a guess."""
+    queue_id, _mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch
+    )
+    printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
+    stale_id = (await a_stale_context_on(db_session, printer_id)).id
+
+    with caplog.at_level(logging.INFO, logger="backend.app.services.background_dispatch"):
+        await one_tick(scheduler, spawned)
+
+    deferrals = [r.getMessage() for r in caplog.records if "deferred before publish" in r.getMessage()]
+    assert deferrals, [r.getMessage() for r in caplog.records]
+    line = deferrals[-1]
+    assert f"printer={printer_id}" in line and f"item={item_id}" in line, line
+    assert "detail=current_run_conflict" in line and f"blocker_archive={stale_id}" in line, line
