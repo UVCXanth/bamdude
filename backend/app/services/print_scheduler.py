@@ -601,7 +601,12 @@ class PrintScheduler:
                 # Update waiting_reason based on current state
                 new_reason = None
                 reason_code = None
-                if not printer_connected:
+                from backend.app.services.order_resources import allowed
+
+                if not await allowed(db, item.project_id, printer_id, project_line_id=item.project_line_id):
+                    new_reason = "Order printer restrictions changed"
+                    reason_code = "order_resources"
+                elif not printer_connected:
                     new_reason = "Printer offline"
                     reason_code = "printer_offline"
                 elif not printer_idle:
@@ -616,6 +621,9 @@ class PrintScheduler:
 
                 if set_wait_reason(item, reason_code, new_reason):
                     await db.commit()
+
+                if reason_code == "order_resources":
+                    continue
 
                 # If printer not connected, try to power on via smart plug(s)
                 if not printer_connected:
@@ -2518,6 +2526,17 @@ class PrintScheduler:
                     failure_code=failure_reasons.DISPATCH_INTERNAL_ERROR,
                     failure_message=message,
                 )
+            from backend.app.services.order_resources import allowed
+
+            link = (
+                await cdb.execute(
+                    select(PrintQueueItem.project_id, PrintQueueItem.project_line_id).where(
+                        PrintQueueItem.id == item_id
+                    )
+                )
+            ).first()
+            if link is None or not await allowed(cdb, link[0], printer_id, lock=True, project_line_id=link[1]):
+                return ClaimResult(False, "order_resources_changed")
             cas_result = await cdb.execute(
                 update(PrintQueueItem)
                 .where(PrintQueueItem.id == item_id)

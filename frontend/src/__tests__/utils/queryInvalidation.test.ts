@@ -50,6 +50,7 @@ describe('invalidateOrderViews', () => {
       ['customer', 2],
       ['projects', {}],
       ['project-plan', 5],
+      ['order-printer-resources', 5],
     ]);
 
     invalidateOrderViews(qc);
@@ -58,6 +59,7 @@ describe('invalidateOrderViews', () => {
     expect(stale(qc, ['customer', 2])).toBe(true);
     expect(stale(qc, ['projects', {}])).toBe(true);
     expect(stale(qc, ['project-plan', 5])).toBe(true);
+    expect(stale(qc, ['order-printer-resources', 5])).toBe(true);
   });
 
   it('reaches an order page other than the one that was touched', () => {
@@ -118,6 +120,7 @@ describe('invalidateOrderViews', () => {
     expect([...ORDER_VIEW_KEYS]).toEqual([
       'projects',
       'project',
+      'order-printer-resources',
       'project-archives',
       'project-plan',
       'order-print-options',

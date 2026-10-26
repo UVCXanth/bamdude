@@ -78,6 +78,28 @@ describe('OrderView · sending the plan', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('opens the visible printer restrictions through the order action host after flushing the draft', async () => {
+    const spies = mockOrderDetailApi(makeOrder());
+    let releasePlan: (value: never) => void = () => {};
+    spies.getOrderPlan.mockReturnValue(new Promise(resolve => { releasePlan = resolve; }));
+    vi.spyOn(api, 'getOrderPrinterResources').mockResolvedValue({
+      token: 'a'.repeat(64), resources: { models: null, printer_ids: null },
+      printers: [{ id: 1, name: 'Printer A', model: 'A1 Mini', active: true, allowed: true }],
+    });
+    renderPage();
+    const button = await screen.findByRole('button', { name: 'Configure restrictions' });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(api.writeWorkingPlan).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    releasePlan(plan as never);
+    await screen.findByTestId('plan-enqueue-all');
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('checkbox', { name: 'All models' })).toBeVisible();
+    expect(api.writeWorkingPlan).toHaveBeenCalled();
+  });
+
   it('shows no numbers until the forecast after the send arrives, then shows it', async () => {
     let answer: (value: never) => void = () => {};
     await sendThePlan(new Promise((resolve) => (answer = resolve)));

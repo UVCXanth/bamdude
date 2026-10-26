@@ -330,6 +330,9 @@ async def claim(db, context: PlanConsumption | LegacyPlanPublication, sha256: st
     if issues or part["expected_hash"] and part["expected_hash"] != sha256:
         raise working.refusal("source_changed")
     if entry["target"]["kind"] == "printer":
+        from backend.app.services.order_resources import require_allowed
+
+        await require_allowed(db, context.plan_id, entry["target"]["printer_id"])
         printer = await db.get(Printer, entry["target"]["printer_id"], populate_existing=True)
         selected = next(row for line in exact.lines for row in line.rows)
         if (

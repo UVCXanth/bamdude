@@ -6631,6 +6631,29 @@ export interface DraftPreviewRequest {
   inputs_token?: string | null;
   entries: DraftEntry[];
 }
+export interface OrderPrinterResources {
+  models: string[] | null;
+  printer_ids: number[] | null;
+}
+export interface OrderPrinterResourceState {
+  resources: OrderPrinterResources;
+  token: string;
+  printers: { id: number; name: string; model: string | null; active: boolean; allowed: boolean }[];
+}
+export interface OrderResourceProposal {
+  proposal_token: string;
+  inputs_token: string;
+  expected_revision: number;
+  entries: WorkingEntry[];
+  remove_printer_ids: number[];
+  remove_auto_ids: number[];
+  preserved_printer_ids: number[];
+  preserved_auto_ids: number[];
+  previous_draft_count: number;
+  count: number;
+  rows: { line_id: number; filename: string; printer_model: string | null; count: number }[];
+}
+
 export interface WorkingEntry extends DraftEntry {
   manual: boolean;
   protected_count: number;
@@ -13261,6 +13284,16 @@ export const api = {
     request<OrderPrintOptionsResponse>(`/projects/${id}/print-options`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
   getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
   getWorkingPlan: (id: number) => request<WorkingPlan>(`/projects/${id}/working-plan`),
+  getOrderPrinterResources: (id: number) => request<OrderPrinterResourceState>(`/projects/${id}/printer-resources`),
+  updateOrderPrinterResources: (id: number, expected_token: string, resources: OrderPrinterResources) =>
+    request<OrderPrinterResourceState>(`/projects/${id}/printer-resources`, { method: 'PUT', body: JSON.stringify({ expected_token, resources }) }),
+  previewOrderResourceReplan: (id: number, expected_revision: number) =>
+    request<OrderResourceProposal>(`/projects/${id}/printer-resources/replan`, { method: 'POST', body: JSON.stringify({ expected_revision }) }),
+  applyOrderResourceReplan: (id: number, proposal: OrderResourceProposal) =>
+    request<{ working_plan: WorkingPlan; removed_printer_ids: number[]; removed_auto_ids: number[] }>(`/projects/${id}/printer-resources/replan`, {
+      method: 'POST', body: JSON.stringify({ apply: true, expected_revision: proposal.expected_revision,
+        inputs_token: proposal.inputs_token, proposal_token: proposal.proposal_token, proposal_entries: proposal.entries }),
+    }),
   writeWorkingPlan: (id: number, body: { expected_revision: number; inputs_token?: string; entries: WorkingEntry[] }) =>
     request<WorkingPlan>(`/projects/${id}/working-plan`, { method: 'PUT', body: JSON.stringify(body) }),
   actWorkingPlan: (id: number, action: 'save' | 'discard', state: WorkingPlan) =>

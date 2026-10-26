@@ -10,6 +10,10 @@
 
 - Fleet-aware order plans retain separate counts for equivalent plates on different printer models when becoming a shared working draft. Initial plans and reviewed remainder/rebuild proposals no longer collapse the second model into the first file; forecasts continue to follow the exact reviewed files.
 
+- A zero-count plate exclusion no longer blocks an order's working plan after its printer restrictions change. Positive runs and source identity checks remain enforced; remainder planning keeps the exclusion and respects the selected models.
+
+- Orders can restrict planning and new queue assignments to selected printer models and machines without unlinking product plates. A reviewed remaining-work action removes replaceable jobs that have not started and prepares a new shared draft; running and protected jobs stay, and sending the new plan remains explicit.
+
 ## [0.7.2] - 2026-10-25
 
 Images: `ghcr.io/kainpl/bamdude:0.7.2` / `kainpl/bamdude:0.7.2` (`:latest` tracks this release).

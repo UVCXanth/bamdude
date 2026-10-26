@@ -17,6 +17,9 @@ from backend.app.core.database import Base
 class Project(Base):
     __tablename__ = "projects"
 
+    # NULL means the whole farm. Choices belong to the order, never the product.
+    printer_resources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     id: Mapped[int] = mapped_column(primary_key=True)
     auto_eject_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)

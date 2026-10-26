@@ -49,6 +49,7 @@ import type { QueryClient } from '@tanstack/react-query';
 export const ORDER_VIEW_KEYS = [
   'projects', // the order cards' roll-up
   'project', // an order page's own figures — the prefix, see above
+  'order-printer-resources',
   'project-archives', // the Prints grid
   'project-plan', // pass 3: what is still to print
   'order-print-options', // models/settings change when an order gains lines or sliced files

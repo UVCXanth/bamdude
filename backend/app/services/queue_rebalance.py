@@ -108,6 +108,7 @@ SKIP_REASONS = (
     "home_model_idle",
     "no_faster_model",
     "cooldown",
+    "order_resources",
 )
 
 #: How a capture refusal (spec §6's taxonomy) is reported on the panel.
@@ -584,7 +585,31 @@ async def rebalance(
         # refused once, not twice — ``skipped`` is one verdict per item.
         result.skipped.extend((item_id, "not_found") for item_id in dict.fromkeys(item_ids) if item_id not in found)
     movable_rows: list[AutoQueueItem] = []
+    from backend.app.models.project import Project
+    from backend.app.services.order_resources import constrained
+
+    resources = dict(
+        (
+            await db.execute(
+                select(Project.id, Project.printer_resources).where(Project.printer_resources.is_not(None))
+            )
+        ).all()
+    )
+    resource_orders = dict(
+        (
+            await db.execute(
+                select(ProjectLine.id, ProjectLine.project_id).where(
+                    ProjectLine.id.in_({row.project_line_id for row in rows if row.project_line_id is not None})
+                )
+            )
+        ).all()
+    )
     for row in rows:
+        if constrained(resources.get(resource_orders.get(row.project_line_id, row.project_id))):
+            # A constrained order uses its reviewed fleet replan, not the
+            # model-wide idle counters of the opportunistic rebalancer.
+            result.skipped.append((row.id, "order_resources"))
+            continue
         why = refusal(row)
         if why:
             result.skipped.append((row.id, why))
@@ -854,6 +879,15 @@ async def _apply(
     # Pinned across the handover: the blob is published and, until the commit
     # below, nobody owns it — a pin is what §9 offers for exactly that gap.
     async with queue_sources.pin(blob.id):
+        from backend.app.services.order_resources import constrained, policy_for
+
+        # Capturing a source releases the transaction. An operator may have
+        # narrowed the order while that copy ran; never convert its queued file
+        # using the earlier unrestricted snapshot.
+        policy = await policy_for(db, item.project_id, project_line_id=item.project_line_id, lock=True)
+        if constrained(policy):
+            result.skipped.append((item.id, "order_resources"))
+            return
         item.archive_id = None
         item.library_file_id = file.id
         item.plate_id = req.resolved_plate_id

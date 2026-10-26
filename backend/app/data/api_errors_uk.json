@@ -1111,5 +1111,8 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "An order print is being prepared": "Друк замовлення вже готується",
+  "Order printer restrictions changed": "Обмеження принтерів замовлення змінилися",
+  "The selected printers cannot cover the remaining work": "Вибрані принтери не можуть закрити залишок роботи"
 }

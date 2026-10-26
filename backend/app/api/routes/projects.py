@@ -99,6 +99,7 @@ from backend.app.schemas.order_print_options import (
     capabilities,
 )
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
+from backend.app.schemas.order_resources import ResourceReplan, ResourceUpdate
 from backend.app.schemas.order_working_plan import (
     ReplanRequest,
     SubmissionCancellation,
@@ -3946,6 +3947,52 @@ async def replan_working_draft(
     from backend.app.services import order_plan_access, order_working_plan
 
     return await order_working_plan.replan(db, project_id, data, await order_plan_access.capture(request, db, user))
+
+
+@router.get("/{project_id}/printer-resources")
+async def read_order_printer_resources(
+    project_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ),
+    _printers: User | None = RequirePermission(Permission.PRINTERS_READ),
+):
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services import order_resources
+
+    return await order_resources.read(db, project_id, key_printer_scope(request))
+
+
+@router.put("/{project_id}/printer-resources")
+async def update_order_printer_resources(
+    project_id: int,
+    data: ResourceUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+    _printers: User | None = RequirePermission(Permission.PRINTERS_READ),
+):
+    from backend.app.services import order_plan_access, order_resources
+
+    return await order_resources.update(db, project_id, data, await order_plan_access.capture(request, db, user))
+
+
+@router.post("/{project_id}/printer-resources/replan")
+async def replan_order_printer_resources(
+    project_id: int,
+    data: ResourceReplan,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
+    _read: User | None = RequirePermission(Permission.ORDERS_READ),
+    _printers: User | None = RequirePermission(Permission.PRINTERS_READ),
+    _queue_read: User | None = RequirePermission(Permission.QUEUE_READ_ALL),
+    _queue_delete: User | None = RequirePermission(Permission.QUEUE_DELETE_ALL),
+):
+    from backend.app.services import order_plan_access, order_resources
+
+    return await order_resources.replan(db, project_id, data, await order_plan_access.capture(request, db, user))
 
 
 @router.post("/{project_id}/working-plan/submissions")

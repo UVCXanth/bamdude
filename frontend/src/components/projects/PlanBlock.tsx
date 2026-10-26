@@ -49,6 +49,7 @@ export function PlanBlock({
   onPlateSelection,
   onPlateFit,
   onLeaveGuard,
+  onPreparePlanAction,
 }: {
   order: Order;
   canEdit: boolean;
@@ -71,6 +72,8 @@ export function PlanBlock({
   onPlateSelection?: (selected: Record<number, number[]>) => void;
   onPlateFit?: () => void;
   onLeaveGuard?: (guard: (() => boolean) | null) => void;
+  /** Persist this editor before its owner opens an order-changing action. */
+  onPreparePlanAction?: (prepare: (() => Promise<boolean>) | null) => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -560,6 +563,20 @@ export function PlanBlock({
     working.change(canonicalRef.current);
     return working.flush();
   };
+  useEffect(() => {
+    onPreparePlanAction?.(async () => {
+      if (!plan || isFetching || !localEditsCurrent || !working.state || frozen || splitOff || overCap) return false;
+      try {
+        working.change(canonicalRef.current);
+        await working.flush();
+        return true;
+      } catch (error) {
+        showToast(planErrorText(error, t), 'error');
+        return false;
+      }
+    });
+    return () => onPreparePlanAction?.(null);
+  }, [onPreparePlanAction, plan, isFetching, localEditsCurrent, working, frozen, splitOff, overCap, showToast, t]);
   const savePlan = () => runPlanAction(async () => {
     working.change(canonicalRef.current);
     await working.save(canonicalRef.current);
@@ -863,7 +880,7 @@ export function PlanBlock({
           </div>
         </div>}
         {working.state?.issues.map(issue => <div key={`${issue.entry_id}-${issue.code}`} className="text-sm text-amber-700 dark:text-amber-400">
-          <p>{t(issue.code.startsWith('target_') ? 'workingPlan.targetIssue' : 'workingPlan.sourceIssue')} ({entryCaption(working.state!.entries.find(e => e.entry_id === issue.entry_id) ?? { line_id: -1, plate_id: -1 })})</p>
+          <p>{t(issue.code === 'order_resources_changed' ? 'orderResources.errors.order_resources_changed' : issue.code.startsWith('target_') ? 'workingPlan.targetIssue' : 'workingPlan.sourceIssue')} ({entryCaption(working.state!.entries.find(e => e.entry_id === issue.entry_id) ?? { line_id: -1, plate_id: -1 })})</p>
           {canEdit && !frozen && <div className="flex flex-wrap gap-2">
             {issue.code.startsWith('target_') && <Button size="sm" variant="secondary" onClick={() => void runPlanAction(async () => {
               working.change(canonicalRef.current.map(e => e.entry_id === issue.entry_id ? { ...e, target: { kind: 'auto' }, manual: true, protected_count: e.count } : e));

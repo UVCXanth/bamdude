@@ -209,6 +209,10 @@ async def claim_printer_for_direct_print(
         from backend.app.services.printer_queues import ensure_printer_queue
 
         async with queue_claim_scope(session, printer_id):
+            from backend.app.services.order_resources import require_allowed
+
+            if origin == "direct":
+                await require_allowed(session, project_id, printer_id, lock=True, project_line_id=project_line_id)
             queue = await ensure_printer_queue(session, printer_id)
             occupancy = await read_queue_occupancy(session, queue.id, for_update=True)
             if origin == "direct":
