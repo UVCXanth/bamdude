@@ -125,6 +125,9 @@ async def add_lines(
     # BL3); phase 3 — the lines, their configurations, stock and journal.
     product_ids = await _products_of(db, specs, visible)
     await product_gate(db, product_ids)
+    from backend.app.services.order_recount import ensure_attribution_can_change
+
+    await ensure_attribution_can_change(db, project.id, product_ids)
     # The order as it stands behind the gates (BL2): deleted meanwhile is the same 404 as
     # a missing one, and only an order still active takes stock.
     status = await db.scalar(select(Project.status).where(Project.id == project.id))

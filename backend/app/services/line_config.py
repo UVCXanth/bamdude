@@ -390,6 +390,9 @@ async def set_configuration(
                 shelf[part_id] = shelf.get(part_id, 0) + held
             after = min(reserved_before, line.quantity, part_stock.kits_of(shelf, new_comp))
         return ConfigOutcome(reserved_before, after, dropping, config_key(line.mode, new_choices, new_counts))
+    from backend.app.services.order_recount import ensure_attribution_can_change
+
+    await ensure_attribution_can_change(db, line.project_id, [line.product_id], configuration=True)
     await _write(db, line, new_choices, new_counts)
     await db.flush()
     after = 0

@@ -12084,6 +12084,7 @@ export default {
     "apply": "Apply to draft"
 },
   orderRecount: {
+    reverse: "Review reversal of existing corrections",
     "action": "Recount actual parts",
     "title": "Recount actual parts",
     "help": "Count the loose printed parts still held for this order line. Enter the actual quantity for each part that differs from the books; zero is a valid count.",

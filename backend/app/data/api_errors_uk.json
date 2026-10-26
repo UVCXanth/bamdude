@@ -1121,5 +1121,6 @@
   "This part has order recount corrections; reverse the corrections before changing it": "Деталь має коригування перерахунку в замовленні; спочатку скасуйте ці коригування",
   "Reverse this line's recount corrections before deleting it": "Перед видаленням позиції скасуйте її коригування перерахунку",
   "Reverse the order's recount corrections before changing completed print filing": "Перед зміною прив’язки завершених друків узгодьте коригування перерахунку цього замовлення",
-  "Reverse the order's recount corrections before deleting it": "Перед видаленням замовлення узгодьте його коригування перерахунку"
+  "Reverse the order's recount corrections before deleting it": "Перед видаленням замовлення узгодьте його коригування перерахунку",
+  "Reverse this product's recount corrections before redistributing pooled order output": "Перед перерозподілом спільного випуску замовлення скасуйте коригування перерахунку цього виробу"
 }

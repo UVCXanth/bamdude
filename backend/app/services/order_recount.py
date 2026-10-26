@@ -24,6 +24,39 @@ def adjustments(line):
     return {int(pid): int(n) for pid, n in (getattr(line, "part_count_adjustments", None) or {}).items() if n}
 
 
+async def ensure_attribution_can_change(db, project_id, product_ids, *, configuration=False):
+    """Do not redistribute pooled raw yield away from an outstanding signed count.
+
+    The caller holds the existing product gates/stock locks, as recount does.
+    Explicitly filed output is independent of line need and stays editable.
+    A pooled correction must be reversed through the reviewed recount door
+    before adding siblings or changing their need/configuration/reservations.
+    """
+    candidates = await db.execute(
+        select(ProjectLine.product_id, ProjectLine.part_count_adjustments).where(
+            ProjectLine.project_id == project_id,
+            ProjectLine.product_id.in_(product_ids),
+            ProjectLine.part_count_adjustments.is_not(None),
+        )
+    )
+    corrected = {pid for pid, values in candidates if values and any(values.values())}
+    if not corrected:
+        return
+    ctx = await order_metrics.load_order_context(db, project_id)
+    line_ids = {line.id for line in ctx.lines}
+    if configuration or any(
+        a.status == "completed"
+        and a.project_line_id not in line_ids
+        and corrected.intersection(
+            order_metrics.products_for_print(
+                ctx.plate_product, ctx.whole_file_product, library_file_id=a.library_file_id, plate_index=a.plate_index
+            )
+        )
+        for a in ctx.archives
+    ):
+        raise HTTPException(409, "Reverse this product's recount corrections before redistributing pooled order output")
+
+
 async def ensure_history_can_change(db, project_id, archives):
     """A recount has no run provenance: unfiling raw output must not credit lost
     parts back to free stock. Reverse the aggregate correction before refiling.
@@ -171,8 +204,6 @@ async def write(db, project_id, line_id, data, access):
         await authorize_api_key(db, await fresh_api_key(db, access.actor), rights)
     elif user is None or not all(user.has_permission(p) for p in rights):
         raise order_plan_access.denied()
-    if current["blocked"]:
-        raise refuse(current["blocked"])
     if current["token"] != data.expected_token:
         raise refuse()
     working = await order_working_plan.lock(db, project_id)
@@ -197,6 +228,13 @@ async def write(db, project_id, line_id, data, access):
                     "delta": delta,
                 }
             )
+    # Even an older order that already acquired a sibling can undo its count.
+    # An ambiguous pool accepts ONLY an exact reversal of every correction,
+    # never an ordinary recount or a partial reversal hidden in the same write.
+    if current["blocked"] and not (
+        current["blocked"] == "order_recount_shared" and adjustments(line) and not any(values.values())
+    ):
+        raise refuse(current["blocked"])
     if changes:
         line.part_count_adjustments = {str(pid): n for pid, n in values.items() if n} or None
         await order_journal.record(

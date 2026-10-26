@@ -26,6 +26,9 @@ export function OrderPartRecountDialog({ door, onClose }: { door: RecountDoor; o
   const actual = (id: number, book: number) => draft?.values[id] ?? String(book);
   const valid = !!base?.parts.length && base.parts.every(p => /^\d+$/.test(actual(p.part_id, p.book)) && Number(actual(p.part_id, p.book)) <= 1_000_000);
   const changes = base?.parts.filter(p => Number(actual(p.part_id, p.book)) !== p.book) ?? [];
+  const reversing = !!base?.parts.some(p => p.adjustment !== 0) && base.parts.every(p =>
+    p.adjustment + Number(actual(p.part_id, p.book)) - p.book === 0);
+  const sharedReversal = base?.blocked === 'order_recount_shared' && reversing;
   function change(id: number, value: string) {
     if (!base) return;
     setDraft({ base, values: { ...(draft?.values ?? {}), [id]: value } });
@@ -56,7 +59,7 @@ export function OrderPartRecountDialog({ door, onClose }: { door: RecountDoor; o
     onClose={() => { if (!busy) onClose(); }} footer={<div className="flex flex-wrap justify-end gap-2">
       <Button variant="secondary" disabled={busy} onClick={onClose}>{t('common.cancel')}</Button>
       {review ? <Button disabled={busy || !ack} onClick={() => void save()}>{t('orderRecount.confirm')}</Button>
-        : <Button disabled={busy || !valid || !changes.length || !reason.trim() || !!base?.blocked || query.isError} onClick={() => setReview(true)}>{t('orderRecount.review')}</Button>}
+        : <Button disabled={busy || !valid || !changes.length || !reason.trim() || (!!base?.blocked && !sharedReversal) || query.isError} onClick={() => setReview(true)}>{t('orderRecount.review')}</Button>}
     </div>}>
     <div className="p-4 space-y-4 text-white">
       <h3 className="font-semibold break-words">{door.product}</h3>
@@ -66,6 +69,11 @@ export function OrderPartRecountDialog({ door, onClose }: { door: RecountDoor; o
       {query.isPending && <p>{t('common.loading')}</p>}
       {(query.isError || error || base?.blocked) && <div role="alert" className="rounded-lg border border-amber-500/50 p-3 text-sm space-y-2">
         <p>{error ?? (base?.blocked ? t(`orderRecount.errors.${base.blocked}`) : t('orderRecount.failed'))}</p>
+        {base?.blocked === 'order_recount_shared' && base.parts.some(p => p.adjustment !== 0) &&
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => {
+            setDraft({ base, values: Object.fromEntries(base.parts.map(p => [p.part_id, String(p.book - p.adjustment)])) });
+            setReview(false); setAck(false); setError(undefined);
+          }}>{t('orderRecount.reverse')}</Button>}
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => { setDraft(undefined); setReview(false); setAck(false); setError(undefined); void query.refetch(); }}>{t('orderRecount.reload')}</Button>
       </div>}
       {base && <div className="space-y-3">{base.parts.map(p => <div key={p.part_id} className="rounded-lg border border-bambu-dark-tertiary p-3 space-y-2">

@@ -2078,6 +2078,20 @@ async def update_line(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     line = await _get_line(db, project_id, line_id)
+    attribution_fields = {"quantity", "material", "from_finished", "from_stock_units"}
+    if data.model_fields_set & attribution_fields:
+        from backend.app.services.order_recount import ensure_attribution_can_change
+
+        # Same product gate as recount/intake, before stock positions or lines.
+        # Plate-fit visits every product: acquire its whole set together.
+        product_ids = [line.product_id]
+        if data.plate_fit is not None:
+            product_ids = list(
+                await db.scalars(select(ProjectLine.product_id).where(ProjectLine.project_id == project_id))
+            )
+        await product_gate(db, product_ids)
+        line = await _get_line(db, project_id, line_id, fresh=True)
+        await ensure_attribution_can_change(db, project_id, [line.product_id])
     if data.plate_fit is not None:
         await ensure(creds, Permission.ORDERS_READ)
         await ensure(creds, Permission.PRODUCTS_READ)

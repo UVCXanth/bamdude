@@ -210,6 +210,82 @@ async def test_unfiling_cannot_resurrect_the_counted_shortage_on_free_stock(comm
     assert (await part_stock.balances(db_session, s["a"].product_id)) == {s["a"].id: 6, s["b"].id: 2}
 
 
+async def test_pooled_recount_refuses_later_sibling_until_reviewed_reversal(committing_client, db_session, shop):
+    s = shop
+    made, _ = await archive(db_session, s, status="completed", quantities=(30, 10))
+    made.project_line_id = None
+    await db_session.commit()
+    assert (await count(committing_client, s, {s["b"].id: 5})).status_code == 200
+    body = {"product_id": s["a"].product_id, "quantity": 10}
+    added = await committing_client.post(f"/api/v1/projects/{s['order']}/lines", json=body)
+    assert added.status_code == 409, added.text
+    assert "recount" in added.text.lower()
+    ctx = await order_metrics.load_order_context(db_session, s["order"])
+    assert (
+        sum(p.usable for f in order_metrics.attribute(ctx)[0].values() for p in f.parts if p.part_id == s["b"].id) == 5
+    )
+    # Explicitly undo the signed count, rather than silently crediting lost parts.
+    assert (await count(committing_client, s, {s["b"].id: 10})).status_code == 200
+    assert (await committing_client.post(f"/api/v1/projects/{s['order']}/lines", json=body)).status_code == 200
+    edited = await committing_client.patch(f"/api/v1/projects/{s['order']}/lines/{s['line']}", json={"quantity": 1})
+    assert edited.status_code == 200, edited.text
+    ctx = await order_metrics.load_order_context(db_session, s["order"])
+    assert (
+        sum(p.usable for f in order_metrics.attribute(ctx)[0].values() for p in f.parts if p.part_id == s["b"].id) == 10
+    )
+
+
+@pytest.mark.parametrize("change", ["quantity", "material", "configuration"])
+async def test_pooled_recount_protects_line_edits_and_configuration(committing_client, db_session, shop, change):
+    s = shop
+    made, _ = await archive(db_session, s, status="completed", quantities=(30, 10))
+    made.project_line_id = None
+    await db_session.commit()
+    assert (await count(committing_client, s, {s["b"].id: 5})).status_code == 200
+    url = f"/api/v1/projects/{s['order']}/lines/{s['line']}"
+    if change == "configuration":
+        result = await committing_client.put(
+            url + "/configuration", json={"choices": {}, "part_counts": {str(s["b"].id): 2}}
+        )
+    else:
+        result = await committing_client.patch(url, json={change: 1 if change == "quantity" else "PLA"})
+    assert result.status_code == 409, result.text
+    await db_session.refresh(made)
+    assert made.project_line_id is None and made.status == "completed"
+    assert (await read(committing_client, s))["parts"][1]["book"] == 5
+    assert (await part_stock.balances(db_session, s["a"].product_id))[s["b"].id] == 0
+
+
+async def test_new_pooled_output_preserves_count_and_allows_only_full_reversal_when_shared(
+    committing_client, db_session, shop
+):
+    s = shop
+    # Explicit historical output remains on its line when siblings are added.
+    made, _ = await archive(db_session, s, status="completed", quantities=(30, 10))
+    assert (await count(committing_client, s, {s["b"].id: 5})).status_code == 200
+    added = await committing_client.post(
+        f"/api/v1/projects/{s['order']}/lines", json={"product_id": s["b"].product_id, "quantity": 10}
+    )
+    assert added.status_code == 200, added.text
+    later, _ = await archive(db_session, s, status="completed", quantities=(6, 2))
+    later.project_line_id = None
+    await db_session.commit()
+    ctx = await order_metrics.load_order_context(db_session, s["order"])
+    assert (
+        sum(p.usable for f in order_metrics.attribute(ctx)[0].values() for p in f.parts if p.part_id == s["b"].id) == 7
+    )
+    current = await read(committing_client, s)
+    assert current["blocked"] == "order_recount_shared"
+    assert (await count(committing_client, s, {s["b"].id: 4}, snapshot=current)).status_code == 409
+    books = {p["part_id"]: p["book"] - p["adjustment"] for p in current["parts"]}
+    assert (await count(committing_client, s, books)).status_code == 200
+    assert not (await db_session.get(ProjectLine, s["line"], populate_existing=True)).part_count_adjustments
+    ctx = await order_metrics.load_order_context(db_session, s["order"])
+    assert (
+        sum(p.usable for f in order_metrics.attribute(ctx)[0].values() for p in f.parts if p.part_id == s["b"].id) == 12
+    )
+
+
 @pytest.mark.parametrize("bad", [-1, 1.5, True, "1", 1_000_001])
 def test_recount_requires_bounded_actual_integers(bad):
     from pydantic import ValidationError

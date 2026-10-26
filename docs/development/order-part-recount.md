@@ -53,6 +53,23 @@ truthfully follow a particular run, and unfiling its raw output would resurrect
 missing parts as free stock. Reverse the correction before refiling; the ordinary
 stock/receipt guards still apply. Pending or failed work can move normally.
 
+A pooled print's share depends on sibling lines and their need. While a product
+has outstanding recount corrections and pooled completed output, its line intake,
+quantity/material/reservation edits and stock offers refuse redistribution with
+an explicit reversal instruction. Reconfiguration of corrected products also
+refuses, since it can move explicitly filed foreign parts to siblings. The existing
+product gates serialize these checks with recount. Explicitly filed output can
+still receive ordinary quantity edits; note/color edits and other products remain
+editable. New completed output is counted normally. If later pooled output makes
+an existing count ambiguous, the dialog offers **Review reversal of existing
+corrections**: reason, review and confirmation are still required, and the server
+accepts only a full reversal of that line's corrections, never a partial new count.
+There is no automatic adjustment or lost correction hidden behind a clamp.
+Reassigning historical archives would change filing the operator did not ask to
+change; a persistent attribution ledger would introduce another accounting model.
+The bounded refusal/reversal option instead reuses the existing product gate,
+line edit and recount workflow. Neither alternative is needed for this fix.
+
 The correction updates the normal figures used by plan, forecast, exact plate
 fit and fulfilment. It neither edits nor removes either queue and never changes
 printer settings. The working draft remains operator intent: use the existing
@@ -62,7 +79,7 @@ controls if needed. Recount itself never prints, clears a plate or changes print
 
 ## PR boundaries
 
-This feature is based directly on upstream `dev` and does not depend on the
+This feature is based directly on upstream `feature/v0.7.2-fixes` and does not depend on the
 separate printer-restrictions feature. Both use the same optional plan-preparation
 callback so opening an order-changing action flushes the current editor first.
 No generated `static/` files are part of the change. Migration 210 is reserved

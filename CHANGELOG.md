@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Order recounts: refuse later redistribution of pooled completed output until outstanding corrections are explicitly reversed; shared-output dialogs retain a reviewed reversal path.
+
 - An order line's expanded parts table can record a physical recount of its loose printed parts. Review actual counts, give a reason and confirm: shortages or found parts become signed corrections with an order-journal entry, future prints add normally, and print history and stock movements stay intact. Received or issued goods, reserved stock and banked surplus are excluded; queues and the working plan remain under explicit operator control.
 
 - Plate clear on SQLite refuses a contended archive guard without waiting while holding the database writer or ending caller-owned work; retry remains a fresh manual action.

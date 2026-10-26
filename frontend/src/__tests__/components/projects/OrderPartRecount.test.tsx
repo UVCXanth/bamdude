@@ -74,3 +74,19 @@ it('explains ambiguous shared output and prevents a correction', async () => {
   expect(screen.getByRole('spinbutton', { name: 'Actually counted: Part B' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Review correction' })).toBeDisabled();
 });
+
+it('offers an explicit reviewed reversal even when later pooled output is shared', async () => {
+  vi.mocked(api.getOrderPartRecount).mockResolvedValue({ ...snapshot(), blocked: 'order_recount_shared' });
+  render(<OrderPartRecountDialog door={door} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Review reversal of existing corrections' }));
+  expect(screen.getByRole('spinbutton', { name: 'Actually counted: Part B' })).toHaveValue(10);
+  expect(api.recountOrderParts).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Reason (required)' }), { target: { value: 'Undo before editing line' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Review correction' }));
+  expect(screen.getByRole('button', { name: 'Confirm recount' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: /I have counted/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm recount' }));
+  await waitFor(() => expect(api.recountOrderParts).toHaveBeenCalledWith(11, 22, {
+    expected_token: 'a'.repeat(64), reason: 'Undo before editing line', parts: [{ part_id: 2, actual: 10 }],
+  }));
+});

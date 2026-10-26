@@ -238,6 +238,9 @@ async def take(
     # Positions in ascending id, then the lines, then their parts (WS-13 E1 BL0) — then the
     # offers, read fresh under the locks.
     await finished_stock.lock_lines_with_parts(db, lines.values())
+    from backend.app.services.order_recount import ensure_attribution_can_change
+
+    await ensure_attribution_can_change(db, project.id, [line.product_id for line in lines.values()])
     if await db.scalar(select(Project.status).where(Project.id == project.id)) != "active":
         raise StockOfferError("Only an active order takes finished goods from stock")
     current = {offer.line_id: offer for offer in await offers(db, project)}
