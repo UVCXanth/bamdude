@@ -781,6 +781,8 @@ def _attach_alternatives(
     """
     if not rows:
         return
+    # Keep exact model rows; already-selected files are not duplicate choices.
+    selected = {row.plate_id for row in rows}
     by_key: dict[frozenset[tuple[int, int]], list[Candidate]] = {}
     key_by_plate: dict[int, frozenset[tuple[int, int]]] = {}
     for plate, file, recipe in candidates:
@@ -795,7 +797,7 @@ def _attach_alternatives(
             (
                 _alternative_for(plate, file, recipe, price_per_gram)
                 for plate, file, recipe in by_key[key]
-                if plate.id != row.plate_id
+                if plate.id not in selected
             ),
             key=lambda alt: (alt.printer_model or "", alt.plate_id),
         )
@@ -1148,7 +1150,7 @@ def plan_lines(
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
         candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
         rows, surplus, line_truncated = cover(
-            outstanding, candidates, counted, price_per_gram, capacity, deadline=deadline
+            outstanding, candidates, counted, price_per_gram, capacity, compact_equivalent=False, deadline=deadline
         )
         if deadline is not None and time.monotonic() >= deadline:
             truncated = True
