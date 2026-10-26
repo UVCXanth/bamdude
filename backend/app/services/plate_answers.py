@@ -16,7 +16,11 @@ from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
-from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+from backend.app.services.archive_write_scope import (
+    archive_write_scope,
+    load_active_archive_for_write,
+    locked_print,
+)
 from backend.app.services.order_filing import FILING_FORBIDDEN, resolve_link
 from backend.app.services.plate_hold import (
     StalePlateAnswer,
@@ -40,6 +44,10 @@ class PlateAnswerResult:
 
 class PlateAnswerAlreadyHandled(StalePlateAnswer):
     """The held run has a receipt for the other completion action."""
+
+
+class PlateAnswerBusy(StalePlateAnswer):
+    """Retryable contention; no part of the plate answer was written."""
 
 
 class FilingRefused(Exception):
@@ -182,16 +190,53 @@ async def answer_plate_run(
     from backend.app.services.printer_manager import printer_manager
 
     async with _printer_locks[printer_id], AsyncExitStack() as write_scopes:
+
+        async def guard_archive(archive_id):
+            # A caller that may own SQLite's writer must never wait for a
+            # process guard. locked() alone misses an unlocked lock handing off
+            # to a queued waiter. With an active SQLite transaction the scope's
+            # entry has NO database I/O: it either enters immediately or a zero
+            # timeout cancels its first suspension, leaving caller work intact.
+            if db.get_bind().dialect.name == "sqlite" and db.in_transaction():
+                try:
+                    async with asyncio.timeout(0):
+                        await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+                except TimeoutError as exc:
+                    raise PlateAnswerBusy("This print is being changed; try clearing the plate again") from exc
+            else:
+                await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+
         # SQLite must become the writer before receipt/gate/row reads.  When an
         # expected archive is present its archive scope does this; legacy calls
         # have no archive identity to lock, so take the short DB-wide writer
         # first.  PostgreSQL row/advisory guards below provide the equivalent.
         archive_guarded = False
+        manual_gate_owner = None
         if expected_archive_id is not None:
-            await write_scopes.enter_async_context(archive_write_scope(db, expected_archive_id))
+            await guard_archive(expected_archive_id)
             archive_guarded = True
         elif db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
+
+        # A fresh manual Clear can answer a physical gate even if its print was
+        # trashed. It cannot grade or repeat the deleted print, and an addressed
+        # completion card must still be refused. Take the archive guard BEFORE
+        # the printer row, then verify that the same gate still owns the answer.
+        if (
+            action == "clear"
+            and not automatic
+            and expected_archive_id is None
+            and expected_gate_token is None
+            and defects is None
+        ):
+            manual_gate_owner = await db.scalar(
+                select(Printer.awaiting_plate_clear_archive_id).where(
+                    Printer.id == printer_id, Printer.awaiting_plate_clear.is_(True)
+                )
+            )
+            if manual_gate_owner is not None:
+                await guard_archive(manual_gate_owner)
+                archive_guarded = True
 
         # Receipt lookup happens only inside the same write transaction as the
         # gate mutation. A retry cannot observe half of a previous answer.
@@ -214,10 +259,32 @@ async def answer_plate_run(
 
         # PostgreSQL locks the durable gate as well as this process's normal
         # one-printer operation. SQLite already owns the writer at this point.
-        printer = await db.scalar(select(Printer).where(Printer.id == printer_id).with_for_update())
-        archive = await waiting_archive(db, printer_id)
+        printer = await db.scalar(
+            select(Printer).where(Printer.id == printer_id).with_for_update().execution_options(populate_existing=True)
+        )
+        if manual_gate_owner is not None and (
+            printer is None
+            or not printer.awaiting_plate_clear
+            or printer.awaiting_plate_clear_archive_id != manual_gate_owner
+        ):
+            raise StalePlateAnswer("This completion card no longer owns the printer's plate-clear gate")
+        archive = await waiting_archive(db, printer_id, include_trashed=manual_gate_owner is not None)
+        if archive is not None and archive.deleted_at is not None and manual_gate_owner is not None:
+            archive = await locked_print(
+                db,
+                manual_gate_owner,
+                select(PrintArchive)
+                .where(
+                    PrintArchive.id == manual_gate_owner,
+                    PrintArchive.printer_id == printer_id,
+                    PrintArchive.deleted_at.is_not(None),
+                    PrintArchive.status.in_(("completed", "cancelled", "failed")),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True),
+            )
         if archive is not None and not archive_guarded:
-            await write_scopes.enter_async_context(archive_write_scope(db, archive.id))
+            await guard_archive(archive.id)
             archive = await load_active_archive_for_write(db, archive.id)
         if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
             raise StalePlateAnswer("This completion card is no longer current for this printer")

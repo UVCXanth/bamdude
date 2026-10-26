@@ -60,6 +60,8 @@ FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2}
 
 FORWARDED_EXCEPTIONS = frozenset(
     {
+        # Plate-answer contention is forwarded by the existing StalePlateAnswer handler.
+        "PlateAnswerBusy",
         "BambuCloudError",
         "BambuCloudAuthError",
         "OrcaCloudError",
