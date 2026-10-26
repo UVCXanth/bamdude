@@ -47,6 +47,10 @@ class PlateAnswerAlreadyHandled(StalePlateAnswer):
     """The held run has a receipt for the other completion action."""
 
 
+class PlateAnswerBusy(StalePlateAnswer):
+    """Retryable contention; no part of the plate answer was written."""
+
+
 class FilingRefused(Exception):
     """A repeat of a print filed under an order that may not be new work under it
     (WS-13 E13 R11): ``status`` 403 without the filing right, 409 for a closed order;
@@ -199,7 +203,7 @@ async def answer_plate_run(
                 and db.in_transaction()
                 and archive_process_lock(archive_id).locked()
             ):
-                raise StalePlateAnswer("This print is being changed; try clearing the plate again")
+                raise PlateAnswerBusy("This print is being changed; try clearing the plate again")
             await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
 
         # SQLite must become the writer before receipt/gate/row reads.  When an
