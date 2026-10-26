@@ -293,7 +293,6 @@ export function OrderView({
             key={`${order.id}-${planActionRevision}`}
             onPreparePlanAction={registerPlanPreparation}
             order={order}
-            onPreparePlanAction={registerPlanPreparation}
             fitDraft={fitDraft?.orderId === id ? fitDraft : null}
             onPlateSelection={rememberPlates}
             onPlateFit={canFit && actions.plateFit ? openFit : undefined}
