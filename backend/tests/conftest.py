@@ -372,6 +372,60 @@ def _clean_advertised_overlay():
     backup_group_memory.forget_all()
 
 
+#: Process-wide containers keyed by printer (or by tuples that start with one) that a test can leave behind, as
+#: ``(module, attribute path)``. Every test gets a fresh database, so printer ids repeat and printer 1 of the next test
+#: would inherit them: a plate gate left this way made the scheduler skip the next test's printer (2026-10-26). The
+#: list comes from a census of the print-lifecycle tests; ``tests/unit/test_print_registries_do_not_leak.py`` checks
+#: that each is emptied and that every ``printer_manager`` container is either here or process-scoped on purpose.
+#: Locks belong here too: one a test contended is bound to that test's event loop.
+PRINTER_KEYED_REGISTRIES = (
+    ("backend.app.services.printer_manager", "printer_manager._print_start_admissions"),
+    ("backend.app.services.printer_manager", "printer_manager._print_start_resolutions"),
+    ("backend.app.services.printer_manager", "printer_manager._print_run_bindings"),
+    ("backend.app.services.printer_manager", "printer_manager._print_run_finishing_bindings"),
+    ("backend.app.services.printer_manager", "printer_manager._print_effect_generations"),
+    ("backend.app.services.printer_manager", "printer_manager._print_terminal_generations"),
+    ("backend.app.services.printer_manager", "printer_manager._pending_print_terminals"),
+    ("backend.app.services.printer_manager", "printer_manager._awaiting_plate_clear"),
+    ("backend.app.services.printer_manager", "printer_manager._current_print_user"),
+    ("backend.app.services.printer_manager", "printer_manager._print_file_analysis_contexts"),
+    ("backend.app.services.printer_manager", "printer_manager._print_file_analysis_finishing_contexts"),
+    ("backend.app.services.printer_manager", "printer_manager._macro_waiters"),
+    ("backend.app.main", "_active_macro_selection"),
+    ("backend.app.main", "_active_swap_config"),
+    ("backend.app.main", "_ams_assignment_locks"),
+    ("backend.app.main", "_bed_cooldown_tasks"),
+    ("backend.app.main", "_expected_pause_reasons"),
+    ("backend.app.main", "_first_layer_notified"),
+    ("backend.app.main", "_last_printer_state"),
+    ("backend.app.main", "_last_printer_state_generation"),
+    ("backend.app.main", "_last_progress_milestone"),
+    ("backend.app.main", "_last_status_broadcast"),
+    ("backend.app.main", "_pause_started_at"),
+    ("backend.app.main", "_printer_last_connected"),
+    ("backend.app.main", "_stock_insertion_seen"),
+    ("backend.app.main", "_timelapse_baselines"),
+    ("backend.app.services.layer_timelapse", "_active_sessions"),
+    ("backend.app.services.preheat", "_pinned"),
+    ("backend.app.services.queue_ops", "_queue_claim_locks"),
+    ("backend.app.services.usage_tracker", "_active_sessions"),
+    ("backend.app.services.usage_tracker", "_tray_change_locks"),
+)
+
+
+def clean_printer_keyed_registries() -> None:
+    """Empty every container of :data:`PRINTER_KEYED_REGISTRIES` whose module is loaded (an unloaded one holds
+    nothing) and that its owner has created (some are made lazily)."""
+    import sys
+
+    for module_name, path in PRINTER_KEYED_REGISTRIES:
+        registry = sys.modules.get(module_name)
+        for part in path.split("."):
+            registry = getattr(registry, part, None)
+        if isinstance(registry, (dict, set)):
+            registry.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clean_print_lifecycle_registries():
     """The print lifecycle's registries hang off the ``printer_manager`` singleton and survive a test.
@@ -379,7 +433,7 @@ def _clean_print_lifecycle_registries():
     A test that drives ``on_print_start`` through the real manager leaves a print-start admission keyed by printer 1;
     operator print-state recovery reads "an admission without a run" as a busy printer and offers no repair, so the
     recovery tests that later land on the same worker failed while each passed on its own (CI, 2026-10-15).
-    ``test_print_registries_do_not_leak`` pins the order. Same leak class as the overlay above.
+    ``test_print_registries_do_not_leak`` holds the list to account. Same leak class as the overlay above.
     """
     from backend.app.services import (
         background_dispatch,
@@ -396,18 +450,7 @@ def _clean_print_lifecycle_registries():
         print_usage_journal.forget_tail_state()
         background_dispatch._unobserved_attempts.clear()
         interrupted_dispatch._waiting.clear()
-        for name in (
-            "_print_start_admissions",
-            "_print_start_resolutions",
-            "_print_run_bindings",
-            "_print_run_finishing_bindings",
-            "_print_effect_generations",
-            "_print_terminal_generations",
-            "_pending_print_terminals",
-        ):
-            registry = getattr(printer_manager, name, None)
-            if isinstance(registry, dict):
-                registry.clear()
+        clean_printer_keyed_registries()
         if getattr(printer_manager, "_print_lifecycle_stopping", False):
             printer_manager._print_lifecycle_stopping = False
         print_reconciliation._live_completions.clear()
