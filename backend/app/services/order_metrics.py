@@ -1,6 +1,7 @@
 """Archive → order-line attribution and every order figure (spec §Fact attribution).
 
-The archive is the only source of fact. Queue tables are never read here.
+Archives supply print facts; explicit line recounts supply physical count
+corrections without rewriting those facts. Queue tables are never yield here.
 Everything is computed on read over one loaded ``OrderContext``; an order has
 tens to hundreds of archives, which is nothing.
 
@@ -136,6 +137,7 @@ class PartFigures:
     per: int
     need: int = 0
     usable: int = 0
+    count_adjustment: int = 0
     in_progress: int = 0
     remaining: int = 0
     surplus: int = 0
@@ -721,12 +723,18 @@ def _award(pf: PartFigures, status: str, quantity: int) -> None:
         pf.in_progress += quantity
 
 
-def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArchive]]:
+def attribute(
+    ctx: OrderContext, *, redistributable_to: set[int] | None = None
+) -> tuple[dict[int, LineFigures], list[PrintArchive]]:
     """Spec §Line resolution for an archive: the unit is the archive's PART ROW.
 
     One plate may carry parts of several products (two lids on one bed) and one
     file may sit in several products (a shared flask), so a single print can feed
     several lines — and did, wrongly, when it was handed out whole.
+
+    If requested, also collect lines eligible for completed pooled part rows,
+    irrespective of their current room. Recount guards use this same row-level
+    decision: an explicit filing pins home rows, never the foreign rows.
     """
     figures = {
         line.id: _new_line_figures(
@@ -801,6 +809,8 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         rows: list[PrintArchivePart],
         lines: list[ProjectLine],
         spares: list[ProjectLine] | None = None,
+        *,
+        pooled: bool = False,
     ) -> set[int]:
         """Deal every part row out over ``lines`` greedily; return the ids of the
         lines that got something.
@@ -825,9 +835,13 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
                         if quantity:
                             _award(pf, archive.status, quantity)
                             fed.add(ln.id)
+                            if pooled and archive.status == _DONE and redistributable_to is not None:
+                                redistributable_to.add(ln.id)
                         break
                 continue
             quantity = row_quantity(row, archive.status)
+            if pooled and archive.status == _DONE and quantity and redistributable_to is not None:
+                redistributable_to.update(line.id for line, _ in takers)
             for line, pf in takers:
                 give = min(quantity, _room(pf, archive.status))
                 if not give:
@@ -887,7 +901,9 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         # operator's filing is never second-guessed. Rows the home's product does
         # not count fall through to the other candidates rather than vanishing.
         others = candidates(archive, exclude=home)
-        fed = hand_out(archive, home_rows, [home]) | hand_out(archive, foreign_rows, others, [home, *others])
+        fed = hand_out(archive, home_rows, [home]) | hand_out(
+            archive, foreign_rows, others, [home, *others], pooled=True
+        )
         list_under(archive, fed | {home.id})
     for archive in implicit:
         lines = candidates(archive)
@@ -898,9 +914,12 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         # the work still belongs to the order, so it is listed uncounted on the
         # candidate its rows point at instead of being reported as a stranger's.
         rows = ctx.archive_parts_by_archive.get(archive.id, [])
-        list_under(archive, hand_out(archive, rows, lines) or {uncounted_home(rows, lines).id})
+        list_under(archive, hand_out(archive, rows, lines, pooled=True) or {uncounted_home(rows, lines).id})
     for line_id, figs in figures.items():
         figs.prints_queued = ctx.queued_by_line.get(line_id, 0)
+    from backend.app.services.order_recount import apply_figures
+
+    apply_figures(ctx, figures)
     for figs in figures.values():
         _finish(figs)
     return figures, other

@@ -13,6 +13,7 @@ import { OrderStatusConfirm, type OrderConfirmKind } from './OrderStatusConfirm'
 import { PlateFitDialog, type PlateFitDoor } from '../PlateFitDialog';
 import { OrderPrinterResourcesDialog } from '../OrderPrinterResourcesDialog';
 import type { OrderResourceDoor } from '../OrderPrinterResources';
+import { OrderPartRecountDialog, type RecountDoor } from '../OrderPartRecountDialog';
 
 /** What a door can add to an action: the full source it has, the issue dialog's start. */
 export interface RunExtra {
@@ -27,6 +28,7 @@ export interface RunExtra {
 /** What a page hands down: every door calls these, nothing else. */
 export interface OrderActions {
   resources?: (door: OrderResourceDoor) => void;
+  recount?: (door: RecountDoor) => void;
   plateFit?: (door: PlateFitDoor) => void;
   run: (action: OrderAction, ref: OrderRef, extra?: RunExtra) => void;
   create: (defaultCustomerId?: number | null) => void;
@@ -34,6 +36,7 @@ export interface OrderActions {
 
 type Active =
   | { kind: 'resources'; door: OrderResourceDoor }
+  | { kind: 'recount'; door: RecountDoor }
   | { kind: 'plateFit'; door: PlateFitDoor }
   | { kind: 'create'; defaultCustomerId: number | null }
   | { kind: 'edit'; ref: OrderRef; order: Order | OrderListItem | undefined }
@@ -152,6 +155,8 @@ export function useOrderActions({
   let dialogs: ReactNode = null;
   if (active?.kind === 'resources') {
     dialogs = <OrderPrinterResourcesDialog door={active.door} onClose={close} />;
+  } else if (active?.kind === 'recount') {
+    dialogs = <OrderPartRecountDialog door={active.door} onClose={close} />;
   } else if (active?.kind === 'plateFit') {
     dialogs = <PlateFitDialog door={active.door} onClose={close} />;
   } else if (active?.kind === 'create') {
@@ -197,5 +202,5 @@ export function useOrderActions({
   }
 
   return { run, create, dialogs, plateFit: (door) => open({ kind: 'plateFit', door }),
-    resources: (door) => open({ kind: 'resources', door }) };
+    resources: (door) => open({ kind: 'resources', door }), recount: (door) => open({ kind: 'recount', door }) };
 }

@@ -2073,6 +2073,7 @@ export interface PartFigures {
   qty_per_unit: number;
   need: number;
   usable: number;
+  count_adjustment?: number;
   in_progress: number;
   remaining: number;
   surplus: number;
@@ -6652,6 +6653,12 @@ export interface OrderResourceProposal {
   previous_draft_count: number;
   count: number;
   rows: { line_id: number; filename: string; printer_model: string | null; count: number }[];
+}
+
+export interface OrderPartRecount {
+  token: string;
+  blocked: 'order_recount_closed' | 'order_recount_shared' | 'order_recount_received' | null;
+  parts: { part_id: number; name: string; usable: number; protected: number; book: number; adjustment: number }[];
 }
 
 export interface WorkingEntry extends DraftEntry {
@@ -13294,6 +13301,9 @@ export const api = {
       method: 'POST', body: JSON.stringify({ apply: true, expected_revision: proposal.expected_revision,
         inputs_token: proposal.inputs_token, proposal_token: proposal.proposal_token, proposal_entries: proposal.entries }),
     }),
+  getOrderPartRecount: (id: number, lineId: number) => request<OrderPartRecount>(`/projects/${id}/lines/${lineId}/recount`),
+  recountOrderParts: (id: number, lineId: number, data: { expected_token: string; reason: string; parts: { part_id: number; actual: number }[] }) =>
+    request<OrderPartRecount>(`/projects/${id}/lines/${lineId}/recount`, { method: 'POST', body: JSON.stringify(data) }),
   writeWorkingPlan: (id: number, body: { expected_revision: number; inputs_token?: string; entries: WorkingEntry[] }) =>
     request<WorkingPlan>(`/projects/${id}/working-plan`, { method: 'PUT', body: JSON.stringify(body) }),
   actWorkingPlan: (id: number, action: 'save' | 'discard', state: WorkingPlan) =>

@@ -42,6 +42,9 @@ class ProjectLine(Base):
     config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
     # Snapshot on creation: editing catalog percentages never rewrites an existing order.
     extra_percentages: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    # Signed corrections to attributed printed output, not a replacement total.
+    # Only order_recount writes; new prints keep adding normally. Copies start empty.
+    part_count_adjustments: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # spec workshop-add-to-order, rule 1: finished units this line took off the
     # finished-goods shelf, issued ones included (an issue does not lower it —
     # a completed order stays covered). Written only by services/finished_stock.py,

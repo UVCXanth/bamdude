@@ -244,6 +244,14 @@ async def take(
     asked = (
         dict(shown) if shown is not None else {lid: (o.from_finished, o.kits, o.parts) for lid, o in current.items()}
     )
+    from backend.app.services.order_recount import ensure_attribution_can_change
+
+    changing = {
+        lines[lid].product_id
+        for lid, values in asked.items()
+        if lid in lines and (values[0] or values[1] or (len(values) > 2 and any(values[2].values())))
+    }
+    await ensure_attribution_can_change(db, project.id, changing)
     out = []
     for line_id in sorted(asked):
         line = lines.get(line_id)

@@ -6867,6 +6867,7 @@ export default {
         plan_enqueued: 'Plan sent to the queue — prints: {{prints}}',
         line_rebalanced: 'Line rebalanced: {{product}}',
         surplus_banked: 'Surplus banked to free stock — parts: {{parts}}',
+        parts_recounted: 'Parts recounted for {{product}}: {{parts}}',
         procurement_updated: 'Purchased part {{part}}: {{from}} → {{to}}',
         attachment_added: 'Attachment added: {{filename}}',
         attachment_removed: 'Attachment removed: {{filename}}',
@@ -12081,5 +12082,32 @@ export default {
 "protected_other": "manual: {{count}}",
     "protected": "manual: {{count}}",
     "apply": "Apply to draft"
+},
+  orderRecount: {
+    reverse: "Review reversal of existing corrections",
+    "action": "Recount actual parts",
+    "title": "Recount actual parts",
+    "help": "Count the loose printed parts still held for this order line. Enter the actual quantity for each part that differs from the books; zero is a valid count.",
+    "scope": "Do not include reserved stock, received or issued goods, parts already moved to free stock, or parts still printing. Use Stock & issue or the stock adjustment for those goods.",
+    "history": "A signed correction is recorded with your reason and name. Print quantities, print defects and shelf movements stay intact; future prints add their output normally. Do not record the same shortage as defects again.",
+    "book": "On the books",
+    "actual": "Actually counted",
+    "difference": "Difference",
+    "protected": "Already received or banked: {{count}} (excluded from this count).",
+    "reason": "Reason (required)",
+    "review": "Review correction",
+    "confirm": "Confirm recount",
+    "ack": "I have counted these parts and checked the quantities above.",
+    "next": "The shortage and forecast will update. Existing queues and your working plan remain unchanged. Review “Replan remainder” in the print plan before adding work; pending jobs from both queues still count as coverage.",
+    "adjusted": "Count correction: {{count}}",
+    "reload": "Reload counts and re-enter",
+    "failed": "Could not save or load the count. Read the current figures and try again.",
+    "errors": {
+        "order_recount_changed": "The order or its output changed. Reload the counts, check them and review again; nothing was saved.",
+        "order_recount_closed": "Reopen the order before correcting its parts.",
+        "order_recount_shared": "Unfiled output is shared by several lines of this product. File those prints under their actual lines before recounting.",
+        "order_recount_received": "The books already show less output than was received or banked. Reconcile that history through Stock & issue first.",
+        "submission_pending": "A plan is being submitted. Finish or cancel that submission, then reload the count."
+    }
 },
 };

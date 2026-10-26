@@ -19,13 +19,14 @@ EVENT_KINDS: tuple[str, ...] = (
     "line_added", "line_changed", "line_removed", "line_configured",
     "prints_filed", "prints_unfiled", "prints_relined", "print_trashed", "print_restored", "defects_recorded",
     "queue_items_filed", "queue_items_unfiled", "plan_enqueued", "plan_submission_cancelled", "line_rebalanced",
-    "surplus_banked", "procurement_updated",
+    "surplus_banked", "procurement_updated", "parts_recounted",
     "kits_assembled", "goods_received", "goods_issued", "stock_taken", "goods_written_off", "goods_stocked",
     "attachment_added", "attachment_removed", "cover_changed",
 )  # fmt: skip
 
 # English, for API callers only — the frontend renders each kind in the reader's language.
 TITLES: dict[str, str] = {
+    "parts_recounted": "Printed parts recounted",
     "order_created": "Order created",
     "status_changed": "Status changed",
     "fields_changed": "Order details changed",
