@@ -1,6 +1,7 @@
 """Archive → order-line attribution and every order figure (spec §Fact attribution).
 
-The archive is the only source of fact. Queue tables are never read here.
+Archives supply print facts; explicit line recounts supply physical count
+corrections without rewriting those facts. Queue tables are never yield here.
 Everything is computed on read over one loaded ``OrderContext``; an order has
 tens to hundreds of archives, which is nothing.
 
@@ -136,6 +137,7 @@ class PartFigures:
     per: int
     need: int = 0
     usable: int = 0
+    count_adjustment: int = 0
     in_progress: int = 0
     remaining: int = 0
     surplus: int = 0
@@ -901,6 +903,9 @@ def attribute(ctx: OrderContext) -> tuple[dict[int, LineFigures], list[PrintArch
         list_under(archive, hand_out(archive, rows, lines) or {uncounted_home(rows, lines).id})
     for line_id, figs in figures.items():
         figs.prints_queued = ctx.queued_by_line.get(line_id, 0)
+    from backend.app.services.order_recount import apply_figures
+
+    apply_figures(ctx, figures)
     for figs in figures.values():
         _finish(figs)
     return figures, other

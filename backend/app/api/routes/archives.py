@@ -1354,6 +1354,12 @@ async def _update_archive_locked(
     # For the order journal below — which order held the print, on which line, before this edit.
     project_before = archive.project_id
     line_before = archive.project_line_id
+    if project_before is not None and (
+        "project_line_id" in update_data.model_fields_set and update_data.project_line_id != line_before
+    ):
+        from backend.app.services.order_recount import ensure_history_can_change
+
+        await ensure_history_can_change(db, project_before, [archive])
     # A print whose output the order received onto its shelf stays with the order —
     # un-filing it, moving it to another order, or taking it out of ``completed`` (which
     # takes it out of the order's coverage, WS-13 E13 O09) would count those parts twice

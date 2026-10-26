@@ -413,6 +413,9 @@ async def ensure_prints_can_leave(db: AsyncSession, project_id: int, archive_ids
     ctx = await load_order_context(db, project_id)
     if ctx is None or not archive_ids:
         return
+    from backend.app.services.order_recount import ensure_history_can_change
+
+    await ensure_history_can_change(db, project_id, [a for a in ctx.archives if a.id in set(archive_ids)])
     counters = await part_stock.line_part_stock(
         db, [line.id for line in ctx.lines if line.mode == "parts" or line.extra_percentages]
     )

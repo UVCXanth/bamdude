@@ -307,6 +307,7 @@ class PartFiguresOut(BaseModel):
     qty_per_unit: int
     need: int
     usable: int
+    count_adjustment: int = 0
     in_progress: int
     remaining: int
     surplus: int

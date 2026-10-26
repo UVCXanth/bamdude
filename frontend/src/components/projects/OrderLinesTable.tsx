@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, Clock, ListPlus, Package, Play, Send } from 'lucide-react';
+import { ChevronDown, ChevronRight, ClipboardCheck, Clock, ListPlus, Package, Play, Send } from 'lucide-react';
 import { api } from '../../api/client';
 import type { Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -41,6 +41,7 @@ interface OrderLinesTableProps {
   canEdit: boolean;
   /** Delegates to the existing plan editor; never queues from this table. */
   onQueuePlan?: (lineId?: number) => void;
+  onRecount?: (line: ProjectLine) => void;
   /** 2 on the order page; 3 in the workspace pane, whose order title is an h2 (E3 B06). */
   headingLevel?: 2 | 3;
 }
@@ -62,7 +63,7 @@ interface OrderLinesTableProps {
  * The queue shortcuts delegate to PlanBlock's review and writer. The table never
  * derives a second plan or opens PrintModal with a plate outside that plan.
  */
-export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan }: OrderLinesTableProps) {
+export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan, onRecount }: OrderLinesTableProps) {
   const { t } = useTranslation();
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const { showToast } = useToast();
@@ -385,6 +386,11 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan 
                     <td className="bg-bambu-dark-tertiary/30" />
                     <td colSpan={5} className="bg-bambu-dark-tertiary/30 px-3 py-1">
                       <LinePartsTable parts={line.parts} purchased={line.purchased ?? []} mode={line.mode} />
+                      {onRecount && orderActive && line.parts.length > 0 && <div className="py-3">
+                        <Button variant="secondary" size="sm" className="border-bambu-green/50" onClick={() => onRecount(line)}>
+                          <ClipboardCheck className="h-4 w-4" />{t('orderRecount.action')}
+                        </Button>
+                      </div>}
                     </td>
                   </tr>
                 ) : null,

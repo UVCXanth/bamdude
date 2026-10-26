@@ -82,7 +82,9 @@ export function LinePartsTable({
               {part.need}
               {(part.allocated_qty ?? 0) > 0 && <div className="text-xs text-bambu-green">{t('orders.take.allocatedParts', { count: part.allocated_qty })}</div>}
             </td>
-            <td className={`${CELL} tabular-nums`}>{part.usable}</td>
+            <td className={`${CELL} tabular-nums`}>{part.usable}
+              {!!part.count_adjustment && <div className="text-xs text-amber-700 dark:text-amber-400">{t('orderRecount.adjusted', { count: part.count_adjustment })}</div>}
+            </td>
             <td className={`${CELL} tabular-nums`}>{`${part.in_progress} / ${part.queued ?? 0}`}</td>
             <td
               data-testid={`part-${part.part_id}-remaining`}

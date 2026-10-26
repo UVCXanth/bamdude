@@ -632,3 +632,8 @@ async def ensure_no_extra_snapshot(db: AsyncSession, product_id: int, part_ids: 
     rows = await db.execute(select(ProjectLine.extra_percentages).where(ProjectLine.product_id == product_id))
     if any(any((snapshot or {}).get(pid, 0) for pid in ids) for snapshot in rows.scalars()):
         raise LineConfigError("This part has additional quantities in an order; keep it as a separate part", 409)
+    rows = await db.scalars(select(ProjectLine.part_count_adjustments).where(ProjectLine.product_id == product_id))
+    if any(any((snapshot or {}).get(pid, 0) for pid in ids) for snapshot in rows):
+        raise LineConfigError(
+            "This part has order recount corrections; reverse the corrections before changing it", 409
+        )

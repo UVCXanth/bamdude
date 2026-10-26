@@ -293,6 +293,7 @@ export function OrderView({
             key={`${order.id}-${planActionRevision}`}
             onPreparePlanAction={registerPlanPreparation}
             order={order}
+            onPreparePlanAction={registerPlanPreparation}
             fitDraft={fitDraft?.orderId === id ? fitDraft : null}
             onPlateSelection={rememberPlates}
             onPlateFit={canFit && actions.plateFit ? openFit : undefined}
@@ -368,6 +369,13 @@ export function OrderView({
             <OrderFigures figures={order.figures} forecast={forecastNow} />
 
             <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2}
+              onRecount={canEdit && (['orders:read', 'products:read', 'stock:read', 'stock:adjust'] as const).every(p => hasPermission(p)) && actions.recount
+                ? line => { void (async () => {
+                  if (!await preparePlanAction.current?.()) return;
+                  actions.recount?.({ orderId: order.id, lineId: line.id, product: line.product_name, onChanged: () => {
+                    setFitDraft(null); setDraftForecast(undefined); setPlanActionRevision(value => value + 1);
+                  } });
+                })(); } : undefined}
               onQueuePlan={order.status === 'active' && canFileFuturePrint(hasPermission) && hasPermission('queue:create')
                 ? reviewQueuePlan : undefined} />
 

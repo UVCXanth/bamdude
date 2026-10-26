@@ -99,6 +99,7 @@ from backend.app.schemas.order_print_options import (
     capabilities,
 )
 from backend.app.schemas.order_queue import OrderQueueOut, OrderQueuePrinting
+from backend.app.schemas.order_recount import RecountWrite
 from backend.app.schemas.order_resources import ResourceReplan, ResourceUpdate
 from backend.app.schemas.order_working_plan import (
     ReplanRequest,
@@ -419,6 +420,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     qty_per_unit=p.per,
                     need=p.need,
                     usable=p.usable,
+                    count_adjustment=p.count_adjustment,
                     in_progress=p.in_progress,
                     remaining=p.remaining,
                     surplus=p.surplus,
@@ -1750,6 +1752,8 @@ async def delete_project(
     project = await _get_project(db, project_id, fresh=True)
     if not {line.product_id for line in project.lines} <= gated:
         raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
+    if any(line.part_count_adjustments for line in project.lines):
+        raise HTTPException(409, "Reverse the order's recount corrections before deleting it")
     # Its lines go with it, so they go through the same two steps a single
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
@@ -2397,6 +2401,9 @@ async def delete_line(
     line = await _get_line(db, project_id, line_id)
     # The gate of its product first (WS-13 E1 BL3): the cascade below may delete it.
     await product_gate(db, [line.product_id])
+    await db.refresh(line)
+    if line.part_count_adjustments:
+        raise HTTPException(409, "Reverse this line's recount corrections before deleting it")
     project = await _get_project(db, project_id)
     # Release BEFORE detaching, or the reservation becomes invisible to the
     # query that hands it back and the kits stay off the shelf for good.
@@ -2525,6 +2532,41 @@ async def bank_surplus(
     # is built (finding M6). The response is built from the movement rows above,
     # before any commit could expire them.
     return BankSurplusResponse(moved=list(moved.values()), nothing_to_bank=not moved)
+
+
+@router.get("/{project_id}/lines/{line_id}/recount")
+async def read_line_recount(
+    project_id: int,
+    line_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.ORDERS_READ, Permission.PRODUCTS_READ, Permission.STOCK_READ),
+):
+    from backend.app.services import order_recount
+
+    if key_printer_scope(request) is not None:
+        raise HTTPException(403, "Whole-order access required")
+    return (await order_recount.state(db, project_id, line_id))[0]
+
+
+@router.post("/{project_id}/lines/{line_id}/recount")
+async def recount_line_parts(
+    project_id: int,
+    line_id: int,
+    data: RecountWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(
+        Permission.ORDERS_READ,
+        Permission.ORDERS_UPDATE,
+        Permission.PRODUCTS_READ,
+        Permission.STOCK_READ,
+        Permission.STOCK_ADJUST,
+    ),
+):
+    from backend.app.services import order_plan_access, order_recount
+
+    return await order_recount.write(db, project_id, line_id, data, await order_plan_access.capture(request, db, user))
 
 
 # ---------- procurement ----------
@@ -2710,6 +2752,13 @@ async def add_archives_to_project(
     # judge as the two other exits (WS-13 E13 B05), asked of every order a print
     # leaves before the first print moves, so a refusal moves nothing.
     leaving: dict[int, list[int]] = {}
+    from backend.app.services.order_recount import ensure_history_can_change
+
+    await ensure_history_can_change(
+        db,
+        project_id,
+        [a for a in archives if a.project_id == project_id and a.project_line_id != data.project_line_id],
+    )
     for archive in archives:
         if archive.project_id is not None and archive.project_id != project_id:
             leaving.setdefault(archive.project_id, []).append(archive.id)

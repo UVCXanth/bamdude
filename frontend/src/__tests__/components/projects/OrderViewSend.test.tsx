@@ -113,6 +113,32 @@ describe('OrderView · sending the plan', () => {
     expect(screen.getByTestId('order-forecast-eta')).toBeInTheDocument();
   });
 
+  it('opens the visible recount through the host and reloads the editor after confirmed accounting changes', async () => {
+    const order = makeOrder();
+    order.lines[0].parts = [{ part_id: 1, name: 'Body', qty_per_unit: 1, need: 10, usable: 8,
+      in_progress: 0, remaining: 2, surplus: 0, variant: false, queued: 0, bankable: 0 }];
+    const spies = mockOrderDetailApi(order);
+    spies.getOrderPlan.mockResolvedValue(plan as never);
+    const state = { token: 'a'.repeat(64), blocked: null, parts: [{ part_id: 1, name: 'Body', usable: 8, protected: 0, book: 8, adjustment: 0 }] };
+    vi.spyOn(api, 'getOrderPartRecount').mockResolvedValue(state);
+    vi.spyOn(api, 'recountOrderParts').mockResolvedValue(state);
+    renderPage();
+    await screen.findByTestId('plan-enqueue-all');
+    fireEvent.click(screen.getByRole('button', { name: 'Show parts' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recount actual parts' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(api.writeWorkingPlan).toHaveBeenCalled();
+    fireEvent.change(await within(dialog).findByRole('spinbutton', { name: 'Actually counted: Body' }), { target: { value: '6' } });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Reason (required)' }), { target: { value: 'Counted' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Review correction' }));
+    const before = spies.getOrderPlan.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /I have counted/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm recount' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(spies.getOrderPlan.mock.calls.length).toBeGreaterThan(before);
+    expect(api.recountOrderParts).toHaveBeenCalledOnce();
+  });
+
   // E3-V02 (Codex review 1): the first forecast read is still in flight when the
   // plan is sent. TanStack hands that in-flight read back to the invalidation (a
   // query without data reuses its fetch), so its late answer — the PREVIOUS plan's

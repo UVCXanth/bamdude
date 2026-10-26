@@ -1115,5 +1115,11 @@
   "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
   "An order print is being prepared": "Друк замовлення вже готується",
   "Order printer restrictions changed": "Обмеження принтерів замовлення змінилися",
-  "The selected printers cannot cover the remaining work": "Вибрані принтери не можуть закрити залишок роботи"
+  "The selected printers cannot cover the remaining work": "Вибрані принтери не можуть закрити залишок роботи",
+  "Read the part count again before saving": "Перед збереженням прочитайте кількості деталей знову",
+  "Whole-order access required": "Потрібен доступ до всього замовлення",
+  "This part has order recount corrections; reverse the corrections before changing it": "Деталь має коригування перерахунку в замовленні; спочатку скасуйте ці коригування",
+  "Reverse this line's recount corrections before deleting it": "Перед видаленням позиції скасуйте її коригування перерахунку",
+  "Reverse the order's recount corrections before changing completed print filing": "Перед зміною прив’язки завершених друків узгодьте коригування перерахунку цього замовлення",
+  "Reverse the order's recount corrections before deleting it": "Перед видаленням замовлення узгодьте його коригування перерахунку"
 }
