@@ -79,9 +79,9 @@ controls if needed. Recount itself never prints, clears a plate or changes print
 
 ## PR boundaries
 
-This feature is based directly on upstream `feature/v0.7.2-fixes` and does not depend on the
-separate printer-restrictions feature. Both use the same optional plan-preparation
-callback so opening an order-changing action flushes the current editor first.
-No generated `static/` files are part of the change. Migration 210 is reserved
-for recounts independently of the proposed restrictions migration 209; the runner
-discovers the migration files present in the installation.
+This feature is rebased onto upstream `feature/v0.7.2-fixes` after #99 and #100
+were merged. It reuses their optional plan-preparation callback so opening an
+order-changing action flushes the current editor first; printer restrictions
+and fleet allocation are preserved. No generated `static/` files are included.
+New migration 210 follows upstream's migration 209; released migrations are
+unchanged.
