@@ -9386,10 +9386,14 @@ async def _on_print_complete_impl(
     except Exception as e:
         logger.warning("Failed to clear persisted print session for printer %s: %s", printer_id, e)
 
-    # Report filament usage to Spoolman if print completed successfully
+    # Report filament usage to Spoolman if print completed successfully. Both writers divide by
+    # the event's own figures (layer, layer count, progress), never the printer's state now.
+    from backend.app.utils.tray_split import CompletionSnapshot
+
+    completion = CompletionSnapshot.from_event(data)
     if data.get("status") == "completed":
         try:
-            await _report_spoolman_usage(printer_id, archive_id)
+            await _report_spoolman_usage(printer_id, archive_id, completion=completion)
             log_timing("Spoolman usage report")
         except Exception as e:
             logger.warning("Spoolman usage reporting failed: %s", e)
@@ -9403,6 +9407,7 @@ async def _on_print_complete_impl(
                     db,
                     last_layer_num=data.get("last_layer_num"),
                     last_progress=data.get("last_progress"),
+                    completion=completion,
                 )
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)

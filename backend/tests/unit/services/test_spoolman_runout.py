@@ -19,6 +19,7 @@ from backend.app.models.print_usage_event import (
     KIND_PAUSE,
 )
 from backend.app.services.spoolman import SpoolmanClientError
+from backend.app.utils.tray_split import CompletionSnapshot
 
 
 class _AsyncCtx:
@@ -99,6 +100,10 @@ async def _run(tracking, client, events, pm=None, get_setting=None):
     db = _make_db(tracking)
     setting = get_setting or AsyncMock(return_value="true")
     broadcast = AsyncMock()
+    pm = pm or _pm()
+    # The completion event carries the printer's terminal figures; the writer never re-reads them.
+    state = pm.get_status.return_value
+    completion = CompletionSnapshot(layer_num=state.layer_num or None, total_layers=state.total_layers or None)
     with (
         patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(db)),
         patch("backend.app.api.routes.settings.get_setting", setting),
@@ -110,10 +115,10 @@ async def _run(tracking, client, events, pm=None, get_setting=None):
         patch("backend.app.services.spoolman_tracking._apply_spool_colors_to_archive", AsyncMock()),
         patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
         patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
-        patch("backend.app.services.printer_manager.printer_manager", pm or _pm()),
+        patch("backend.app.services.printer_manager.printer_manager", pm),
         patch("backend.app.core.websocket.ws_manager.broadcast", broadcast),
     ):
-        await report_usage(printer_id=1, archive_id=143)
+        await report_usage(printer_id=1, archive_id=143, completion=completion)
     return broadcast
 
 

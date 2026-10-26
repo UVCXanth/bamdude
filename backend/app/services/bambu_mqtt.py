@@ -30,6 +30,7 @@ from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.paho_teardown import retire_paho_client
 from backend.app.utils.printer_models import is_dual_nozzle_model
 from backend.app.utils.timelapse import task_cfg
+from backend.app.utils.tray_split import terminal_snapshot_fields
 from backend.app.utils.usage_attribution import UNKNOWN_FEED
 
 
@@ -7436,6 +7437,13 @@ class BambuMQTTClient:
                     # Last valid progress/layer before firmware reset (for partial usage tracking)
                     "last_progress": self._last_valid_progress,
                     "last_layer_num": self._last_valid_layer_num,
+                    # This print's own figures at its terminal frame, copied as scalars: the
+                    # accounting runs later, when the live state may describe the next print.
+                    **terminal_snapshot_fields(
+                        layer_num=self.state.layer_num,
+                        total_layers=self.state.total_layers,
+                        progress=self.state.progress,
+                    ),
                 }
             )
             self._captured_ams_mapping = None

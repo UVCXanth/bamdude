@@ -42,6 +42,19 @@ def _make_db(tracking):
     return db
 
 
+def _completion_from(printer_manager):
+    """The completion event's copy of what the printer reported at its terminal frame —
+    the writers take the layers from the event, never from the printer at accounting time."""
+    from backend.app.utils.tray_split import CompletionSnapshot
+
+    state = printer_manager.get_status.return_value
+    return CompletionSnapshot(
+        layer_num=getattr(state, "layer_num", None) or None,
+        total_layers=getattr(state, "total_layers", None) or None,
+        progress=getattr(state, "progress", None) or None,
+    )
+
+
 class TestReportUsageTraySplit:
     """report_usage must consult state.tray_change_log and split per-segment."""
 
@@ -121,7 +134,7 @@ class TestReportUsageTraySplit:
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=143)
+            await report_usage(printer_id=1, archive_id=143, completion=_completion_from(printer_manager))
 
         # Exactly two use_spool calls — one per segment. Origin (spool 8) gets
         # the layers-0-37 slice, backup (spool 7) gets the remainder.
@@ -214,7 +227,7 @@ class TestReportUsageTraySplit:
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=200)
+            await report_usage(printer_id=1, archive_id=200, completion=_completion_from(printer_manager))
 
         # EXACTLY 2 — one per segment; Path 2 must not add a third.
         assert client.use_spool.await_count == 2, (
@@ -294,7 +307,7 @@ class TestReportUsageTraySplit:
             patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=42)
+            await report_usage(printer_id=1, archive_id=42, completion=_completion_from(printer_manager))
 
         # Split path must NOT engage. The single-tray path charges each slot to
         # its stable slot_to_tray mapping: slot 1 → tray 0 → spool 100 (30g),
@@ -344,7 +357,7 @@ class TestReportUsageTraySplit:
             patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=42)
+            await report_usage(printer_id=1, archive_id=42, completion=_completion_from(printer_manager))
 
         # Single-tray path: exactly one use_spool call, all 50g to spool 8.
         client.use_spool.assert_awaited_once_with(8, 50.0)
@@ -384,6 +397,7 @@ class TestFeedIntervalsOnSpoolman:
             KIND_AUTOSWITCH,
         )
         from backend.app.services.spoolman_tracking import _report_spool_usage_split_by_tray_changes
+        from backend.app.utils.tray_split import PrintedBound
 
         events = _journal_rows(
             [
@@ -408,9 +422,7 @@ class TestFeedIntervalsOnSpoolman:
             [(0, 0), (1, 50), (0, 150)],
             {0: {"tray_uuid": "AAAA", "tray_type": "PLA"}, 1: {"tray_uuid": "BBBB", "tray_type": "PLA"}},
             None,
-            {},
-            200,
-            200,
+            PrintedBound(completed=True, layer=200, source="total_layers", total_layers=200),
             "Archive 143",
             "SERIAL",
             printer_id=1,
@@ -478,7 +490,7 @@ class TestFeedIntervalsOnSpoolman:
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=143)
+            await report_usage(printer_id=1, archive_id=143, completion=_completion_from(printer_manager))
 
         charged = {c.args[0]: c.args[1] for c in client.use_spool.await_args_list}
         assert set(charged) == {21, 22}
@@ -535,7 +547,7 @@ class TestFeedIntervalsOnSpoolman:
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await report_usage(printer_id=1, archive_id=143)
+            await report_usage(printer_id=1, archive_id=143, completion=_completion_from(printer_manager))
 
         charged = [(c.args[0], c.args[1]) for c in client.use_spool.await_args_list]
         assert charged == [(32, pytest.approx(100.0, abs=0.05))]
@@ -605,7 +617,7 @@ async def test_an_interval_the_journal_left_without_a_reel_is_reported_not_recor
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await report_usage(printer_id=1, archive_id=143)
+        await report_usage(printer_id=1, archive_id=143, completion=_completion_from(printer_manager))
 
     charged = [(c.args[0], c.args[1]) for c in client.use_spool.await_args_list]
     assert charged == [(11, 75.0), (12, 150.0)]
@@ -663,7 +675,7 @@ async def test_a_journal_segment_nobody_fed_is_reported_not_recorded_on_spoolman
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await report_usage(printer_id=1, archive_id=143)
+        await report_usage(printer_id=1, archive_id=143, completion=_completion_from(printer_manager))
 
     charged = [(c.args[0], c.args[1]) for c in client.use_spool.await_args_list]
     assert charged == [(11, 50.0)]
@@ -725,7 +737,7 @@ async def test_an_explicit_unknown_feed_is_not_recorded_on_spoolman_and_no_fallb
         ),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await report_usage(printer_id=1, archive_id=144)
+        await report_usage(printer_id=1, archive_id=144, completion=_completion_from(printer_manager))
 
     client.use_spool.assert_not_awaited()
     notify.assert_awaited_once()
@@ -738,7 +750,10 @@ async def test_an_explicit_unknown_feed_is_not_recorded_on_spoolman_and_no_fallb
     [
         ([(-1, 0)], {}, [(-1, 150.0)]),  # only an unknown feed
         ([(0, 0), (-1, 0)], {}, [(-1, 150.0)]),  # known, then unknown on the same layer
-        ([(0, 0), (1, 50)], "split", []),  # an AMS backup took over at 50
+        # An AMS backup took over at 50 of a print stopped at 100 of 200: the partial 150 g are
+        # what layers 0–100 used, so each half of THAT printed stretch is 75 g — not 37.5/112.5,
+        # which divided the early stretch by the whole plate (partial-print-layer-split A23).
+        ([(0, 0), (1, 50)], {11: 75.0, 12: 75.0}, []),
         ([], {11: 150.0}, []),  # no chronology at all: the slot's mapping, as before
     ],
 )
@@ -748,9 +763,8 @@ async def test_a_cancelled_print_on_spoolman_is_split_by_the_feed_as_the_interna
     """Review r2 F2-R1 on the abort writer: a cancelled one-slot print's partial grams follow
     the tray chronology as the completion writer and the internal inventory do — a stretch
     nobody saw fed is reported as not recorded, never charged to the mapped reel; a backup's
-    takeover is split by the same function, with the same arguments, as the internal writer."""
+    takeover divides the printed stretch at its own layer."""
     from backend.app.services.spoolman_tracking import _report_partial_usage
-    from backend.app.utils.tray_split import compute_layer_segment_grams
 
     tracking = SimpleNamespace(
         archive_id=144,
@@ -784,11 +798,8 @@ async def test_a_cancelled_print_on_spoolman_is_split_by_the_feed_as_the_interna
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking)
+        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
 
-    if charged == "split":  # the partial 150 g, layer 100 of 200, no G-code: the internal writer's call
-        first, second = compute_layer_segment_grams([0, 50], 150.0, 1, None, 1.24, 1.75, 200, 100)
-        charged = {11: round(first, 2), 12: round(second, 2)}
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == charged
     if not_recorded:
         notify.assert_awaited_once()
@@ -835,7 +846,7 @@ async def test_a_cancelled_multi_colour_print_on_spoolman_keeps_its_slot_mapping
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking)
+        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0, 12: 50.0}
     notify.assert_not_awaited()
@@ -884,7 +895,7 @@ async def test_a_cancelled_print_honours_an_unknown_feed_only_the_journal_holds(
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking)
+        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0}
     assert notify.await_args.args[1] == [(-1, 150.0)]

@@ -20,6 +20,16 @@ from backend.app.services.usage_tracker import (
     on_print_complete,
     on_print_start,
 )
+from backend.app.utils.tray_split import CompletionSnapshot
+
+
+def _completion_from(state):
+    """The completion event's copy of what the printer reported at its terminal frame."""
+    return CompletionSnapshot(
+        layer_num=getattr(state, "layer_num", None) or None,
+        total_layers=getattr(state, "total_layers", None) or None,
+        progress=getattr(state, "progress", None) or None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -485,6 +495,7 @@ class TestTrackFrom3mf:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
             )
 
         assert len(results) == 1
@@ -552,6 +563,7 @@ class TestTrackFrom3mf:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
             )
 
         assert len(results) == 1
@@ -1102,6 +1114,7 @@ class TestTrayChangeSplit:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
             )
 
         assert len(results) == 2
@@ -1232,6 +1245,7 @@ class TestTrayChangeSplit:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
                 ams_mapping=[0],  # slot_to_tray populated by print_cmd — splitter must override
             )
 
@@ -1343,6 +1357,7 @@ class TestTrayChangeSplit:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
             )
 
         # Only the second segment (tray 3) tracked; first segment (tray 5) skipped
@@ -1413,6 +1428,7 @@ class TestTrayChangeSplit:
                 handled_trays=handled_trays,
                 printer_manager=printer_manager,
                 db=db,
+                completion=_completion_from(printer_manager.get_status.return_value),
             )
 
         assert len(results) == 3

@@ -441,7 +441,12 @@ class TestPartialUsageRemainDelta:
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
-            await _report_partial_usage(printer_id=1, tracking=tracking)
+            from backend.app.utils.tray_split import CompletionSnapshot
+
+            # The abort's own terminal figures travel in its completion event.
+            await _report_partial_usage(
+                printer_id=1, tracking=tracking, completion=CompletionSnapshot(layer_num=42, total_layers=100)
+            )
 
         client.use_spool.assert_awaited_once_with(7, 200.0)
 

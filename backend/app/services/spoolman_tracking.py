@@ -23,6 +23,7 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.utils.filament_remaining import usable_remain_percent
+from backend.app.utils.tray_split import CompletionSnapshot, PrintedBound, printed_bound, sole_owner, split_weight
 
 logger = logging.getLogger(__name__)
 
@@ -459,8 +460,12 @@ async def cleanup_tracking(
     db,
     last_layer_num: int | None = None,
     last_progress: int | None = None,
+    completion: CompletionSnapshot | None = None,
 ):
-    """Report partial usage and clean up Spoolman tracking data for failed/aborted prints."""
+    """Report partial usage and clean up Spoolman tracking data for failed/aborted prints.
+
+    ``completion`` is the completion event's own figures; without it only the captured
+    ``last_layer_num`` / ``last_progress`` are known (see ``_report_partial_usage``)."""
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
 
     # Get tracking data first (needed for partial usage reporting)
@@ -482,6 +487,7 @@ async def cleanup_tracking(
             tracking,
             last_layer_num=last_layer_num,
             last_progress=last_progress,
+            completion=completion,
         )
     except Exception as e:
         logger.warning("[SPOOLMAN] Partial usage report failed: %s", e)
@@ -615,9 +621,7 @@ async def _report_journal_splits(
     ams_trays: dict[int, dict],
     journal_events: list,
     layer_usage_raw: dict | None,
-    filament_properties: dict | None,
-    total_layers: int,
-    last_layer_num: int,
+    bound: PrintedBound,
     method_label: str,
     runout_purge_grams: float = 0.0,
     cost_out: _PrintCost | None = None,
@@ -626,13 +630,14 @@ async def _report_journal_splits(
     """Charge slots whose tray has journal (runout) boundaries per-segment.
 
     Mirrors usage_tracker's journal split — same boundary reader, same layer
-    math (``compute_layer_segment_grams``) — with ``use_spool`` on the
-    spoolman ids frozen at event time. Returns ``(spools_updated,
-    handled_global_tray_ids, leftover_usage_items)``; leftovers are the slots
-    with no boundaries, for the normal single-charge path.
+    math (``tray_split.split_weight`` up to ``bound``) — with ``use_spool`` on
+    the spoolman ids frozen at event time. ``used_g`` is the weight already
+    determined for this completion (partial for a print that stopped). Returns
+    ``(spools_updated, handled_global_tray_ids, leftover_usage_items)``;
+    leftovers are the slots with no boundaries, for the normal single-charge
+    path.
     """
     from backend.app.services.usage_tracker import journal_boundaries_for_tray
-    from backend.app.utils.tray_split import compute_layer_segment_grams
 
     layer_usage = None
     if layer_usage_raw:
@@ -660,18 +665,26 @@ async def _report_journal_splits(
             leftovers.append((slot_id, used_g))
             continue
 
-        props = (filament_properties or {}).get(str(slot_id)) or (filament_properties or {}).get(slot_id) or {}
-        seg_grams = compute_layer_segment_grams(
-            boundary_layers=[start for start, _, _ in boundaries],
-            total_weight=float(used_g),
-            slot_id=slot_id,
-            layer_usage=layer_usage,
-            density=float(props.get("density", 1.24)),
-            diameter=float(props.get("diameter", 1.75)),
-            total_layers=total_layers,
-            last_layer_num=last_layer_num,
-        )
         handled.add(global_tray_id)
+        split = split_weight([start for start, _, _ in boundaries], float(used_g), slot_id, layer_usage, bound)
+        if split is None:
+            if sole_owner([(start, spoolman) for start, _, spoolman in boundaries]) is None:
+                logger.info(
+                    "[SPOOLMAN] %s: tray %d — no printed boundary (%s) to divide %.2fg between its reels, not recorded",
+                    method_label,
+                    global_tray_id,
+                    bound.source,
+                    float(used_g),
+                )
+                if uncharged_out is not None:
+                    uncharged_out.append((global_tray_id, round(float(used_g), 2)))
+                seg_grams = [0.0] * len(boundaries)
+            else:  # one reel fed every stretch: the whole weight is its, divided or not
+                seg_grams = [float(used_g)] + [0.0] * (len(boundaries) - 1)
+        else:
+            seg_grams = list(split.grams)
+            if split.unknown_start > 0 and uncharged_out is not None:
+                uncharged_out.append((global_tray_id, round(split.unknown_start, 2)))
         from backend.app.services.usage_tracker import _autoswitch_purge_for_tray
 
         _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
@@ -1015,9 +1028,7 @@ async def _report_spool_usage_split_by_tray_changes(
     tray_changes: list[tuple[int, int]],
     ams_trays: dict[int, dict],
     layer_usage: dict[int, dict[int, float]] | None,
-    filament_properties: dict | None,
-    total_layers: int,
-    last_layer_num: int,
+    bound: PrintedBound,
     method_label: str,
     printer_serial: str,
     printer_id: int,
@@ -1035,19 +1046,19 @@ async def _report_spool_usage_split_by_tray_changes(
     (#1793 — reporter's origin spool was over-charged the whole print because
     this path didn't exist). ``utils.usage_attribution.feed_intervals`` gives
     both backends the same intervals and frozen reels, and
-    ``compute_layer_segment_grams`` the same grams; this function wraps the
-    per-interval spool resolution + ``use_spool`` sink for the Spoolman side.
+    ``tray_split.split_weight`` the same grams up to ``bound``; this function
+    wraps the per-interval spool resolution + ``use_spool`` sink for the
+    Spoolman side.
 
     Returns ``(spools_updated, handled_global_tray_ids)`` — the caller passes
     ``handled_global_tray_ids`` into the remain-delta fallback so a tray
     attributed here is not double-charged there.
     """
-    from backend.app.utils.tray_split import compute_layer_segment_grams
     from backend.app.utils.usage_attribution import (
         UNKNOWN_FEED,
         add_autoswitch_purge,
         feed_intervals,
-        split_is_measured,
+        not_recorded_tray,
     )
 
     spools_updated = 0
@@ -1063,29 +1074,36 @@ async def _report_spool_usage_split_by_tray_changes(
         if total_weight <= 0 or slot_id <= 0 or not intervals:
             continue
 
-        props = (filament_properties or {}).get(str(slot_id)) or (filament_properties or {}).get(slot_id) or {}
-        if not split_is_measured(intervals, slot_id, layer_usage, total_layers, last_layer_num):
-            # Part of the feed is unknown and nothing tells how to divide the grams: an equal share
-            # would be a guess — the slot is not recorded (post-rebuild F6).
-            logger.info(
-                "[SPOOLMAN] %s: slot %d has an unknown feed and no layer count — %.2fg not recorded",
-                method_label,
-                slot_id,
-                float(total_weight),
-            )
-            if uncharged_out is not None:
-                uncharged_out.append((UNKNOWN_FEED, round(float(total_weight), 2)))
-            continue
-        interval_grams = compute_layer_segment_grams(
-            boundary_layers=[iv.start_layer for iv in intervals],
-            total_weight=float(total_weight),
-            slot_id=slot_id,
-            layer_usage=layer_usage,
-            density=float(props.get("density", 1.24)),
-            diameter=float(props.get("diameter", 1.75)),
-            total_layers=total_layers,
-            last_layer_num=last_layer_num,
-        )
+        # Every tray of the slot's stretches is this split's, whatever share it ends up with:
+        # a stretch that printed nothing or went unrecorded is not the remain-delta's to charge.
+        handled_global_tray_ids.update(iv.tray for iv in intervals if iv.tray != UNKNOWN_FEED)
+        split = split_weight([iv.start_layer for iv in intervals], float(total_weight), slot_id, layer_usage, bound)
+        if split is None:
+            if sole_owner([(iv.start_layer, iv.spoolman_spool_id if iv.frozen else None) for iv in intervals]) is None:
+                # Nothing the printer reported tells how to divide the grams between the reels,
+                # and a share would be a guess — the slot is not recorded.
+                logger.info(
+                    "[SPOOLMAN] %s: slot %d — no printed boundary (%s) to divide %.2fg by, not recorded",
+                    method_label,
+                    slot_id,
+                    bound.source,
+                    float(total_weight),
+                )
+                if uncharged_out is not None:
+                    uncharged_out.append(
+                        (not_recorded_tray([iv.tray for iv in intervals]), round(float(total_weight), 2))
+                    )
+                interval_grams = [0.0] * len(intervals)
+            else:  # one reel fed every stretch: the whole weight is its, divided or not
+                interval_grams = [float(total_weight)] + [0.0] * (len(intervals) - 1)
+        else:
+            interval_grams = list(split.grams)
+            if split.unknown_start > 0:
+                # Printed before the first boundary: no stretch names its tray. The marker
+                # tells the caller to close every tray to the remain-delta fallback.
+                handled_global_tray_ids.add(UNKNOWN_FEED)
+                if uncharged_out is not None:
+                    uncharged_out.append((UNKNOWN_FEED, round(split.unknown_start, 2)))
         slot_intervals, interval_grams = add_autoswitch_purge(
             intervals, interval_grams, journal_events or [], runout_purge_grams
         )
@@ -1220,12 +1238,18 @@ async def _report_partial_usage(
     tracking,
     last_layer_num: int | None = None,
     last_progress: int | None = None,
+    completion: CompletionSnapshot | None = None,
 ):
     """Report partial filament usage based on actual G-code layer data.
 
     Uses per-layer cumulative extrusion from G-code parsing for accurate
     multi-material tracking. Falls back to linear interpolation if G-code
     data is unavailable.
+
+    How far the print got comes from the completion event (``completion``, else the captured
+    ``last_layer_num`` / ``last_progress``) — never from the printer now, which may already be
+    running the next print. A layer estimated from the progress percentage sizes the weight
+    only; it never divides it between reels (spec partial-print-layer-split r2).
     """
     from backend.app.services.printer_manager import printer_manager
     from backend.app.utils.threemf_tools import get_cumulative_usage_at_layer, mm_to_grams
@@ -1244,29 +1268,30 @@ async def _report_partial_usage(
         if not spoolman_enabled or spoolman_enabled.lower() != "true":
             return
 
-    # Get current printer state for layer progress.
-    # On failed/aborted prints the firmware may already reset to IDLE with layer=0,
-    # so we fall back to completion-time hints captured from MQTT.
+    # The printer's state is still read for what it alone holds — the tray chronology in the
+    # client's memory and the remain% readings — never for the layer, layer count or progress.
     state = printer_manager.get_status(printer_id)
-    current_layer = state.layer_num if state else None
-    total_layers = state.total_layers if state else None
+    snapshot = (
+        completion
+        if completion is not None
+        else CompletionSnapshot.from_event({"last_layer_num": last_layer_num, "last_progress": last_progress})
+    )
+    bound = printed_bound(completed=False, snapshot=snapshot)
+    total_layers = snapshot.total_layers
+    if bound.source == "captured":
+        logger.debug("[SPOOLMAN] Using captured last_layer_num=%s for partial usage", bound.layer)
 
-    if (not current_layer or current_layer <= 0) and last_layer_num and last_layer_num > 0:
-        current_layer = last_layer_num
-        logger.debug("[SPOOLMAN] Using captured last_layer_num=%s for partial usage", current_layer)
+    progress_percent = snapshot.progress_percent
+    progress_ratio_from_event = min(progress_percent, 100.0) / 100.0 if progress_percent else None
 
-    progress_ratio_from_event = None
-    if last_progress is not None:
-        try:
-            progress_ratio_from_event = min(max(float(last_progress), 0.0), 100.0) / 100.0
-        except (TypeError, ValueError):
-            progress_ratio_from_event = None
-
-    if (not current_layer or current_layer <= 0) and progress_ratio_from_event and total_layers and total_layers > 0:
+    # The layer the partial weight is estimated at: the observed boundary, else one estimated
+    # from the progress — for the weight alone.
+    current_layer = bound.layer
+    if not current_layer and progress_ratio_from_event and total_layers:
         current_layer = max(1, int(round(total_layers * progress_ratio_from_event)))
         logger.debug(
-            "[SPOOLMAN] Estimated layer from last_progress=%s%% and total_layers=%s -> %s",
-            last_progress,
+            "[SPOOLMAN] Estimated layer from progress=%s%% and total_layers=%s -> %s (weight only)",
+            progress_percent,
             total_layers,
             current_layer,
         )
@@ -1285,10 +1310,17 @@ async def _report_partial_usage(
     # is what was used, not the estimate, and the cost follows (#2591, D6).
     print_cost = _PrintCost()
     partial_archive_id = getattr(tracking, "archive_id", None)
+    # Filament read and not charged to any spool — from every branch below, said once.
+    uncharged: list[tuple[int, float]] = []
 
     async def _settle_archive() -> None:
         async with async_session() as settle_db:
             await _settle_charges(settle_db, partial_archive_id, print_cost, status="failed")
+        if uncharged:
+            from backend.app.services import spool_assignment_notifications
+
+            async with async_session() as notify_db:
+                await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, notify_db, logger)
 
     # Get tracking data
     layer_usage = tracking.layer_usage
@@ -1304,76 +1336,79 @@ async def _report_partial_usage(
         logger.warning("[SPOOLMAN] Not reachable for partial usage reporting")
         return
 
+    # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
+    # the tray chronology's unknown feeds and identities. Read whatever the slot count.
+    from backend.app.utils.usage_attribution import chronology_splits, chronology_with_journal, normalize_tray_changes
+
+    partial_journal: list = []
+    try:
+        partial_journal = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
+    except Exception as exc:
+        logger.debug("[SPOOLMAN] Journal load failed for partial report: %s", exc)
+
     # A one-slot print's stretches follow its tray chronology, as at completion and in the
     # internal writer: an AMS backup's takeover splits the grams, and a stretch nobody saw fed
     # is reported as not recorded — never charged to the mapped reel (post-rebuild F2-R1).
-    from backend.app.utils.usage_attribution import chronology_splits, chronology_with_journal, normalize_tray_changes
-
     partial_tray_changes: list[tuple[int, int]] = []
-    partial_journal: list = []
     if len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
-        try:
-            partial_journal = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
-        except Exception as exc:
-            logger.debug("[SPOOLMAN] Journal load failed for partial report: %s", exc)
         # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5) —
         # and with no printer state at all, the journal is the chronology (F6).
         memory = list(getattr(state, "tray_change_log", []) or []) if state is not None else None
         partial_tray_changes = normalize_tray_changes(chronology_with_journal(memory, partial_journal))
 
     async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
-        if not chronology_splits(partial_tray_changes):
-            return await _report_spool_usage_for_slots(
+        if chronology_splits(partial_tray_changes):
+            updated, _handled = await _report_spool_usage_split_by_tray_changes(
                 client,
-                usage_items,
+                [{"slot_id": slot_id, "used_g": grams} for slot_id, grams in usage_items],
+                partial_tray_changes,
                 ams_trays,
-                slot_to_tray,
+                split_layer_usage,
+                bound,
                 label,
                 printer_serial,
                 printer_id=printer_id,
+                journal_events=partial_journal,
                 cost_out=print_cost,
+                uncharged_out=uncharged,
             )
-        journal_events = partial_journal
-        uncharged: list[tuple[int, float]] = []
-        updated, _handled = await _report_spool_usage_split_by_tray_changes(
+            return updated
+        # A reel changed in a slot's own tray splits that slot as at completion; only the slots
+        # without such boundaries go to the mapping, once.
+        updated, _handled, leftovers = await _report_journal_splits(
             client,
             [{"slot_id": slot_id, "used_g": grams} for slot_id, grams in usage_items],
-            partial_tray_changes,
+            slot_to_tray,
             ams_trays,
+            partial_journal,
             split_layer_usage,
-            filament_properties,
-            int(total_layers or 0),
-            int(current_layer),
+            bound,
             label,
-            printer_serial,
-            printer_id=printer_id,
-            journal_events=journal_events,
             cost_out=print_cost,
             uncharged_out=uncharged,
         )
-        if uncharged:
-            from backend.app.services import spool_assignment_notifications
-
-            async with async_session() as notify_db:
-                await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, notify_db, logger)
-        return updated
+        return updated + await _report_spool_usage_for_slots(
+            client,
+            leftovers,
+            ams_trays,
+            slot_to_tray,
+            label,
+            printer_serial,
+            printer_id=printer_id,
+            uncharged_out=uncharged,
+            cost_out=print_cost,
+        )
 
     # No-3MF aborted print (#1820 mirror of the completion path): nothing in
     # filament_usage or layer_usage to base partial estimates on, but the
     # remain%-delta snapshot we captured at start still describes consumption
     # up to the abort moment. Write it the same way report_usage's fallback
     # does, then return — there's no 3MF-derived partial to layer on top.
-    # ``state`` was already fetched at the top of the function for current_layer.
     if not filament_usage and not layer_usage and tray_remain_start:
         current_lookup = _snapshot_tray_remain(state.raw_data) if state and state.raw_data else {}
         # Journal trays are off-limits to the delta here too (a runout's
         # substitute tray must not be charged twice on an abort).
-        journal_handled: set[int] = set()
-        try:
-            events = await _load_journal_events(printer_id, getattr(tracking, "archive_id", -1))
-            journal_handled = {e.global_tray_id for e in events if getattr(e, "global_tray_id", None) is not None}
-        except Exception as exc:
-            logger.debug("[SPOOLMAN] Journal load failed for partial report: %s", exc)
+        journal_handled = {e.global_tray_id for e in partial_journal if getattr(e, "global_tray_id", None) is not None}
         await _report_remain_delta_for_slots(
             client,
             printer_id=printer_id,
@@ -1541,8 +1576,12 @@ def _completion_slot_to_tray(
     return None, "positional"
 
 
-async def report_usage(printer_id: int, archive_id: int):
+async def report_usage(printer_id: int, archive_id: int, completion: CompletionSnapshot | None = None):
     """Report filament usage to Spoolman after print completion.
+
+    ``completion`` is the completion event's own figures — the plate's layer count, the
+    terminal and captured layers — the boundary a split divides up to; without it, nothing
+    is known about the layers and a split is measured by the slot's G-code alone.
 
     Two writers, mirroring the internal-inventory split in usage_tracker:
 
@@ -1574,12 +1613,11 @@ async def report_usage(printer_id: int, archive_id: int):
         ams_trays = {int(k): v for k, v in (tracking.ams_trays or {}).items()}
         slot_to_tray = tracking.slot_to_tray
         tray_remain_start = tracking.tray_remain_start or {}
-        # ``layer_usage`` and ``filament_properties`` were added later than the
-        # base tracking fields; use ``getattr`` so tests that stub ``tracking``
-        # as a lightweight SimpleNamespace stay valid, and historic ORM rows
-        # loaded without these columns can't AttributeError on read.
+        # ``layer_usage`` was added later than the base tracking fields; use
+        # ``getattr`` so tests that stub ``tracking`` as a lightweight
+        # SimpleNamespace stay valid, and historic ORM rows loaded without the
+        # column can't AttributeError on read.
         layer_usage_raw = getattr(tracking, "layer_usage", None) or {}
-        filament_properties = getattr(tracking, "filament_properties", None) or {}
         printer_serial = await _get_printer_serial(printer_id)
 
         # Delete tracking row (we're done with it)
@@ -1648,12 +1686,10 @@ async def report_usage(printer_id: int, archive_id: int):
             raw_tray_log = chronology_with_journal(memory, journal_events)
             tray_changes = normalize_tray_changes(raw_tray_log)
             sole_tray = sole_feeding_tray(raw_tray_log)
-        _total_layers = int(getattr(_state, "total_layers", 0) or 0) if _state else 0
-        _current_layer = int(getattr(_state, "layer_num", 0) or 0) if _state else 0
-        # For the linear-fallback denominator when total_layers is 0 (P1S
-        # firmware resets it at print end). At completion the current layer is
-        # the print's last valid layer.
-        _layer_denom_hint = _total_layers or _current_layer
+        # The boundary every split divides up to, from the completion event: the plate's layer
+        # count, else — P1S firmware resets it at print end — the terminal or captured layer.
+        # The printer is not asked: by now it may be running the next print.
+        bound = printed_bound(completed=True, snapshot=completion or CompletionSnapshot())
 
         # Which tray each slot came from. The dispatched / queue mapping from
         # print start wins; below it, for a one-slot print, the tray the printer
@@ -1709,10 +1745,11 @@ async def report_usage(printer_id: int, archive_id: int):
                 # loaded at that time.
                 logger.info(
                     "[SPOOLMAN] Reporting per-filament usage for archive %s with tray-split "
-                    "(tray_change_log=%s, denom_layers=%d)",
+                    "(tray_change_log=%s, printed to layer %s from %s)",
                     archive_id,
                     tray_changes,
-                    _layer_denom_hint,
+                    bound.layer,
+                    bound.source,
                 )
                 # ``tracking.layer_usage`` was serialized to JSON so int keys
                 # come back as strings. Restore them for the split math.
@@ -1727,8 +1764,8 @@ async def report_usage(printer_id: int, archive_id: int):
                         # AttributeError catches ``inner.items()`` when the
                         # inner value isn't dict-shaped (corrupt JSON row).
                         # Missing gcode falls through to the linear-ratio branch
-                        # inside ``compute_layer_segment_grams`` — still gives a
-                        # correct split, just less precise.
+                        # inside ``split_weight`` — still a correct split, just
+                        # less precise.
                         layer_usage = None
                 split_updated, split_handled = await _report_spool_usage_split_by_tray_changes(
                     client,
@@ -1736,9 +1773,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     tray_changes,
                     ams_trays,
                     layer_usage,
-                    filament_properties,
-                    _total_layers,
-                    _layer_denom_hint,
+                    bound,
                     f"Archive {archive_id}",
                     printer_serial,
                     printer_id=printer_id,
@@ -1751,9 +1786,10 @@ async def report_usage(printer_id: int, archive_id: int):
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
-                if any(tray == UNKNOWN_FEED for tray, _layer in tray_changes):
-                    # Grams nobody saw fed are reported as not recorded: no remain-delta
-                    # fallback charges them to a tray afterwards.
+                if any(tray == UNKNOWN_FEED for tray, _layer in tray_changes) or UNKNOWN_FEED in split_handled:
+                    # Grams nobody saw fed — a stretch, a backup's purge, the print before the
+                    # first boundary — are reported as not recorded: no remain-delta fallback
+                    # charges them to a tray afterwards.
                     handled_global_tray_ids |= _every_global_tray(tray_remain_start, ams_trays)
             else:
                 logger.info("[SPOOLMAN] Reporting per-filament usage for archive %s", archive_id)
@@ -1767,9 +1803,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     ams_trays,
                     journal_events,
                     layer_usage_raw,
-                    filament_properties,
-                    _total_layers,
-                    _layer_denom_hint,
+                    bound,
                     f"Archive {archive_id}",
                     runout_purge_grams=runout_purge_grams,
                     cost_out=print_cost,

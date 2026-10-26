@@ -97,6 +97,13 @@ async def _journal(db_session, printer, archive, rows):
     await db_session.commit()
 
 
+def _completed(total_layers):
+    """The completion event: the plate's layer count travels in it, never read off the printer."""
+    from backend.app.utils.tray_split import terminal_snapshot_fields
+
+    return {"status": "completed", **terminal_snapshot_fields(layer_num=0, total_layers=total_layers, progress=100)}
+
+
 def _pm(total_layers=200, ams=None, progress=100):
     state = MagicMock()
     state.raw_data = {"ams": ams or []}
@@ -168,9 +175,7 @@ class TestRunoutZeroPoint:
         _active_sessions[printer.id] = _session(printer.id)
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
         with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
-            await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=43), db_session, archive_id=archive.id
-            )
+            await on_print_complete(printer.id, _completed(43), _pm(total_layers=43), db_session, archive_id=archive.id)
         await db_session.refresh(new)
         await db_session.refresh(old)
         assert new.weight_used == new_used
@@ -204,7 +209,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
         with p1, p2:
             results = await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -244,7 +249,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
         with p1, p2:
             results = await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -273,7 +278,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -301,7 +306,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -327,7 +332,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": ""}])
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -361,7 +366,7 @@ class TestRunoutZeroPoint:
         )
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -392,9 +397,7 @@ class TestRunoutZeroPoint:
         ams = [{"id": 0, "tray": [{"id": 2, "remain": 70}]}]
         p1, p2 = _patched_3mf([])
         with p1, p2:
-            await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(ams=ams), db_session, archive_id=archive.id
-            )
+            await on_print_complete(printer.id, _completed(200), _pm(ams=ams), db_session, archive_id=archive.id)
 
         await db_session.refresh(spool_c)
         assert spool_c.weight_used == pytest.approx(0.0)  # delta NOT charged
@@ -413,7 +416,7 @@ class TestRunoutZeroPoint:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 100.0, "type": "PLA", "color": ""}])
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -450,7 +453,7 @@ class TestRunoutZeroPoint:
 
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 50.0, "type": "PLA", "color": ""}])
         with p1, p2:
-            await on_print_complete(printer.id, {"status": "completed"}, _pm(), db_session, archive_id=archive.id)
+            await on_print_complete(printer.id, _completed(200), _pm(), db_session, archive_id=archive.id)
 
         await db_session.refresh(spool_a)
         await db_session.refresh(spool_b)
@@ -484,7 +487,7 @@ class TestAutoswitchPurgeGrams:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 200.0, "type": "PLA", "color": ""}])
         with p1, p2:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
 
         await db_session.refresh(spool_a)
@@ -518,9 +521,7 @@ class TestPath2UuidGate:
         ams = [{"id": 0, "tray": [{"id": 0, "remain": 70, "tray_uuid": "BBBB0000BBBB0000BBBB0000BBBB0000"}]}]
         p1, p2 = _patched_3mf([])
         with p1, p2:
-            await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(ams=ams), db_session, archive_id=archive.id
-            )
+            await on_print_complete(printer.id, _completed(200), _pm(ams=ams), db_session, archive_id=archive.id)
 
         await db_session.refresh(spool)
         assert spool.weight_used == pytest.approx(0.0)
@@ -574,7 +575,7 @@ class TestPath2UuidGate:
 
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 50.0, "type": "PLA", "color": ""}])
         with p1, p2:
-            await on_print_complete(printer.id, {"status": "completed"}, _pm(), db_session, archive_id=archive.id)
+            await on_print_complete(printer.id, _completed(200), _pm(), db_session, archive_id=archive.id)
 
         await db_session.refresh(spool_a)
         await db_session.refresh(spool_b)
@@ -1101,7 +1102,7 @@ class TestRunoutArchivesTheSpool:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
         with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()) as broadcast:
             await on_print_complete(
-                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+                printer.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id
             )
         return [c.args[0] for c in broadcast.await_args_list]
 
@@ -1455,7 +1456,7 @@ class TestFeedIntervalAttribution:
         with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
             await on_print_complete(
                 printer.id,
-                {"status": "completed"},
+                _completed(44),
                 _pm_log(self.BMCU_4015, total_layers=44),
                 db_session,
                 archive_id=archive.id,
@@ -1481,7 +1482,7 @@ class TestFeedIntervalAttribution:
         with p1, p2:
             await on_print_complete(
                 printer.id,
-                {"status": "completed"},
+                _completed(200),
                 _pm_log([(0, 0), (1, 50), (0, 150)], total_layers=200),
                 db_session,
                 archive_id=archive.id,
@@ -1522,7 +1523,7 @@ class TestFeedIntervalAttribution:
         with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
             await on_print_complete(
                 printer.id,
-                {"status": "completed"},
+                _completed(200),
                 _pm_log([(0, 0), (1, 50), (0, 150)], total_layers=200),
                 db_session,
                 archive_id=archive.id,
@@ -1554,7 +1555,7 @@ class TestFeedIntervalAttribution:
         with p1, p2:
             await on_print_complete(
                 printer.id,
-                {"status": "completed"},
+                _completed(50),
                 _pm_log([(0, 0), (1, 0)], total_layers=50),
                 db_session,
                 archive_id=archive.id,
@@ -1592,7 +1593,7 @@ async def test_a_journal_segment_nobody_fed_is_reported_not_recorded(db_session,
     ):
         await on_print_complete(
             printer.id,
-            {"status": "completed"},
+            _completed(100),
             _pm_log([(0, 0)], total_layers=100),
             db_session,
             archive_id=archive.id,

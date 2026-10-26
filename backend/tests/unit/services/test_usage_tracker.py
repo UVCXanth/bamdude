@@ -328,8 +328,11 @@ class TestTrackFrom3MF:
             ]
         )
 
-        # Print failed at 50% progress → 50g consumed from 100g estimate
-        pm = _make_printer_manager(_make_printer_state([], progress=50, tray_now=0))
+        # Print failed at 50% progress → 50g consumed from 100g estimate. The progress is the
+        # completion event's: the printer's own field is not read again at accounting time.
+        from backend.app.utils.tray_split import CompletionSnapshot
+
+        pm = _make_printer_manager(_make_printer_state([], progress=0, tray_now=0))
         filament_usage = [{"slot_id": 1, "used_g": 100.0, "type": "PLA", "color": ""}]
 
         with (
@@ -348,6 +351,7 @@ class TestTrackFrom3MF:
                 handled_trays=set(),
                 printer_manager=pm,
                 db=db,
+                completion=CompletionSnapshot(progress=50.0),
             )
 
         assert len(results) == 1

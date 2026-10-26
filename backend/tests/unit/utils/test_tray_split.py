@@ -1,252 +1,287 @@
-"""Pure-logic tests for the mid-print tray-split math (#1793).
+"""Pure-logic tests for the weight-split math shared by both inventory writers.
 
-The helper lives in ``backend/app/utils/tray_split.py`` and is exercised by
-both inventory backends (``usage_tracker`` and ``spoolman_tracking``). These
-tests pin the algorithm so a change in one caller can't silently break the
-other — cross-inventory parity is a HARD RULE for this project.
+The helper lives in ``backend/app/utils/tray_split.py`` and is exercised by both inventory
+backends (``usage_tracker`` and ``spoolman_tracking``). These tests pin it so a change in one
+caller can't silently break the other — cross-inventory parity is a HARD RULE for this
+project. Every expectation below is a constant worked out by hand from the stated layers
+(spec partial-print-layer-split r2 §6), never a call of the helper itself.
 """
 
 from __future__ import annotations
 
-from backend.app.utils.tray_split import compute_tray_split_grams
+import pytest
+
+from backend.app.utils.tray_split import (
+    TERMINAL_LAYER_NUM,
+    TERMINAL_PROGRESS,
+    TERMINAL_TOTAL_LAYERS,
+    CompletionSnapshot,
+    PrintedBound,
+    printed_bound,
+    sole_owner,
+    split_weight,
+    terminal_snapshot_fields,
+)
+from backend.app.utils.usage_attribution import UNKNOWN_FEED, not_recorded_tray
+
+#: One unit of extrusion per layer for filament 0 over a 200-layer plate: a G-code timeline
+#: on which a share of layers is the same share of extrusion, so the oracle stays arithmetic.
+LINEAR_TIMELINE = {layer: {0: float(layer)} for layer in range(201)}
 
 
-class TestComputeTraySplitGrams:
-    """Segment-attribution algorithm — gcode preferred, linear fallback, equal split."""
+def partial(layer: int, total: int | None = 200) -> PrintedBound:
+    return PrintedBound(completed=False, layer=layer, source="current", total_layers=total)
 
-    def test_empty_tray_changes_returns_empty(self):
-        assert (
-            compute_tray_split_grams(
-                tray_changes=[],
-                total_weight=100.0,
-                slot_id=1,
-                layer_usage=None,
-                density=1.24,
-                diameter=1.75,
-                total_layers=200,
-                last_layer_num=200,
-            )
-            == []
+
+def completed(layer: int | None) -> PrintedBound:
+    return PrintedBound(completed=True, layer=layer, source="total_layers" if layer else "none", total_layers=layer)
+
+
+def approx(values: list[float]) -> list:
+    return [pytest.approx(v, abs=1e-9) for v in values]
+
+
+class TestPrintedBound:
+    """H is chosen once, from the completion event alone (R2)."""
+
+    def test_a_completed_print_divides_up_to_its_plate(self):
+        bound = printed_bound(completed=True, snapshot=CompletionSnapshot(layer_num=200, total_layers=200))
+        assert (bound.layer, bound.source) == (200, "total_layers")
+
+    def test_a_lagging_captured_layer_never_shortens_a_known_plate(self):
+        """A18: at FINISH without a reset the captured layer is the one before the last."""
+        bound = printed_bound(completed=True, snapshot=CompletionSnapshot(total_layers=200, captured_layer=199))
+        assert bound.layer == 200
+
+    @pytest.mark.parametrize(
+        "snapshot, expected",
+        [
+            (CompletionSnapshot(layer_num=50, captured_layer=40), (50, "current")),
+            (CompletionSnapshot(captured_layer=40), (40, "captured")),
+            (CompletionSnapshot(), (None, "none")),
+        ],
+    )
+    def test_a_completed_print_with_its_plate_count_reset(self, snapshot, expected):
+        """P1S firmware zeroes the layer count at print end: the terminal, then the captured layer."""
+        bound = printed_bound(completed=True, snapshot=snapshot)
+        assert (bound.layer, bound.source) == expected
+
+    def test_a_stopped_print_takes_its_terminal_layer_over_the_captured_one(self):
+        """A04: the captured hint is the layer BEFORE the last report — it lags a live counter."""
+        bound = printed_bound(
+            completed=False, snapshot=CompletionSnapshot(layer_num=50, total_layers=200, captured_layer=40)
         )
+        assert (bound.layer, bound.source) == (50, "current")
 
-    def test_single_segment_charges_everything_to_that_tray(self):
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0)],
-            total_weight=72.56,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=100,
-            last_layer_num=100,
-        )
-        assert segments == [(0, 0, 72.56)]
+    def test_a_stopped_print_whose_layer_was_reset_takes_the_captured_one(self):
+        """A03/A04: firmware zeroed the layer on cancel."""
+        bound = printed_bound(completed=False, snapshot=CompletionSnapshot(layer_num=None, captured_layer=40))
+        assert (bound.layer, bound.source) == (40, "captured")
 
-    def test_two_segments_linear_split_by_layer_ratio(self):
-        # Runout at layer 37 of 100 total; no gcode available → linear.
-        # Segment 0 (tray 0, layers 0-37) = 100 * 37/100 = 37g
-        # Segment 1 (tray 1, layers 37-end) = 100 - 37 = 63g (remainder)
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 37)],
-            total_weight=100.0,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=100,
-            last_layer_num=100,
-        )
-        assert segments == [(0, 0, 37.0), (1, 1, 63.0)]
+    def test_the_plate_count_alone_is_no_boundary_for_a_stopped_print(self):
+        """A08: L, a journal boundary or a full G-code timeline say nothing about where it stopped."""
+        bound = printed_bound(completed=False, snapshot=CompletionSnapshot(total_layers=200, progress=25.0))
+        assert bound.layer is None
 
-    def test_two_segments_gcode_preferred_over_linear(self):
-        # layer_usage stores mm of filament extruded per (layer, filament_id).
-        # Values are cumulative-per-key inside get_cumulative_usage_at_layer.
-        # 20 layers, filament_id=0 (slot_id=1 → filament_id 0):
-        #   layer 10 → 100mm cumulative
-        #   layer 20 → 300mm cumulative
-        # tray change at layer 10 → seg 0 spans layers 0-10 (mm 0 → 100),
-        #                            seg 1 spans layers 10-end.
-        # mm_to_grams(100, 1.75, 1.24) ≈ 0.298g; last segment absorbs the rest.
-        layer_usage = {
-            5: {0: 50.0},
-            10: {0: 100.0},
-            15: {0: 200.0},
-            20: {0: 300.0},
+    def test_a_layer_past_the_plate_is_no_boundary(self):
+        bound = printed_bound(completed=False, snapshot=CompletionSnapshot(layer_num=250, total_layers=200))
+        assert bound.layer is None and bound.source == "current_past_total"
+
+    @pytest.mark.parametrize("value", [True, False, -5, 0, "50", 50.5, float("nan"), None, [50]])
+    def test_a_coercion_is_not_evidence(self, value):
+        """R2.8: a bool, a negative, a string or a fraction is not a layer the printer reported."""
+        snapshot = CompletionSnapshot.from_event({TERMINAL_LAYER_NUM: value, "last_layer_num": value})
+        assert (snapshot.layer_num, snapshot.captured_layer) == (None, None)
+
+    def test_the_event_carries_its_own_figures(self):
+        data = {
+            "status": "failed",
+            "last_layer_num": 40,
+            "last_progress": 24.0,
+            **terminal_snapshot_fields(layer_num=50, total_layers=200, progress=25.0),
         }
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 10)],
-            total_weight=1.0,  # sentinel — we assert the seg1 remainder
-            slot_id=1,
-            layer_usage=layer_usage,
-            density=1.24,
-            diameter=1.75,
-            total_layers=20,
-            last_layer_num=20,
+        assert CompletionSnapshot.from_event(data) == CompletionSnapshot(
+            layer_num=50, total_layers=200, progress=25.0, captured_layer=40, captured_progress=24.0
         )
-        # Seg 0 charged from gcode delta (mm 0 → 100).
-        # Seg 1 gets total_weight - seg0 as remainder.
-        assert segments[0][0] == 0
-        assert segments[0][1] == 0  # tray 0
-        assert segments[0][2] > 0  # non-zero gcode contribution
-        assert segments[1][0] == 1
-        assert segments[1][1] == 1  # tray 1
-        # Sum equals the input total by construction (last segment absorbs).
-        assert round(segments[0][2] + segments[1][2], 6) == 1.0
 
-    def test_three_segments_last_absorbs_rounding_drift(self):
-        # 100g over three segments at layers 30 and 60 of 90; linear fallback.
-        # Seg 0: 100 * 30/90 = 33.3333...
-        # Seg 1: 100 * 30/90 = 33.3333...
-        # Seg 2: remainder = 100 - 66.6666... = 33.3333... — exact by construction
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 30), (2, 60)],
-            total_weight=100.0,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=90,
-            last_layer_num=90,
-        )
-        assert len(segments) == 3
-        assert round(sum(g for _, _, g in segments), 6) == 100.0
-        assert segments[0][1] == 0
-        assert segments[1][1] == 1
-        assert segments[2][1] == 2
+    def test_an_event_without_the_figures_knows_only_its_captured_hints(self):
+        """A24: nothing missing is filled in — the printer is not asked again."""
+        snapshot = CompletionSnapshot.from_event({"status": "failed", "last_layer_num": 40})
+        assert snapshot == CompletionSnapshot(captured_layer=40)
+        assert snapshot.progress_percent is None
 
-    def test_no_layer_info_at_all_falls_to_equal_split(self):
-        # Denominator 0 → last-resort equal-split; last segment absorbs remainder.
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 50)],
-            total_weight=90.0,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=0,
-            last_layer_num=0,
-        )
-        # 90g / 2 = 45g each; sum still 90 by remainder mechanic.
-        assert segments == [(0, 0, 45.0), (1, 1, 45.0)]
-
-    def test_last_layer_num_used_when_total_layers_zero(self):
-        # P1S firmware-reset scenario: total_layers=0 at completion, but the
-        # captured last_layer_num survives. Should give the same linear split as
-        # if total_layers had held its value (#1771 cascade).
-        segments_captured = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 30)],
-            total_weight=100.0,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=0,
-            last_layer_num=100,
-        )
-        segments_normal = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 30)],
-            total_weight=100.0,
-            slot_id=1,
-            layer_usage=None,
-            density=1.24,
-            diameter=1.75,
-            total_layers=100,
-            last_layer_num=100,
-        )
-        assert segments_captured == segments_normal
-
-    def test_slot_id_maps_to_zero_based_filament_id_in_gcode(self):
-        # slot_id 2 → filament_id 1 in layer_usage. If we mistakenly used
-        # slot_id as-is, we'd read filament_id 2 which is absent → 0mm delta →
-        # seg 0 gets 0, seg 1 (remainder) gets the whole total. Guard against
-        # that regression (the exact #1771 shape).
-        layer_usage = {
-            5: {0: 0.0, 1: 40.0},
-            10: {0: 0.0, 1: 80.0},
-            20: {0: 0.0, 1: 160.0},
+    def test_the_terminal_keys_are_the_ones_the_event_is_read_by(self):
+        assert set(terminal_snapshot_fields(layer_num=1, total_layers=2, progress=3.0)) == {
+            TERMINAL_LAYER_NUM,
+            TERMINAL_TOTAL_LAYERS,
+            TERMINAL_PROGRESS,
         }
-        segments = compute_tray_split_grams(
-            tray_changes=[(0, 0), (1, 10)],
-            total_weight=1.0,
-            slot_id=2,
-            layer_usage=layer_usage,
-            density=1.24,
-            diameter=1.75,
-            total_layers=20,
-            last_layer_num=20,
-        )
-        # Seg 0 gcode delta on filament_id=1 is non-zero → not 0g.
-        assert segments[0][2] > 0
+
+    def test_progress_falls_back_to_the_captured_value(self):
+        assert CompletionSnapshot(captured_progress=24.0).progress_percent == 24.0
+        assert CompletionSnapshot(progress=25.0, captured_progress=24.0).progress_percent == 25.0
 
 
-class TestCancelledPrintNormalisation:
-    """A cancelled print's segments divide what was PRINTED, not the whole plate.
+class TestLinearSplit:
+    """No G-code for the slot: the layer ratio within the printed stretch [0, H] (R4)."""
 
-    ``slot_progress_fraction`` is a fraction of the FULL plate ("exact at
-    completion"), while a failed print's caller passes an already-shortened
-    ``total_weight`` (estimate x progress). Multiplying one by the other applies
-    the shortening twice to every segment but the last, which then swallows the
-    difference as if it were rounding drift.
+    def test_a_stopped_print_divides_what_it_printed(self):
+        """A01: 10 g printed up to layer 50 of 200, reel B from 40 → A 40/50, B 10/50."""
+        assert split_weight([0, 40], 10.0, 1, None, partial(50)).grams == approx([8.0, 2.0])
 
-    Printer 5, archive 822 (2026-08-31): reel swapped at layer 227, jam at 405,
-    cancelled. 259.3 g of a 364.95 g plate. The books read 120.0 g for the first
-    reel and 139.3 g for the second when the gcode timeline says 169 / 90 — the
-    total was right, ~49 g sat on the wrong reel.
-    """
+    def test_a_completed_print_divides_its_whole_plate(self):
+        """A02: the same boundaries, printed to the end."""
+        assert split_weight([0, 40], 10.0, 1, None, completed(200)).grams == approx([2.0, 8.0])
 
-    # Cumulative mm for filament 0 across a 570-layer plate; the print stopped
-    # at 405 having laid down 70.92% of the slot's own timeline.
-    LAYER_USAGE = {
-        0: {0: 0.0},
-        227: {0: 462.8},
-        405: {0: 709.2},
-        570: {0: 1000.0},
-    }
+    def test_a_reset_plate_count_with_a_captured_layer(self):
+        """A03: L=0 after the firmware's reset, captured layer 50."""
+        bound = printed_bound(completed=False, snapshot=CompletionSnapshot(captured_layer=50))
+        assert split_weight([0, 40], 10.0, 1, None, bound).grams == approx([8.0, 2.0])
 
-    def test_segments_divide_the_printed_portion_not_the_whole_plate(self):
-        segments = compute_tray_split_grams(
-            tray_changes=[(254, 0), (254, 227)],
-            total_weight=259.3,  # 364.95 g estimate x 0.7105 progress
-            slot_id=1,
-            layer_usage=self.LAYER_USAGE,
-            density=1.24,
-            diameter=1.75,
-            total_layers=570,
-            last_layer_num=405,  # the last layer actually printed
-        )
-        first, second = segments[0][2], segments[1][2]
-        # 259.3 * (0.4628 / 0.7092) and the remainder.
-        assert round(first, 1) == 169.2
-        assert round(second, 1) == 90.1
-        assert round(first + second, 1) == 259.3
+    @pytest.mark.parametrize(
+        "boundaries, expected",
+        [
+            ([0, 50], [10.0, 0.0]),  # the reel arrived on the last printed layer
+            ([0, 40, 60], [8.0, 2.0, 0.0]),  # a boundary past the stop prints nothing
+            ([0, 40, 50], [8.0, 2.0, 0.0]),
+            ([0, 0, 40], [0.0, 8.0, 2.0]),  # A12: a duplicate at layer 0 fed nothing
+        ],
+    )
+    def test_stretches_are_clipped_to_the_printed_boundary(self, boundaries, expected):
+        """A05/A12: nothing at or past H gets a gram — nor the rounding remainder."""
+        assert split_weight(boundaries, 10.0, 1, None, partial(50)).grams == approx(expected)
 
-    def test_completed_print_is_unchanged_by_the_normalisation(self):
-        # Printed to the end: the fraction at the last layer is 1.0, so
-        # dividing by it is a no-op and the historical numbers stand.
-        segments = compute_tray_split_grams(
-            tray_changes=[(254, 0), (254, 227)],
-            total_weight=364.95,
-            slot_id=1,
-            layer_usage=self.LAYER_USAGE,
-            density=1.24,
-            diameter=1.75,
-            total_layers=570,
-            last_layer_num=570,
-        )
-        assert round(segments[0][2], 1) == round(364.95 * 0.4628, 1)
-        assert round(segments[0][2] + segments[1][2], 2) == 364.95
+    @pytest.mark.parametrize(
+        "weight, boundaries, horizon",
+        [
+            (10.0, [0, 17, 33, 60], 50),
+            # Weights and layers whose float shares do not add up exactly: the drift exists.
+            (0.1, [0, 29, 31, 60], 41),
+            (0.3, [0, 7, 19, 60], 47),
+            (7.3, [0, 7, 31, 60], 41),
+        ],
+    )
+    def test_the_rounding_remainder_never_reaches_a_stretch_that_printed_nothing(self, weight, boundaries, horizon):
+        """R7: a stretch past the stop gets exactly 0 — even a 1e-17 g would be a charge row for a
+        reel that never fed this print."""
+        grams = split_weight(boundaries, weight, 1, None, partial(horizon)).grams
+        assert grams[3] == 0.0
+        assert sum(grams) == pytest.approx(weight, abs=1e-12)
 
-    def test_unknown_last_layer_keeps_the_old_behaviour(self):
-        # last_layer_num 0 means the layer was never captured — there is no
-        # printed fraction to normalise by, so the segments must not move.
-        segments = compute_tray_split_grams(
-            tray_changes=[(254, 0), (254, 227)],
-            total_weight=259.3,
-            slot_id=1,
-            layer_usage=self.LAYER_USAGE,
-            density=1.24,
-            diameter=1.75,
-            total_layers=570,
-            last_layer_num=0,
-        )
-        assert round(segments[0][2], 1) == round(259.3 * 0.4628, 1)
+    @pytest.mark.parametrize("weight", [7.3, 0.1, 123.456])
+    def test_fractional_weights_add_up(self, weight):
+        """A13."""
+        grams = split_weight([0, 13, 29], weight, 1, None, partial(41)).grams
+        assert sum(grams) == pytest.approx(weight, abs=1e-12) and all(g >= 0 for g in grams)
+
+    def test_a_zero_weight_divides_into_zeros(self):
+        assert split_weight([0, 40], 0.0, 1, None, partial(50)).grams == [0.0, 0.0]
+
+    def test_a_stretch_before_the_first_boundary_is_nobodys(self):
+        """A13: coverage starting at 10 leaves layers 0–10 to no reel, not to the first or last."""
+        split = split_weight([10, 40], 10.0, 1, None, partial(50))
+        assert split.grams == approx([6.0, 2.0])
+        assert split.unknown_start == pytest.approx(2.0)
+
+    @pytest.mark.parametrize("boundaries", [[0, 40, 30], [-1, 40], [0, True], [0, 40.0], [0, "40"]])
+    def test_a_geometry_no_projection_made_usable_divides_nothing(self, boundaries):
+        """A13: never sorted or coerced into a split."""
+        assert split_weight(boundaries, 10.0, 1, None, partial(50)) is None
+
+    def test_one_stretch_from_the_start_is_the_whole_weight_without_any_boundary(self):
+        assert split_weight([0], 10.0, 1, None, PrintedBound(False, None, "none")).grams == [10.0]
+
+    def test_no_printed_boundary_divides_nothing(self):
+        """A08: never an equal share, never the remainder to the last reel."""
+        assert split_weight([0, 40], 10.0, 1, None, PrintedBound(False, None, "none", 200)) is None
+        assert split_weight([0, 40], 10.0, 1, None, PrintedBound(True, None, "none")) is None
+
+
+class TestGcodeSplit:
+    """The slot's own G-code timeline measures each stretch (R5)."""
+
+    def test_a_stopped_print_divides_its_own_timeline_up_to_the_boundary(self):
+        """A06: one unit a layer — the same 8/2 as the layer ratio."""
+        assert split_weight([0, 40], 10.0, 1, LINEAR_TIMELINE, partial(50)).grams == approx([8.0, 2.0])
+
+    def test_boundaries_past_the_stop_print_nothing_and_never_go_negative(self):
+        """A06: the old helper left the last stretch −6 g here."""
+        grams = split_weight([0, 40, 60, 80], 10.0, 1, LINEAR_TIMELINE, partial(50)).grams
+        assert grams == approx([8.0, 2.0, 0.0, 0.0])
+
+    def test_another_slots_timeline_is_no_scale_for_this_one(self):
+        """A07: G-code for slot 2 only — slot 1 takes the layer ratio."""
+        other_slot = {0: {1: 0.0}, 200: {1: 200.0}}
+        assert split_weight([0, 40], 10.0, 1, other_slot, partial(50)).grams == approx([8.0, 2.0])
+
+    def test_a_timeline_that_printed_nothing_by_the_stop_falls_to_the_layer_ratio(self):
+        starts_late = {0: {0: 0.0}, 60: {0: 0.0}, 200: {0: 140.0}}
+        assert split_weight([0, 40], 10.0, 1, starts_late, partial(50)).grams == approx([8.0, 2.0])
+
+    def test_a_timeline_that_runs_backwards_measures_nothing(self):
+        broken = {0: {0: 0.0}, 40: {0: 100.0}, 45: {0: 60.0}, 50: {0: 80.0}, 200: {0: 300.0}}
+        assert split_weight([0, 40, 45], 10.0, 1, broken, partial(50)).grams == approx([8.0, 1.0, 1.0])
+
+    def test_a_stopped_print_with_gcode_but_no_boundary_divides_nothing(self):
+        """A08: the full timeline does not say where a stopped print stopped."""
+        assert split_weight([0, 40], 10.0, 1, LINEAR_TIMELINE, PrintedBound(False, None, "none", 200)) is None
+
+    def test_a_completed_print_needs_no_boundary_with_its_slots_timeline(self):
+        """A17: L, the terminal and the captured layer all unknown — the timeline to its end."""
+        bound = printed_bound(completed=True, snapshot=CompletionSnapshot())
+        assert split_weight([0, 40], 10.0, 1, LINEAR_TIMELINE, bound).grams == approx([2.0, 8.0])
+
+    def test_a_completed_print_is_measured_on_the_whole_timeline_not_a_lagging_layer(self):
+        """A18: the old helper normalised at the captured layer 199 and gave 2.01/7.99."""
+        bound = PrintedBound(completed=True, layer=199, source="captured")
+        assert split_weight([0, 40], 10.0, 1, LINEAR_TIMELINE, bound).grams == approx([2.0, 8.0])
+
+    def test_a_completed_print_past_its_slots_last_extrusion_gives_the_rest_nothing(self):
+        ends_at_100 = {layer: {0: float(min(layer, 100))} for layer in range(201)}
+        grams = split_weight([0, 40, 150], 10.0, 1, ends_at_100, completed(None)).grams
+        assert grams == approx([4.0, 6.0, 0.0])
+
+    def test_slot_id_maps_to_the_zero_based_filament_id(self):
+        layer_usage = {0: {0: 0.0, 1: 0.0}, 10: {0: 0.0, 1: 50.0}, 20: {0: 0.0, 1: 100.0}}
+        assert split_weight([0, 10], 1.0, 2, layer_usage, completed(20)).grams == approx([0.5, 0.5])
+
+    class TestCancelledPrintFromTheFarm:
+        """Printer 5, archive 822 (2026-08-31): reel swapped at layer 227, jam at 405, cancelled;
+        259.3 g of a 364.95 g plate. The G-code timeline says 169 / 90."""
+
+        LAYER_USAGE = {0: {0: 0.0}, 227: {0: 462.8}, 405: {0: 709.2}, 570: {0: 1000.0}}
+
+        def test_the_printed_portion_is_divided(self):
+            first, second = split_weight([0, 227], 259.3, 1, self.LAYER_USAGE, partial(405, 570)).grams
+            assert (round(first, 1), round(second, 1)) == (169.2, 90.1)
+
+        def test_the_completed_plate_is_divided_whole(self):
+            first, second = split_weight([0, 227], 364.95, 1, self.LAYER_USAGE, completed(570)).grams
+            assert round(first, 1) == round(364.95 * 0.4628, 1)
+            assert round(first + second, 2) == 364.95
+
+
+class TestSoleOwnerAndLabel:
+    def test_the_same_reel_in_every_stretch_is_one_owner(self):
+        assert sole_owner([(0, 7), (40, 7), (60, 7)]) == 7
+
+    @pytest.mark.parametrize(
+        "stretches",
+        [
+            [(0, 7), (40, 8)],
+            [(0, 7), (40, None)],
+            [(0, None)],
+            [],
+            # R6: proven only from layer 10 — what fed layers 0–10 is nobody's to give it.
+            [(10, 7), (40, 7)],
+        ],
+    )
+    def test_anything_else_is_no_owner(self, stretches):
+        assert sole_owner(stretches) is None
+
+    def test_reels_of_one_tray_are_reported_under_that_tray(self):
+        assert not_recorded_tray([3, 3]) == 3
+
+    @pytest.mark.parametrize("trays", [[3, 4], [3, UNKNOWN_FEED], [UNKNOWN_FEED]])
+    def test_several_trays_or_an_unseen_feed_are_reported_as_unknown(self, trays):
+        assert not_recorded_tray(trays) == UNKNOWN_FEED

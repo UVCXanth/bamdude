@@ -21,6 +21,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import AMS_SYNC_STATUS, RUNOUT_STATUS, SpoolUsageHistory
 from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.utils.filament_remaining import usable_remain_percent
+from backend.app.utils.tray_split import CompletionSnapshot, printed_bound, sole_owner, split_weight
 
 logger = logging.getLogger(__name__)
 
@@ -1460,6 +1461,7 @@ async def on_print_complete(
             tray_now_at_start=session.tray_now_at_start if session else -1,
             last_progress=data.get("last_progress", 0.0),
             last_layer_num=data.get("last_layer_num", 0),
+            completion=CompletionSnapshot.from_event(data),
             default_filament_cost=default_filament_cost,
             spool_assignments=session.spool_assignments if session else None,
             print_started_at=effective_started_at,
@@ -1686,6 +1688,15 @@ async def on_print_complete(
     return results
 
 
+def _global_tray_key(global_tray_id: int) -> tuple[int, int]:
+    """``(ams_id, tray_id)`` of a global tray id — the key ``handled_trays`` holds."""
+    if global_tray_id >= 254:
+        return (255, global_tray_id - 254)
+    if global_tray_id >= 128:
+        return (global_tray_id, 0)
+    return (global_tray_id // 4, global_tray_id % 4)
+
+
 def _every_ams_tray_key(state) -> set[tuple[int, int]]:
     """Every ``(ams_id, tray_id)`` of the AMS units the printer reports — what the remain-delta
     fallback walks."""
@@ -1726,12 +1737,18 @@ async def _track_from_3mf(
     analysis_attempted: bool = False,
     archive_snapshot=None,
     uncharged: list[tuple[int, float]] | None = None,
+    completion: CompletionSnapshot | None = None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
     Uses slicer-estimated filament weight for all spools (BL and non-BL).
     For partial prints (failed/aborted), tries per-layer gcode data first,
     then falls back to linear scaling by progress.
+
+    How far the print got — its layer, the plate's layer count, its progress — is
+    ``completion``, the completion event's own figures (``tray_split.CompletionSnapshot``);
+    without it, only the captured ``last_layer_num`` / ``last_progress``. The printer is
+    never asked again: by now it may be running the next print.
 
     Slot-to-tray mapping priority (both dispatched sources before the live one —
     AMS filament backup rewrites the live MQTT field to the substitute tray):
@@ -1955,27 +1972,31 @@ async def _track_from_3mf(
                 state.last_loaded_tray if state else "N/A",
             )
 
+    # One boundary for the whole completion, from the event alone — every slot and both split
+    # paths divide up to it, and the layer the partial weight is estimated at is the same one.
+    snapshot = (
+        completion
+        if completion is not None
+        else CompletionSnapshot.from_event({"last_layer_num": last_layer_num, "last_progress": last_progress})
+    )
+    bound = printed_bound(completed=status == "completed", snapshot=snapshot)
+
     # Scale factor for partial prints (failed/aborted)
     if status == "completed":
         scale = 1.0
     else:
-        state = printer_manager.get_status(printer_id)
-        progress = state.progress if state else 0
-        # Firmware resets progress to 0 on cancel - use last valid progress captured during print
-        if progress <= 0 and last_progress > 0:
-            progress = last_progress
-            logger.info("[UsageTracker] 3MF: using last_progress=%.1f (firmware reset current to 0)", last_progress)
+        # Firmware resets progress to 0 on cancel — the captured value stands in for it.
+        progress = snapshot.progress_percent or 0.0
+        if not snapshot.progress and snapshot.captured_progress:
+            logger.info("[UsageTracker] 3MF: using last_progress=%.1f (firmware reset current to 0)", progress)
         scale = max(0.0, min(progress / 100.0, 1.0))
 
     # Per-layer gcode accuracy for partial prints
     layer_grams: dict[int, float] | None = None
     if status != "completed":
-        state = printer_manager.get_status(printer_id)
-        current_layer = state.layer_num if state else 0
-        # Firmware resets layer_num to 0 on cancel - use last valid layer captured during print
-        if current_layer <= 0 and last_layer_num > 0:
-            current_layer = last_layer_num
-            logger.info("[UsageTracker] 3MF: using last_layer_num=%d (firmware reset current to 0)", last_layer_num)
+        current_layer = bound.layer or 0
+        if bound.source == "captured":
+            logger.info("[UsageTracker] 3MF: using last_layer_num=%d (firmware reset current to 0)", current_layer)
         if current_layer > 0:
             try:
                 layer_usage = analysis.layer_usage
@@ -2025,50 +2046,55 @@ async def _track_from_3mf(
             if total_weight <= 0:
                 continue
 
-            # Extract per-layer gcode for segment splitting
-            split_layer_usage = analysis.layer_usage
-            split_props = analysis.filament_properties.get(slot_id, {})
-
-            from backend.app.utils.tray_split import compute_layer_segment_grams
             from backend.app.utils.usage_attribution import (
                 UNKNOWN_FEED,
                 add_autoswitch_purge,
                 feed_intervals,
-                split_is_measured,
+                not_recorded_tray,
             )
 
             layer_intervals = feed_intervals(tray_changes, journal_events or [])
-            split_total_layers = (state.total_layers if state else 0) or 0
-            if not split_is_measured(layer_intervals, slot_id, split_layer_usage, split_total_layers, last_layer_num):
-                # Part of the feed is unknown and nothing tells how to divide the grams: an equal
-                # share would be a guess — the slot is not recorded (post-rebuild F6).
-                logger.info(
-                    "[UsageTracker] 3MF split: slot %d has an unknown feed and no layer count — %.1fg not recorded",
-                    slot_id,
-                    total_weight,
-                )
-                handled_trays.update(_every_ams_tray_key(state))
-                if uncharged is not None:
-                    uncharged.append((UNKNOWN_FEED, round(float(total_weight), 2)))
-                continue
-            interval_grams = compute_layer_segment_grams(
-                boundary_layers=[iv.start_layer for iv in layer_intervals],
-                total_weight=total_weight,
-                slot_id=slot_id,
-                layer_usage=split_layer_usage,
-                density=split_props.get("density", 1.24),
-                diameter=split_props.get("diameter", 1.75),
-                total_layers=split_total_layers,
-                last_layer_num=last_layer_num,
+            # Every tray of this slot's stretches is this split's, whatever share it ends up
+            # with: a stretch that printed nothing or went unrecorded is not the remain-delta
+            # fallback's to charge afterwards.
+            handled_trays.update(_global_tray_key(iv.tray) for iv in layer_intervals if iv.tray != UNKNOWN_FEED)
+            split = split_weight(
+                [iv.start_layer for iv in layer_intervals], total_weight, slot_id, analysis.layer_usage, bound
             )
+            if split is None:
+                owner = sole_owner([(iv.start_layer, iv.spool_id if iv.frozen else None) for iv in layer_intervals])
+                if owner is None:
+                    # Nothing the printer reported tells how to divide the grams between the
+                    # reels, and a share would be a guess — the slot is not recorded.
+                    logger.info(
+                        "[UsageTracker] 3MF split: slot %d — no printed boundary (%s) to divide %.1fg by, not recorded",
+                        slot_id,
+                        bound.source,
+                        total_weight,
+                    )
+                    if uncharged is not None:
+                        uncharged.append(
+                            (not_recorded_tray([iv.tray for iv in layer_intervals]), round(float(total_weight), 2))
+                        )
+                    interval_grams = [0.0] * len(layer_intervals)
+                else:  # one reel fed every stretch: the whole weight is its, divided or not
+                    interval_grams = [float(total_weight)] + [0.0] * (len(layer_intervals) - 1)
+            else:
+                interval_grams = list(split.grams)
+                if split.unknown_start > 0:
+                    # Printed before the first boundary: no stretch names its tray.
+                    handled_trays.update(_every_ams_tray_key(state))
+                    if uncharged is not None:
+                        uncharged.append((UNKNOWN_FEED, round(split.unknown_start, 2)))
             # A purge whose backup normalized away comes back as an interval of
             # its own, after the layer intervals.
             intervals, interval_grams = add_autoswitch_purge(
                 layer_intervals, interval_grams, journal_events or [], runout_purge_grams
             )
             if any(iv.tray == UNKNOWN_FEED for iv in intervals):
-                # Nobody saw what fed part of this slot: no remain-delta fallback may charge
-                # those grams to a tray after they were reported as not recorded.
+                # Nobody saw what fed part of this slot — a stretch, or the purge of a backup
+                # nobody saw: no remain-delta fallback may charge those grams to a tray after
+                # they were reported as not recorded.
                 handled_trays.update(_every_ams_tray_key(state))
 
             for seg_idx, (interval, segment_grams) in enumerate(zip(intervals, interval_grams, strict=True)):
@@ -2299,8 +2325,8 @@ async def _track_from_3mf(
         )
         # One segment is a real answer, not "no split": it is the whole print on
         # the spool that fed it when the mapped slot was empty from the start
-        # (see ``journal_boundaries_for_tray``). ``compute_layer_segment_grams``
-        # gives that single boundary the whole weight as its remainder.
+        # (see ``journal_boundaries_for_tray``). ``split_weight`` gives a single
+        # boundary from layer 0 the whole weight.
         if journal_segs:
             if layer_grams and slot_id in layer_grams:
                 total_weight = layer_grams[slot_id]
@@ -2309,22 +2335,28 @@ async def _track_from_3mf(
             if total_weight <= 0:
                 continue
 
-            seg_layer_usage = analysis.layer_usage
-            seg_props = analysis.filament_properties.get(slot_id, {})
-
-            from backend.app.utils.tray_split import compute_layer_segment_grams
-
-            state = printer_manager.get_status(printer_id)
-            seg_grams = compute_layer_segment_grams(
-                boundary_layers=[start for start, _, _ in journal_segs],
-                total_weight=total_weight,
-                slot_id=slot_id,
-                layer_usage=seg_layer_usage,
-                density=seg_props.get("density", 1.24),
-                diameter=seg_props.get("diameter", 1.75),
-                total_layers=(state.total_layers if state else 0) or 0,
-                last_layer_num=last_layer_num,
+            handled_trays.add(key)
+            split = split_weight(
+                [start for start, _, _ in journal_segs], total_weight, slot_id, analysis.layer_usage, bound
             )
+            if split is None:
+                if sole_owner([(start, spool) for start, spool, _ in journal_segs]) is None:
+                    logger.info(
+                        "[UsageTracker] 3MF journal split: tray %d — no printed boundary (%s) to divide %.1fg "
+                        "between its reels, not recorded",
+                        global_tray_id,
+                        bound.source,
+                        total_weight,
+                    )
+                    if uncharged is not None:
+                        uncharged.append((global_tray_id, round(float(total_weight), 2)))
+                    seg_grams = [0.0] * len(journal_segs)
+                else:  # one reel fed every stretch: the whole weight is its, divided or not
+                    seg_grams = [float(total_weight)] + [0.0] * (len(journal_segs) - 1)
+            else:
+                seg_grams = list(split.grams)
+                if split.unknown_start > 0 and uncharged is not None:
+                    uncharged.append((global_tray_id, round(split.unknown_start, 2)))
             _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
             if _purge > 0 and len(seg_grams) > 1:
                 seg_grams[1] += _purge

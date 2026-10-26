@@ -1244,6 +1244,7 @@ async def test_the_internal_writer_charges_no_reel_for_a_feed_nobody_saw(
         printer_id=printer.id, archive_id=archive.id, status="completed", print_name="plate", handled_trays=handled,
         printer_manager=pm, db=db_session, ams_mapping=[TRAY], file_analysis=analysis, analysis_attempted=True,
         uncharged=uncharged, journal_events=await journal.load_events(db_session, printer.id, archive.id),
+        completion=_completion_from(client.state),
     )  # fmt: skip
 
     charged = sum(r["weight_used"] for r in result)
@@ -2246,6 +2247,17 @@ async def a_rejoined_print_with_a_reel_assigned_during_the_hold(db_session, prin
     assert await seed_through_main(printer.id, client)
 
 
+def _completion_from(state, captured_layer=0):
+    """The completion event's copy of the printer's terminal figures (None state: none)."""
+    from backend.app.utils.tray_split import CompletionSnapshot
+
+    return CompletionSnapshot(
+        layer_num=(getattr(state, "layer_num", None) or None) if state is not None else None,
+        total_layers=(getattr(state, "total_layers", None) or None) if state is not None else None,
+        captured_layer=captured_layer or None,
+    )
+
+
 async def internal_charges(db_session, printer, archive, client, *, last_layer_num=0):
     """The internal writer at completion, as Codex's r4 probe runs it: grams per reel, not recorded.
     ``last_layer_num``: the completion's last layer, as ``on_print_complete`` passes it."""
@@ -2257,6 +2269,9 @@ async def internal_charges(db_session, printer, archive, client, *, last_layer_n
     db_session.expire_all()
     events = await journal.load_events(db_session, printer.id, archive.id)
     uncharged = []
+    # The completion event carries what the client reported at the terminal frame, beside the
+    # captured last layer; with no client there is only the latter.
+    completion = _completion_from(client.state, captured_layer=last_layer_num)
     result = await _track_from_3mf(
         printer_id=printer.id, archive_id=archive.id, status="completed", print_name="plate", handled_trays=set(),
         printer_manager=SimpleNamespace(get_status=lambda _pid: client.state), db=db_session, ams_mapping=[TRAY],
@@ -2264,6 +2279,7 @@ async def internal_charges(db_session, printer, archive, client, *, last_layer_n
             filament_usage=[{"slot_id": 1, "used_g": 10.0}], layer_usage=None, filament_properties={}
         ),
         analysis_attempted=True, uncharged=uncharged, journal_events=events, last_layer_num=last_layer_num,
+        completion=completion,
     )  # fmt: skip
     charges = {}
     for row in result:
@@ -2378,7 +2394,7 @@ async def test_spoolman_charges_no_reel_for_a_replay_the_completion_could_not_wr
         ),
     ):
         pm.get_status.return_value = status
-        await report_usage(printer_id=printer.id, archive_id=archive.id)
+        await report_usage(printer_id=printer.id, archive_id=archive.id, completion=_completion_from(status))
 
     assert {c.args[0]: c.args[1] for c in spoolman.use_spool.await_args_list} == {11: 2.0}
     assert notify.await_args.args[1] == [(UNKNOWN_FEED_ID, 8.0)]
@@ -2750,7 +2766,7 @@ async def test_an_unknown_feed_journaled_without_a_client_governs_the_spoolman_w
         ),
     ):
         pm.get_status.return_value = status
-        await report_usage(printer_id=printer.id, archive_id=archive.id)
+        await report_usage(printer_id=printer.id, archive_id=archive.id, completion=_completion_from(status))
 
     assert {c.args[0]: c.args[1] for c in spoolman.use_spool.await_args_list} == {11: 2.0}
     assert notify.await_args.args[1] == [(UNKNOWN_FEED, 8.0)]

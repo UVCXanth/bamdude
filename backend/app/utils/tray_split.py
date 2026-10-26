@@ -1,157 +1,256 @@
-"""Weight-split math for prints that traversed >1 AMS tray mid-print.
+"""Weight-split math for a slot that more than one reel fed during one print.
 
-``state.tray_change_log`` records ``(global_tray_id, layer_num)`` tuples every
-time ``tray_now`` changes during a print (written by ``bambu_mqtt.py``). At
-completion, both the internal Spool inventory (``usage_tracker.py``) and the
-Spoolman writer (``spoolman_tracking.py``) need to split a slot's total weight
-across the segments those changes define — one call site per inventory
-backend, one identical splitting algorithm.
+The boundaries come from two places — the tray chronology (``state.tray_change_log``,
+projected by ``usage_attribution.feed_intervals``) and the runout journal of one tray
+(``usage_tracker.journal_boundaries_for_tray``) — and both inventory writers
+(``usage_tracker.py`` and ``spoolman_tracking.py``) divide a slot's weight across them here,
+so the two cannot drift: #1793 came from ``spoolman_tracking`` never carrying the split at
+all. Each caller wraps its own "resolve the reel → charge N grams" side effect.
 
-The algorithm lives here so the two callers cannot drift: #1793 came from
-``spoolman_tracking`` never carrying the split at all, while ``usage_tracker``
-had shipped it since #957 and refined it in #1771. Sharing the helper is the
-structural fix; each caller wraps its own "resolve segment tray → charge N
-grams" side effect.
+What is divided is a weight the CALLER has already determined — for a print that did not
+finish, already the partial weight. This module never shortens it again: it only says which
+share of it each boundary's stretch printed, up to the layer the print reached (spec
+partial-print-layer-split r2). Where that cannot be said from what the printer reported, the
+answer is ``None`` — never an equal share and never a remainder handed to the last reel.
 """
 
 from __future__ import annotations
 
-# Qualified-name access (``threemf_tools.mm_to_grams(...)`` rather than
-# ``from … import mm_to_grams``) so ``unittest.mock.patch`` on the
-# threemf_tools module lands in the helper too — the pre-refactor
-# ``usage_tracker`` call site imported at call-time inside a try block,
-# which had the same testability property.
+import logging
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+# Qualified-name access (``threemf_tools.get_cumulative_usage_at_layer(...)`` rather than
+# ``from … import …``) so ``unittest.mock.patch`` on the threemf_tools module lands in the
+# helper too.
 from backend.app.utils import threemf_tools
 
+logger = logging.getLogger(__name__)
 
-def compute_tray_split_grams(
-    tray_changes: list[tuple[int, int]],
-    total_weight: float,
-    slot_id: int,
-    layer_usage: dict[int, dict[int, float]] | None,
-    density: float,
-    diameter: float,
-    total_layers: int,
-    last_layer_num: int,
-) -> list[tuple[int, int, float]]:
-    """Split ``total_weight`` for a single slice slot across tray segments.
+#: The printer's own figures at the terminal frame, copied into the completion event by
+#: ``bambu_mqtt`` (O5, owner 2026-10-26). The writers run after a file analysis and a
+#: deferred terminal can be replayed later still; by then the live state may describe the
+#: NEXT print, so the event carries the finished print's figures and nothing re-reads them.
+TERMINAL_LAYER_NUM = "terminal_layer_num"
+TERMINAL_TOTAL_LAYERS = "terminal_total_layers"
+TERMINAL_PROGRESS = "terminal_progress"
 
-    ``tray_changes`` is the ordered list ``[(global_tray_id, seg_start_layer), ...]``
-    exactly as it appears in ``state.tray_change_log``. The last segment runs
-    to the end of the print; every other segment ends at the next entry's
-    ``seg_start_layer``.
 
-    Preference order for per-segment grams — matches ``usage_tracker`` so both
-    inventory backends split identically:
+def terminal_snapshot_fields(*, layer_num, total_layers, progress) -> dict[str, object]:
+    """The completion event's copy of the printer's figures — scalars, never the live state."""
+    return {TERMINAL_LAYER_NUM: layer_num, TERMINAL_TOTAL_LAYERS: total_layers, TERMINAL_PROGRESS: progress}
 
-    1. **G-code cumulative extrusion** (``layer_usage``, indexed by 0-based
-       filament id). Precise: uses the mm actually consumed between
-       ``seg_start_layer`` and the next segment's start, then converts via
-       Spoolman-authoritative ``density`` / ``diameter``.
-    2. **Linear layer-ratio** — ``total_weight * segment_layers / denom``, with
-       ``denom = total_layers or last_layer_num``. Firmware on P1S (observed)
-       resets ``total_layer_num`` to 0 at print end, so the captured
-       ``last_layer_num`` is the durable denominator. #1771 addressed the
-       pre-fix behaviour of dumping everything onto the last segment.
-    3. **Equal-split** — when neither denominator is available (server restart
-       mid-print, missing state). Wrong but bounded — the last segment absorbs
-       any rounding drift via the ``is_last`` branch.
 
-    Returns ``[(seg_idx, global_tray_id, segment_grams)]``. Empty when
-    ``tray_changes`` is empty; the caller decides whether to fall through to
-    single-tray attribution (``len(tray_changes) <= 1``).
+def _observed_layer(value) -> int | None:
+    """A positive layer number the printer reported, or None.
+
+    A coercion is not evidence: ``True`` is not layer 1 and ``"50"`` is not layer 50. Zero is
+    a reset or a field never filled, not "nothing was printed".
     """
-    if not tray_changes:
-        return []
-
-    grams = compute_layer_segment_grams(
-        boundary_layers=[layer for _, layer in tray_changes],
-        total_weight=total_weight,
-        slot_id=slot_id,
-        layer_usage=layer_usage,
-        density=density,
-        diameter=diameter,
-        total_layers=total_layers,
-        last_layer_num=last_layer_num,
-    )
-    return [
-        (seg_idx, tray_global, g) for seg_idx, ((tray_global, _), g) in enumerate(zip(tray_changes, grams, strict=True))
-    ]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not (math.isfinite(value) and value.is_integer()):
+        return None
+    layer = int(value)
+    return layer if layer > 0 else None
 
 
-def compute_layer_segment_grams(
+def _observed_progress(value) -> float | None:
+    """A positive progress percentage the printer reported, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    progress = float(value)
+    return progress if math.isfinite(progress) and progress > 0 else None
+
+
+@dataclass(frozen=True)
+class CompletionSnapshot:
+    """What the completion event says about how far the finished print got.
+
+    ``layer_num`` / ``total_layers`` / ``progress`` are the terminal frame's figures;
+    ``captured_*`` are the last positive values the MQTT client kept before the firmware
+    reset them (``last_layer_num`` / ``last_progress``). Every field is None when the event
+    does not carry it — a missing figure stays unknown, it is never read off the printer now.
+    """
+
+    layer_num: int | None = None
+    total_layers: int | None = None
+    progress: float | None = None
+    captured_layer: int | None = None
+    captured_progress: float | None = None
+
+    @classmethod
+    def from_event(cls, data: Mapping | None) -> CompletionSnapshot:
+        data = data or {}
+        return cls(
+            layer_num=_observed_layer(data.get(TERMINAL_LAYER_NUM)),
+            total_layers=_observed_layer(data.get(TERMINAL_TOTAL_LAYERS)),
+            progress=_observed_progress(data.get(TERMINAL_PROGRESS)),
+            captured_layer=_observed_layer(data.get("last_layer_num")),
+            captured_progress=_observed_progress(data.get("last_progress")),
+        )
+
+    @property
+    def progress_percent(self) -> float | None:
+        """The terminal frame's progress, else the captured one."""
+        return self.progress or self.captured_progress
+
+
+@dataclass(frozen=True)
+class PrintedBound:
+    """The layer a print's weight may be divided up to (H), and where it came from.
+
+    ``layer`` None means no observed boundary. ``total_layers`` is the plate's layer count
+    (L) when the event knew it — for a print that did not finish it bounds H, it never is H.
+    """
+
+    completed: bool
+    layer: int | None
+    source: str
+    total_layers: int | None = None
+
+
+def printed_bound(*, completed: bool, snapshot: CompletionSnapshot) -> PrintedBound:
+    """Choose H once per completion, from the event alone (spec r2 R2).
+
+    Completed: the plate's layer count, else the terminal layer, else the captured one. A
+    captured layer that lags the finish (L−1) never shortens a known L.
+    Partial: the terminal layer, else — when the firmware zeroed it — the captured one. L,
+    the largest journal boundary and a full G-code timeline say nothing about where a
+    stopped print stopped; neither does a layer estimated from the progress percentage. A
+    layer beyond a known L is not evidence of anything, so it is no boundary at all.
+    """
+    total = snapshot.total_layers
+    if completed:
+        if total:
+            return PrintedBound(True, total, "total_layers", total)
+        for source, layer in (("current", snapshot.layer_num), ("captured", snapshot.captured_layer)):
+            if layer:
+                return PrintedBound(True, layer, source)
+        return PrintedBound(True, None, "none")
+    for source, layer in (("current", snapshot.layer_num), ("captured", snapshot.captured_layer)):
+        if layer:
+            if total and layer > total:
+                logger.info(
+                    "[TraySplit] %s layer %d is past the plate's %d layers — no printed boundary", source, layer, total
+                )
+                return PrintedBound(False, None, f"{source}_past_total", total)
+            return PrintedBound(False, layer, source, total)
+    return PrintedBound(False, None, "none", total)
+
+
+@dataclass(frozen=True)
+class WeightSplit:
+    """A slot's weight divided between its boundaries.
+
+    ``grams[i]`` belongs to the stretch that starts at the i-th boundary. ``unknown_start``
+    is the share printed before the first boundary — a stretch no boundary names, so it is
+    nobody's. Together they add up to the weight that was divided.
+    """
+
+    grams: list[float]
+    unknown_start: float = 0.0
+
+
+def _boundaries_are_usable(boundary_layers: list) -> bool:
+    previous = 0
+    for layer in boundary_layers:
+        if isinstance(layer, bool) or not isinstance(layer, int) or layer < previous:
+            return False
+        previous = layer
+    return True
+
+
+def _gcode_scale(layer_usage, filament_id: int, bound: PrintedBound):
+    """The slot's own G-code timeline as a fraction function of the layer, or None.
+
+    Completed: the whole timeline of the slot (it printed to the end; no H is needed).
+    Partial: the timeline up to H, so the fractions describe what was actually printed.
+    Usable only with this slot's positive cumulative extrusion; another slot's data is no
+    scale for this one.
+    """
+    if not layer_usage:
+        return None
+    final = layer_usage.get(max(layer_usage), {}).get(filament_id, 0)
+    if not final or final <= 0:
+        return None
+
+    def cumulative(layer: int) -> float:
+        return threemf_tools.get_cumulative_usage_at_layer(layer_usage, layer).get(filament_id, 0)
+
+    if bound.completed:
+        return lambda layer: 0.0 if layer <= 0 else min(cumulative(layer) / final, 1.0)
+    if bound.layer is None:
+        return None
+    horizon = bound.layer
+    printed = cumulative(horizon)
+    if printed <= 0:
+        return None
+    return lambda layer: 0.0 if layer <= 0 else min(cumulative(min(layer, horizon)) / printed, 1.0)
+
+
+def split_weight(
     boundary_layers: list[int],
     total_weight: float,
     slot_id: int,
     layer_usage: dict[int, dict[int, float]] | None,
-    density: float,
-    diameter: float,
-    total_layers: int,
-    last_layer_num: int,
-) -> list[float]:
-    """Split ``total_weight`` across segments starting at ``boundary_layers``.
+    bound: PrintedBound,
+) -> WeightSplit | None:
+    """Divide ``total_weight`` between the stretches starting at ``boundary_layers``.
 
-    The layer-boundary half of :func:`compute_tray_split_grams`, factored out
-    so the runout journal (whose boundaries are spool changes on ONE tray, not
-    tray changes) shares the identical preference order: G-code cumulative →
-    linear layer-ratio → equal split, with the last segment absorbing rounding
-    drift. Returns one grams figure per boundary, in order.
+    The slot's own G-code timeline measures each stretch when it is usable (``_gcode_scale``);
+    otherwise the layer ratio within ``[0, H]``: ``total_weight × clipped length / H``. A
+    stretch that starts at H or later printed nothing of this weight. A boundary list that
+    is not a non-decreasing run of layer numbers is no geometry to divide by.
+
+    Returns None when nothing reported tells how to divide — the caller then charges a
+    single proven owner or reports the weight not recorded (R6). A single stretch from
+    layer 0 is the whole weight without any H.
     """
     if not boundary_layers:
-        return []
+        return WeightSplit([])
+    if not _boundaries_are_usable(boundary_layers):
+        return None
+    weight = float(total_weight)
+    if len(boundary_layers) == 1 and boundary_layers[0] == 0:
+        return WeightSplit([weight])
 
-    filament_id = slot_id - 1  # 0-based for gcode
-    n_segments = len(boundary_layers)
-    denom = total_layers or last_layer_num
-    grams: list[float] = []
-    sum_previous = 0.0
+    fraction = _gcode_scale(layer_usage, slot_id - 1, bound)
+    points = [fraction(layer) for layer in boundary_layers] if fraction is not None else None
+    if points is not None and any(later < earlier for earlier, later in zip(points, points[1:], strict=False)):
+        points = None  # a timeline that runs backwards measures nothing
+    if points is None:
+        if bound.layer is None:
+            return None
+        horizon = bound.layer
+        points = [min(layer, horizon) / horizon for layer in boundary_layers]
 
-    # How much of the slot's own gcode timeline was actually laid down. The
-    # fractions below are fractions of the WHOLE plate ("exact at completion",
-    # slot_progress_fraction's docstring), but a failed print's caller has
-    # ALREADY shortened total_weight to estimate x progress — multiplying the
-    # two applies the shortening twice to every segment but the last, which
-    # then swallows the difference as if it were rounding drift. Dividing each
-    # segment by the printed fraction restores the division; at completion the
-    # fraction is 1.0 and this is a no-op. None (no gcode, or the last layer was
-    # never captured) leaves the historical behaviour untouched.
-    printed_fraction = None
-    if layer_usage and last_layer_num > 0:
-        printed_fraction = threemf_tools.slot_progress_fraction(layer_usage, filament_id, last_layer_num)
-        if not printed_fraction or printed_fraction <= 0:
-            printed_fraction = None
+    edges = [*points, 1.0]
+    shares = [edges[i + 1] - edges[i] for i in range(len(boundary_layers))]
+    unknown_share = points[0]
+    grams = [weight * share for share in shares]
+    unknown = weight * unknown_share
 
-    for seg_idx, seg_start_layer in enumerate(boundary_layers):
-        is_last = seg_idx + 1 >= n_segments
+    # Float drift goes to the last stretch that really printed something — never to a
+    # stretch past the boundary, which would take another reel's grams.
+    positive = [i for i, share in enumerate(shares) if share > 0]
+    if positive:
+        last = positive[-1]
+        grams[last] = weight - unknown - sum(g for i, g in enumerate(grams) if i != last)
+    elif unknown_share > 0:
+        unknown = weight
+    return WeightSplit(grams, unknown)
 
-        if is_last:
-            # Last segment: remainder to avoid rounding drift.
-            segment_grams = total_weight - sum_previous
-        elif layer_usage:
-            # Proportional along the slot's own gcode timeline, scaled to the
-            # total: absolute mm→grams silently dumped the whole flush budget
-            # (which never appears as gcode extrusion) onto the LAST segment.
-            seg_end_layer = boundary_layers[seg_idx + 1]
-            f_start = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_start_layer)
-            f_end = threemf_tools.slot_progress_fraction(layer_usage, filament_id, seg_end_layer)
-            if f_start is not None and f_end is not None:
-                span = max(0.0, f_end - f_start)
-                if printed_fraction is not None:
-                    span = min(span / printed_fraction, 1.0)
-                segment_grams = total_weight * span
-            elif denom > 0:
-                segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
-            else:
-                segment_grams = total_weight / n_segments
-        else:
-            # No per-layer data: linear fallback by layer ratio (#1771).
-            seg_end_layer = boundary_layers[seg_idx + 1]
-            if denom > 0:
-                segment_grams = total_weight * (seg_end_layer - seg_start_layer) / denom
-            else:
-                segment_grams = total_weight / n_segments
 
-        sum_previous += segment_grams
-        grams.append(segment_grams)
+def sole_owner(stretches: list[tuple[int, object]]) -> object | None:
+    """The one reel that provably fed the whole print, or None (R6).
 
-    return grams
+    ``stretches`` is ``[(start_layer, proven identity)]`` in order; None is an identity
+    nobody proved. Several stretches of the same reel are one owner — but only when they
+    cover the print from layer 0: what came before the first one is nobody's to give it.
+    """
+    if not stretches or stretches[0][0] != 0 or any(owner is None for _, owner in stretches):
+        return None
+    first = stretches[0][1]
+    return first if all(owner == first for _, owner in stretches) else None

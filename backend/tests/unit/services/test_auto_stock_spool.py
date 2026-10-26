@@ -471,6 +471,7 @@ async def test_auto_refill_journal_splits_real_completion_at_runout(db_session, 
     from backend.app.services.print_usage_journal import load_events
     from backend.app.services.usage_tracker import _active_sessions, on_print_complete
     from backend.tests.unit.services.test_usage_tracker_runout import (
+        _completed,
         _journal,
         _make_archive,
         _patched_3mf,
@@ -496,9 +497,7 @@ async def test_auto_refill_journal_splits_real_completion_at_runout(db_session, 
     try:
         p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
         with p1, p2:
-            await on_print_complete(
-                p.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
-            )
+            await on_print_complete(p.id, _completed(200), _pm(total_layers=200), db_session, archive_id=archive.id)
         await db_session.refresh(old)
         await db_session.refresh(new)
         assert old.weight_used == pytest.approx(1000)

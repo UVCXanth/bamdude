@@ -114,23 +114,17 @@ def chronology_with_journal(
     return chronology
 
 
-def split_is_measured(
-    intervals: list[FeedInterval], slot_id: int, layer_usage, total_layers: int, last_layer_num: int
-) -> bool:
-    """Can a slot's grams be divided between ``intervals`` from facts (post-rebuild F6)?
+def not_recorded_tray(trays: list[int]) -> int:
+    """The tray a weight that could not be divided is reported under (spec r2 R6).
 
-    The slot's own G-code progress, or a layer count to take a share of, measures each interval;
-    without either, ``tray_split.compute_layer_segment_grams`` falls back to equal shares — a
-    guess. A guess is never made for a chronology that states part of the feed unknown: the
-    caller reports the slot not recorded instead.
+    One tray named the whole way — several reels in it — is that tray: the slot is known, only
+    the reels' shares are not. Several trays, or a feed nobody observed, is ``UNKNOWN_FEED``
+    ("?"): no tray may be shown a figure that was never measured for it.
     """
-    from backend.app.utils.threemf_tools import slot_progress_fraction
-
-    if not any(iv.tray == UNKNOWN_FEED for iv in intervals) or len(intervals) < 2:
-        return True
-    if layer_usage and slot_progress_fraction(layer_usage, slot_id - 1, 0) is not None:
-        return True
-    return int(total_layers or 0) > 0 or int(last_layer_num or 0) > 0
+    named = set(trays)
+    if len(named) == 1 and UNKNOWN_FEED not in named:
+        return next(iter(named))
+    return UNKNOWN_FEED
 
 
 def normalize_tray_changes(tray_changes: list[tuple[int, int]] | None) -> list[tuple[int, int]]:

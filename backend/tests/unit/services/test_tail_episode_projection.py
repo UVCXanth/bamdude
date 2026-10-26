@@ -23,11 +23,14 @@ from backend.app.models.print_usage_event import (
     KIND_PAUSE,
 )
 from backend.app.services.usage_tracker import journal_boundaries_for_tray
-from backend.app.utils.tray_split import compute_layer_segment_grams
+from backend.app.utils.tray_split import PrintedBound, split_weight
 from backend.app.utils.usage_attribution import FeedInterval, feed_intervals
 
 OLD, NEW, NEXT = 309, 313, 314
 T0 = 0
+
+#: A print that finished its 100-layer plate.
+COMPLETED_AT_100 = PrintedBound(completed=True, layer=100, source="total_layers", total_layers=100)
 
 
 class Journal:
@@ -172,16 +175,7 @@ def test_known_and_unrecorded_weight_add_up():
         .add(EVENT_FEED_RETURN, 50, spool=NEW, kind=KIND_GAP)
     )
     segs = journal_boundaries_for_tray(j.events, T0)
-    grams = compute_layer_segment_grams(
-        boundary_layers=[s[0] for s in segs],
-        total_weight=100.0,
-        slot_id=1,
-        layer_usage=None,
-        density=1.24,
-        diameter=1.75,
-        total_layers=100,
-        last_layer_num=100,
-    )
+    grams = split_weight([s[0] for s in segs], 100.0, 1, None, COMPLETED_AT_100).grams
     assert round(sum(grams), 6) == 100.0
     assert [s[1] for s in segs] == [OLD, None, NEW] and all(g > 0 for g in grams)
 
@@ -226,16 +220,7 @@ def test_an_unknown_feed_is_an_unrecorded_interval_between_known_ones():
         FeedInterval(40, UNKNOWN_FEED, None, None, True),  # explicitly nobody's
         FeedInterval(60, 3, NEXT, NEXT + 1000, True),  # the reel the tray change froze
     ]
-    grams = compute_layer_segment_grams(
-        boundary_layers=[iv.start_layer for iv in intervals],
-        total_weight=100.0,
-        slot_id=1,
-        layer_usage=None,
-        density=1.24,
-        diameter=1.75,
-        total_layers=100,
-        last_layer_num=100,
-    )
+    grams = split_weight([iv.start_layer for iv in intervals], 100.0, 1, None, COMPLETED_AT_100).grams
     assert round(sum(grams), 6) == 100.0 and all(g > 0 for g in grams)
 
 
