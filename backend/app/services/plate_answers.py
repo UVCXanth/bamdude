@@ -17,7 +17,6 @@ from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
 from backend.app.services.archive_write_scope import (
-    archive_process_lock,
     archive_write_scope,
     load_active_archive_for_write,
     locked_print,
@@ -193,18 +192,19 @@ async def answer_plate_run(
     async with _printer_locks[printer_id], AsyncExitStack() as write_scopes:
 
         async def guard_archive(archive_id):
-            # As with queue_ops.lane_held_in_process, a caller that may already
-            # own SQLite's writer must NEVER wait for a process guard: its
-            # holder can be waiting for that same writer. Refuse without ending
-            # the caller's transaction. Check and acquire have no intervening
-            # await that can suspend when the asyncio lock is free.
-            if (
-                db.get_bind().dialect.name == "sqlite"
-                and db.in_transaction()
-                and archive_process_lock(archive_id).locked()
-            ):
-                raise PlateAnswerBusy("This print is being changed; try clearing the plate again")
-            await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+            # A caller that may own SQLite's writer must never wait for a
+            # process guard. locked() alone misses an unlocked lock handing off
+            # to a queued waiter. With an active SQLite transaction the scope's
+            # entry has NO database I/O: it either enters immediately or a zero
+            # timeout cancels its first suspension, leaving caller work intact.
+            if db.get_bind().dialect.name == "sqlite" and db.in_transaction():
+                try:
+                    async with asyncio.timeout(0):
+                        await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+                except TimeoutError as exc:
+                    raise PlateAnswerBusy("This print is being changed; try clearing the plate again") from exc
+            else:
+                await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
 
         # SQLite must become the writer before receipt/gate/row reads.  When an
         # expected archive is present its archive scope does this; legacy calls

@@ -138,3 +138,47 @@ async def test_clear_refuses_writer_lock_cycle_then_retry_commits_exact_owner(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await engine.dispose()
+
+
+async def test_clear_refuses_an_unlocked_archive_guard_already_promised_to_a_waiter(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'handoff.db'}", connect_args={"timeout": 2})
+    sessions = async_sessionmaker(engine)
+    async with engine.begin() as connection:
+        await connection.execute(text("CREATE TABLE caller_work (id INTEGER PRIMARY KEY)"))
+    aid = 777
+    lock = archive_process_lock(aid)
+    waiting = asyncio.Event()
+
+    async def competitor():
+        async with sessions() as other:
+            waiting.set()
+            async with archive_write_scope(other, aid):
+                await other.execute(text("INSERT INTO caller_work VALUES (2)"))
+                await other.commit()
+
+    task = None
+    try:
+        async with sessions() as clear:
+            await clear.execute(text("BEGIN IMMEDIATE"))
+            await clear.execute(text("INSERT INTO caller_work VALUES (1)"))
+            await lock.acquire()
+            task = asyncio.create_task(competitor())
+            await waiting.wait()  # competitor has suspended on the archive guard
+            lock.release()  # unlocked, but acquire must honour its existing waiter
+            assert not lock.locked()
+            with pytest.raises(plate_answers.PlateAnswerBusy):
+                async with asyncio.timeout(0.75):
+                    # Direct await preserves this exact handoff interleaving.
+                    await plate_answers.answer_plate_run(clear, printer_id=777, expected_archive_id=aid, action="clear")
+            assert clear.in_transaction()
+            assert await clear.scalar(text("SELECT count(*) FROM caller_work WHERE id=1")) == 1
+            await clear.rollback()
+        await asyncio.wait_for(task, 5)
+        async with sessions() as verify:
+            assert await verify.scalar(text("SELECT count(*) FROM caller_work")) == 1
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await engine.dispose()
