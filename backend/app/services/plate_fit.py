@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import warnings
 from dataclasses import asdict, dataclass, field, replace
@@ -28,6 +29,8 @@ from backend.app.services import order_metrics, order_queue, plan_engine, queue_
 from backend.app.services.line_composition import counted, has_shelf
 from backend.app.services.preview_artifacts import disk
 from backend.app.services.product_composition import recipes_for_products
+
+logger = logging.getLogger(__name__)
 
 MAX_QUANTITY = 1_000_000
 MAX_SECONDS = 6.0
@@ -597,6 +600,8 @@ def solve(
             try:
                 with warnings.catch_warnings():
                     # SciPy passes ``threads`` to HiGHS verbatim and says so; that is exactly what is wanted here.
+                    # ``catch_warnings`` swaps the process-wide filters, so a concurrent solve may leave this one
+                    # narrow filter in place -- harmless: it matches nothing but this exact notice.
                     warnings.filterwarnings("ignore", r"Unrecognized options detected: \{'threads'\}", RuntimeWarning)
                     result = milp(
                         objective,
@@ -618,6 +623,10 @@ def solve(
                 return None, "limited"
             if result.status == 2:
                 break
+            if result.status not in (0, 1):
+                # Not a limit but an error of HiGHS itself (e.g. another thread count on a thread that already
+                # solved): the answer stays "limited", the reason must not vanish with it.
+                logger.warning("Plate fit: HiGHS failed (status %s): %s", result.status, getattr(result, "message", ""))
             if result.status != 0 or result.x is None or len(result.x) != size:
                 return None, "limited"
             values = [int(round(v)) for v in result.x]

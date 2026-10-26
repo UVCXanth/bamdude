@@ -26,18 +26,19 @@ def test_a_solve_starts_no_highs_worker_threads_and_warns_nothing():
 
     def run():
         process = psutil.Process()
-        before = process.num_threads()
+        before = {thread.id for thread in process.threads()}
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             proposal, status = solve(farm(), 1001, 1100, 1)
         seen.update(status=status, quantity=proposal.quantity if proposal else None)
-        seen["extra"] = process.num_threads() - before
+        # New OS threads only: another thread of the process ending meanwhile changes nothing here.
+        seen["started"] = {thread.id for thread in process.threads()} - before
 
     worker = threading.Thread(target=run)
     worker.start()
     worker.join(60)
     assert (seen.get("status"), seen.get("quantity")) == ("found", 1010), seen
-    assert seen["extra"] == 0, seen
+    assert seen["started"] == set(), seen
 
 
 def test_the_solver_is_asked_for_one_thread(monkeypatch):
@@ -58,6 +59,21 @@ def test_plate_fit_is_the_only_highs_caller():
     callers = sorted(
         path.relative_to(APP).as_posix()
         for path in APP.rglob("*.py")
-        if re.search(r"\b(milp|linprog|_highspy)\b", path.read_text(encoding="utf-8"))
+        if re.search(r"\b(milp|linprog|_?highspy|wasserstein_distance_nd)\b", path.read_text(encoding="utf-8"))
     )
     assert callers == ["services/plate_fit.py"], callers
+
+
+def test_a_solver_error_is_logged_not_only_called_limited(monkeypatch, caplog):
+    """A HiGHS error -- e.g. another thread count on a thread that already solved -- leaves a trace in the log."""
+    import logging
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        scipy.optimize,
+        "milp",
+        lambda *args, **kwargs: SimpleNamespace(status=4, x=None, message="(HiGHS Status 0: Not Set)"),
+    )
+    with caplog.at_level(logging.WARNING, logger="backend.app.services.plate_fit"):
+        assert solve(farm(), 1001, 1100, 1) == (None, "limited")
+    assert any("HiGHS Status 0: Not Set" in record.getMessage() for record in caplog.records), caplog.records
