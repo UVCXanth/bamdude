@@ -8,9 +8,10 @@ synthetic. Sessions share the in-memory engine here; independent sessions are th
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from sqlalchemy import event, func, select
@@ -374,6 +375,70 @@ async def test_an_unrecorded_release_still_explains_the_pause_and_says_its_resul
     monkeypatch.setattr(tokens, "_INCARNATION", "after-a-restart")
     (row,) = _repair_rows(await store.list_issues(db_session, None), a01.printer_id)
     assert row["last_repair"]["process_ended"] is True
+
+
+async def _synthetic_attempts(db, printer_id, queue_id, *, count, start, outcome, archive_id=None):
+    """Valid audit pairs of this action for ``printer_id``, ``start`` onwards, a second apart."""
+    for n in range(count):
+        nonce = str(uuid4())
+        for phase in ("intent", "outcome"):
+            result = {"phase": phase, "before": {"queue_was_paused": True}, "incarnation": "synthetic"}
+            if phase == "outcome":
+                result.update(outcome=outcome, operation_id=nonce, reason="context_changed")
+            db.add(
+                PrintStateRecoveryAction(
+                    id=nonce if phase == "intent" else store.outcome_id(nonce),
+                    created_at=start + timedelta(seconds=n, microseconds=0 if phase == "intent" else 1),
+                    actor="user:1",
+                    actor_label="Operator",
+                    printer_id=printer_id,
+                    queue_id=queue_id,
+                    archive_id=archive_id,
+                    action=RUNTIME_ACTION,
+                    input_hash="h",
+                    result=result,
+                )
+            )
+    await db.commit()
+
+
+async def test_another_printers_history_never_hides_a_pause_explanation(db_session, a01, printer_factory, test_engine):
+    """RS2-R1: each printer's latest attempt is chosen on its own -- a busy history elsewhere cannot crowd it out,
+    and the read stays a fixed number of statements however long the histories are."""
+    _, payload = await preview(db_session, a01)
+    assert (await apply(a01, payload))["outcome"] == "applied"
+    other = await printer_factory()
+    queue = PrinterQueue(printer_id=other.id, status="idle", is_paused=True)
+    db_session.add(queue)
+    await db_session.flush()
+    later = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1)
+    await _synthetic_attempts(db_session, other.id, queue.id, count=60, start=later, outcome="not_applied_changed")
+    statements = []
+
+    def count(_conn, _cursor, statement, *_args):
+        if "print_state_recovery_actions" in statement:
+            statements.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+    try:
+        page = await store.list_issues(db_session, None)
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+    shown = {r["printer_id"]: r for r in page["issues"] if r["kind"] == "repair"}
+    assert set(shown) == {a01.printer_id, other.id}, page
+    assert shown[a01.printer_id]["last_repair"]["outcome"] == "applied"
+    assert len(statements) <= 3, statements  # the candidates' EXISTS, the latest intents, their outcomes
+
+
+async def test_the_latest_of_several_attempts_is_shown_with_its_own_outcome(db_session, a01):
+    earlier = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+    await _synthetic_attempts(
+        db_session, a01.printer_id, a01.queue_id, count=3, start=earlier, outcome="not_applied_changed", archive_id=7
+    )
+    _, payload = await preview(db_session, a01)
+    assert (await apply(a01, payload))["outcome"] == "applied"
+    (row,) = _repair_rows(await store.list_issues(db_session, None), a01.printer_id)
+    assert (row["last_repair"]["outcome"], row["last_repair"]["archive_id"]) == ("applied", a01.archive_id)
 
 
 async def test_a_queue_paused_by_hand_gets_no_repair_row(db_session, a01):

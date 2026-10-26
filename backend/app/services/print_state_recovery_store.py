@@ -605,25 +605,36 @@ def _episode_issue(key, episode, item) -> dict:
 async def _last_repairs(db, printer_ids: list[int]) -> dict[int, dict]:
     """Each printer's latest in-memory repair and how it ended: why its queue may be paused (R8.6, A26).
 
-    Two bounded reads for the page: the latest intents, then their outcomes by their own ids.
+    Two bounded reads for the page: each printer's own latest intent -- ranked per printer, so another printer's
+    longer history can never crowd it out -- then their outcomes by their own ids.
     """
     if not printer_ids:
         return {}
+    ranked = (
+        select(
+            PrintStateRecoveryAction.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=PrintStateRecoveryAction.printer_id,
+                order_by=(PrintStateRecoveryAction.created_at.desc(), PrintStateRecoveryAction.id.desc()),
+            )
+            .label("rank"),
+        )
+        .where(
+            PrintStateRecoveryAction.printer_id.in_(printer_ids),
+            PrintStateRecoveryAction.action == RUNTIME_ACTION,
+            PrintStateRecoveryAction.result["phase"].as_string() == "intent",
+        )
+        .subquery()
+    )
     rows = (
         await db.scalars(
-            select(PrintStateRecoveryAction)
-            .where(
-                PrintStateRecoveryAction.printer_id.in_(printer_ids),
-                PrintStateRecoveryAction.action == RUNTIME_ACTION,
+            select(PrintStateRecoveryAction).where(
+                PrintStateRecoveryAction.id.in_(select(ranked.c.id).where(ranked.c.rank == 1))
             )
-            .order_by(PrintStateRecoveryAction.created_at.desc(), PrintStateRecoveryAction.id.desc())
-            .limit(20 * len(printer_ids))
         )
     ).all()
-    latest = {}
-    for row in rows:
-        if isinstance(row.result, dict) and row.result.get("phase") == "intent":
-            latest.setdefault(row.printer_id, row)
+    latest = {row.printer_id: row for row in rows if isinstance(row.result, dict)}
     outcomes = {
         row.id: row
         for row in (
