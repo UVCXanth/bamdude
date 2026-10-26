@@ -229,6 +229,7 @@ async def test_pooled_recount_refuses_later_sibling_until_reviewed_reversal(comm
     assert (await committing_client.post(f"/api/v1/projects/{s['order']}/lines", json=body)).status_code == 200
     edited = await committing_client.patch(f"/api/v1/projects/{s['order']}/lines/{s['line']}", json={"quantity": 1})
     assert edited.status_code == 200, edited.text
+    db_session.expire_all()  # the API committed through another session
     ctx = await order_metrics.load_order_context(db_session, s["order"])
     assert (
         sum(p.usable for f in order_metrics.attribute(ctx)[0].values() for p in f.parts if p.part_id == s["b"].id) == 10
