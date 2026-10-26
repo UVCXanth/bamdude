@@ -724,17 +724,17 @@ class TestLineDoorLockOrder:
         assert result["which"] == "waiting", result
         assert result["consistent"], result
 
-    def test_a_line_whose_stock_changed_meanwhile_is_refused_not_locked_late(self, tmp_path_factory):
-        """BL6: the position appeared after the door read the line's positions — the door
-        refuses and writes nothing, rather than locking a position after the line."""
+    def test_a_first_stock_position_waits_for_the_quantity_edits_product_gate(self, tmp_path_factory):
+        """BL6: position creation cannot change the edit's lock set behind its gate.
+        PostgreSQL must show C waiting; both actual operations then commit."""
         url = _pg_url()
         _wipe(url)
         result = _run("line_set_changed", tmp_path_factory.mktemp("pg_line_set_changed"), url)
-        assert result["a"].startswith("http:409:"), result
-        assert "stock changed" in result["a"], result
-        assert result["quantity"] == 5, result
+        assert (result["a"], result["c"], result["which"]) == ("ok", "ok", "waiting"), result
+        assert result["quantity"] == 4, result
+        assert result["on_hand"] == 2, result
         assert result["movements_by_line"] == 0, result
-        assert result["events"] == 0, result
+        assert result["events"] == 1, result
 
     def test_deleting_an_order_another_door_is_writing_to_refuses_at_once(self, tmp_path_factory):
         """BL6: the order row goes last and FOR UPDATE NOWAIT — the delete never waits

@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- Order recounts: refuse later redistribution of pooled completed output until outstanding corrections are explicitly reversed; shared-output dialogs retain a reviewed reversal path.
+- Order recounts: refuse later redistribution of pooled completed output, including foreign parts of explicitly filed mixed-product prints, until outstanding corrections are explicitly reversed. Shared-output dialogs retain a reviewed reversal path; genuine home parts stay editable.
 
 - An order line's expanded parts table can record a physical recount of its loose printed parts. Review actual counts, give a reason and confirm: shortages or found parts become signed corrections with an order-journal entry, future prints add normally, and print history and stock movements stay intact. Received or issued goods, reserved stock and banked surplus are excluded; queues and the working plan remain under explicit operator control.
 

@@ -28,7 +28,8 @@ async def ensure_attribution_can_change(db, project_id, product_ids, *, configur
     """Do not redistribute pooled raw yield away from an outstanding signed count.
 
     The caller holds the existing product gates/stock locks, as recount does.
-    Explicitly filed output is independent of line need and stays editable.
+    Genuine home rows of explicitly filed output stay editable; foreign rows
+    still enter the shared allocator and depend on line need.
     A pooled correction must be reversed through the reviewed recount door
     before adding siblings or changing their need/configuration/reservations.
     """
@@ -43,17 +44,9 @@ async def ensure_attribution_can_change(db, project_id, product_ids, *, configur
     if not corrected:
         return
     ctx = await order_metrics.load_order_context(db, project_id)
-    line_ids = {line.id for line in ctx.lines}
-    if configuration or any(
-        a.status == "completed"
-        and a.project_line_id not in line_ids
-        and corrected.intersection(
-            order_metrics.products_for_print(
-                ctx.plate_product, ctx.whole_file_product, library_file_id=a.library_file_id, plate_index=a.plate_index
-            )
-        )
-        for a in ctx.archives
-    ):
+    pooled = set()
+    order_metrics.attribute(ctx, redistributable_to=pooled)
+    if configuration or any(line.product_id in corrected and line.id in pooled for line in ctx.lines):
         raise HTTPException(409, "Reverse this product's recount corrections before redistributing pooled order output")
 
 
@@ -109,7 +102,8 @@ async def state(db, project_id, line_id):
     line = next((ln for ln in ctx.lines if ln.id == line_id), None)
     if line is None:
         raise HTTPException(404, "Order line not found")
-    figures, _ = order_metrics.attribute(ctx)
+    pooled = set()
+    figures, _ = order_metrics.attribute(ctx, redistributable_to=pooled)
     rows = []
     # made_for_order is the printed share of receipts (the rest came from stock).
     for pf in figures[line_id].parts:
@@ -134,12 +128,15 @@ async def state(db, project_id, line_id):
         )
     # A pooled print can move between sibling lines when their need changes.
     # Do not turn one ambiguous share into an authoritative physical count.
-    shared = any(
-        other.id != line_id
-        and other.product_id == line.product_id
-        and (not other.material or not line.material or other.material.upper() == line.material.upper())
-        for other in ctx.lines
-    ) and any(a.status == "completed" and a.project_line_id not in figures for a in ctx.archives)
+    shared = (
+        any(
+            other.id != line_id
+            and other.product_id == line.product_id
+            and (not other.material or not line.material or other.material.upper() == line.material.upper())
+            for other in ctx.lines
+        )
+        and line_id in pooled
+    )
     blocked = (
         "order_recount_closed"
         if ctx.project.status != "active"

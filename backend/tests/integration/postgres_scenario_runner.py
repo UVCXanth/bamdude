@@ -23,8 +23,8 @@ Modes:
                           before waiting for shared file analysis
     line_door_deadlock a line's quantity change against an issue of the same line,
                        both stopped inside their operations (WS-13 E1, Q16)
-    line_set_changed   a line's positions change between the door reading them and
-                       locking the line: the door refuses (WS-13 E1, BL6)
+    line_set_changed   a concurrent first stock position waits on the line edit's
+                       product gate, rather than changing its lock set (BL6)
     order_delete_busy  deleting an order another door is writing to refuses at once
     protocol:<a…i>     the lock protocol's scenarios under two real sessions
                        (lock_protocol_scenarios.py; WS-13 E1 T1)
@@ -1025,24 +1025,26 @@ async def _line_door_deadlock() -> dict:
 
 
 async def _line_set_changed() -> dict:
-    """BL6: a line's positions change between the door reading them and locking the line.
+    """BL6: the product gate now fences a line edit's stock-position set.
 
     A — ``PATCH …/lines/{L}`` quantity 5 → 4 — stops right after it read the line's
-    positions (none: its configuration has no position yet). C receives the first
-    units of that configuration — the line's own position now exists — and commits.
-    A goes on: it must refuse (409), never lock the new position after the line.
+    positions (none: its configuration has no position yet). C tries to receive
+    the first units of that configuration. A already holds the product gate, so
+    C must wait BEFORE creating the position, then finish after A commits. The
+    old coordinator awaited C synchronously while holding A at its barrier,
+    creating a test-only wait cycle once recount put that gate on quantity edits.
     """
     from sqlalchemy import func, select
 
     from backend.app.api.routes import projects as projects_routes
-    from backend.app.core.database import async_session
+    from backend.app.core.database import async_session, engine
     from backend.app.models.finished_stock import StockItemMovement
     from backend.app.models.product import Product
     from backend.app.models.project import Project, ProjectEvent
     from backend.app.models.project_line import ProjectLine
     from backend.app.schemas.project import ProjectLineUpdate
     from backend.app.services import finished_stock, line_config
-    from backend.tests.integration.lock_barriers import Barriers
+    from backend.tests.integration.lock_barriers import Barriers, backend_pid, first_of
 
     async with async_session() as setup:
         lamp = Product(name="BL6 lamp")
@@ -1060,6 +1062,8 @@ async def _line_set_changed() -> dict:
 
     barriers = Barriers()
     barriers.wrap(finished_stock, "_line_position_ids")
+    barriers.wrap(finished_stock, "product_gate")
+    pid_c = asyncio.get_running_loop().create_future()
     holds: dict[str, object] = {}
 
     async def run_a() -> str:
@@ -1072,18 +1076,32 @@ async def _line_set_changed() -> dict:
                 ),
             )
 
+    async def run_c() -> str:
+        async with async_session() as db:
+            holds["c"] = barriers.hold(db, after=1)
+            pid_c.set_result(await backend_pid(db))
+            item = await finished_stock.item_for(db, lamp_id, {}, create=True)
+            await finished_stock.receive(db, item, 2)
+            await db.commit()
+            return "ok"
+
+    tasks = []
     try:
         task_a = asyncio.create_task(run_a())
+        tasks.append(task_a)
         hold_a = await _hold_of(holds, "a")
         await asyncio.wait_for(hold_a.reached.wait(), timeout=15)
-        async with async_session() as c:
-            item = await finished_stock.item_for(c, lamp_id, {}, create=True)
-            await finished_stock.receive(c, item, 2)
-            await c.commit()
+        task_c = asyncio.create_task(run_c())
+        tasks.append(task_c)
+        which = await first_of(await _hold_of(holds, "c"), engine, pid_c)
         barriers.release_all()
-        outcome_a = await asyncio.wait_for(task_a, timeout=60)
+        outcome_a, outcome_c = await asyncio.wait_for(asyncio.gather(*tasks), timeout=60)
     finally:
         barriers.restore()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async with async_session() as db:
         line_after = await db.get(ProjectLine, line_id)
@@ -1093,8 +1111,12 @@ async def _line_set_changed() -> dict:
         events = await db.scalar(
             select(func.count()).select_from(ProjectEvent).where(ProjectEvent.project_id == order_id)
         )
+        item = await finished_stock.item_for(db, lamp_id, {}, create=False)
     return {
         "a": outcome_a,
+        "c": outcome_c,
+        "which": which,
+        "on_hand": item.on_hand,
         "quantity": line_after.quantity,
         "movements_by_line": int(movements_by_line or 0),
         "events": int(events or 0),

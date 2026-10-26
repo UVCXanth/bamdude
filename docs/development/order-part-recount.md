@@ -41,9 +41,10 @@ line/configuration, protected quantities and journal generation. A changed input
 or repeated old request returns 409, including correction/reversal ABA; the UI
 requires a fresh count review and never automatically replays a write.
 
-Pooled completed prints shared by several compatible lines must first be filed
-under their actual lines; an ambiguous share is not an authoritative physical
-count. Corrections belong to a line's output, not the product's free stock. Do not
+Completed part rows shared by several compatible lines have an ambiguous share
+and cannot supply an authoritative initial physical count. An explicit archive
+filing pins only the rows counted by its home line; foreign rows still enter
+the pooled allocator. Corrections belong to a line's output, not the product's free stock. Do not
 duplicate a line's existing counts onto another line. Copies of orders start
 without recount corrections. A corrected part cannot be removed/merged or its
 catalog count changed until the correction is reversed. Deleting the corrected
@@ -58,8 +59,11 @@ has outstanding recount corrections and pooled completed output, its line intake
 quantity/material/reservation edits and stock offers refuse redistribution with
 an explicit reversal instruction. Reconfiguration of corrected products also
 refuses, since it can move explicitly filed foreign parts to siblings. The existing
-product gates serialize these checks with recount. Explicitly filed output can
-still receive ordinary quantity edits; note/color edits and other products remain
+product gates serialize these checks with recount. The allocator itself reports
+eligible receivers of pooled rows, using its existing aliases, configuration,
+plate and material rules; both the edit guard and shared/reversal detection read
+that result. Genuine home rows of explicitly filed output can still receive
+ordinary quantity edits; note/color edits and other products remain
 editable. New completed output is counted normally. If later pooled output makes
 an existing count ambiguous, the dialog offers **Review reversal of existing
 corrections**: reason, review and confirmation are still required, and the server
@@ -70,6 +74,11 @@ change; a persistent attribution ledger would introduce another accounting model
 The bounded refusal/reversal option instead reuses the existing product gate,
 line edit and recount workflow. Neither alternative is needed for this fix.
 
+The PostgreSQL line-edit scenario observes a concurrent first stock-position
+creation waiting on that product gate, then releases the editor and verifies
+both commits. Its coordinator must not synchronously await the stock writer
+while holding the editor at a barrier: that would create a test-only wait cycle.
+
 The correction updates the normal figures used by plan, forecast, exact plate
 fit and fulfilment. It neither edits nor removes either queue and never changes
 printer settings. The working draft remains operator intent: use the existing
@@ -79,7 +88,7 @@ controls if needed. Recount itself never prints, clears a plate or changes print
 
 ## PR boundaries
 
-This feature is rebased onto upstream `feature/v0.7.2-fixes` after #99 and #100
+This feature is rebased onto upstream `feature/v0.7.2-fixes` after #99, #100 and #102
 were merged. It reuses their optional plan-preparation callback so opening an
 order-changing action flushes the current editor first; printer restrictions
 and fleet allocation are preserved. No generated `static/` files are included.
