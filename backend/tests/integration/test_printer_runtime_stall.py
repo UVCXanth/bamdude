@@ -19,7 +19,12 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import print_state_recovery_store as store
-from backend.app.services.print_run_binding import bind_prepared_print_run, bind_print_run, current_print_run
+from backend.app.services.print_run_binding import (
+    begin_print_run_finishing,
+    bind_prepared_print_run,
+    bind_print_run,
+    current_print_run,
+)
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.integration.test_dispatch_attempt_verdicts import a_job_and_its_dispatch, one_tick
 from backend.tests.integration.test_dispatch_without_original import (  # noqa: F401 - fixtures
@@ -59,6 +64,7 @@ def clock(monkeypatch):
     fake = FakeClock()
     monkeypatch.setattr(store, "clock", fake)
     monkeypatch.setattr(store, "_runtime_observations", {})
+    monkeypatch.setattr(store, "_observations", {})
     return fake
 
 
@@ -175,6 +181,58 @@ async def test_a_reconciled_run_whose_context_stayed_is_shown(
     assert issue["actions"] == ["clear_terminal_runtime_context"], issue["blocked_reasons"]
     assert issue["context"] == {"archive_id": archive_id, "queue_item_id": item_id, "origin": "dispatch"}
     assert issue["queue_paused"] is False
+
+
+async def test_a_row_seen_on_every_read_keeps_its_whole_age(db_session, printer_factory, telemetry, runtime, clock):
+    """A context still seen is never forgotten mid-way: no read hides it, and its age keeps growing."""
+    printer = await printer_factory()
+    await a_stale_context_on(db_session, printer.id)
+    telemetry.state = "FINISH"
+    issue, _page = await listed(db_session, clock, printer.id)
+    assert issue is not None and issue["age_seconds"] == 11
+    age = 11
+    for step in (60, 120, 120, 15, 300):
+        clock.advance(step)
+        age += step
+        page = await store.list_issues(db_session, None)
+        rows = [r for r in page["issues"] if r["printer_id"] == printer.id and r["kind"] == "runtime"]
+        assert [r["age_seconds"] for r in rows] == [age], (age, rows)
+
+
+async def test_a_completion_still_finishing_is_shown_only_past_its_budget(
+    db_session, printer_factory, telemetry, runtime, clock
+):
+    """A live completion's finishing lease lasts as long as its effects (photo, cleanup, timelapse): that is an
+    ordinary phase. Only one that outlives the completion budget is shown -- as an observation with its age."""
+    printer = await printer_factory()
+    bind_print_run(printer_manager, printer_id=printer.id, archive_id=77, origin="dispatch")
+    begin_print_run_finishing(printer_manager, printer.id, 77)
+    telemetry.state = "FINISH"
+
+    def rows(page):
+        return [r for r in page["issues"] if r["printer_id"] == printer.id and r["kind"] == "runtime"]
+
+    assert rows(await store.list_issues(db_session, None)) == []
+    clock.advance(store.LINGERING_SECONDS - 1)
+    assert rows(await store.list_issues(db_session, None)) == []
+    clock.advance(2)
+    (row,) = rows(await store.list_issues(db_session, None))
+    assert row["code"] == "runtime_phase_lingering" and row["observation"] is True
+    assert row["blocked_reasons"] == ["finishing_in_progress"] and row["actions"] == []
+    assert row["age_seconds"] == store.LINGERING_SECONDS + 1
+
+
+def test_an_observation_is_forgotten_only_after_it_stops_being_seen(clock):
+    table: dict = {}
+    assert store._seen_for(table, ("a",)) == 0
+    for _ in range(4):
+        clock.advance(200)
+        store._seen_for(table, ("a",))
+    assert store._seen_for(table, ("a",)) == 800
+    clock.advance(store.OBSERVATION_HORIZON_SECONDS + 1)
+    assert store._seen_for(table, ("b",)) == 0
+    assert ("a",) not in table  # unseen past the horizon: dropped
+    assert store._seen_for(table, ("a",)) == 0
 
 
 async def test_reading_the_runtime_context_changes_nothing(

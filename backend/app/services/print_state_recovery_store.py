@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from fastapi import HTTPException
 from sqlalchemy import and_, func, literal, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 
@@ -31,12 +32,35 @@ from backend.app.services.queue_ops import claim_lanes
 from backend.app.utils.failure_reasons import row_class
 
 logger = logging.getLogger(__name__)
-_observations: dict[tuple, float] = {}
-#: The monotonic clock the runtime rows measure stability and age by (a test moves it).
+#: ``stamp -> (first seen, last seen)`` of each database-row observation (see :func:`_seen_for`).
+_observations: dict[tuple, tuple[float, float]] = {}
+#: The monotonic clock every observation's stability and age is measured by (a test moves it).
 clock = time.monotonic
-#: First sight of each runtime observation, bounded like ``_observations``.
-_runtime_observations: dict[tuple, float] = {}
+#: The same for runtime observations.
+_runtime_observations: dict[tuple, tuple[float, float]] = {}
 _RUNTIME_STABLE_SECONDS = 10
+#: A start or completion still under way is shown only once it outlives the completion's own budget
+#: (``PrintCompletionTasks`` timeout, 360 s) and a minute more: before that it is an ordinary phase.
+LINGERING_SECONDS = 420
+#: An observation no read has seen for this long is forgotten. Far longer than a page's revisit -- Info reads
+#: every minute, the observer walks the farm a page per tick -- so a state still there never loses its age.
+OBSERVATION_HORIZON_SECONDS = 1800
+_MAX_OBSERVATIONS = 1000
+
+
+def _seen_for(table: dict, stamp: tuple) -> float:
+    """Seconds ``stamp`` has been seen unchanged: its first sighting is kept for as long as reads still see it."""
+    now = clock()
+    for old, (_first, last) in list(table.items()):
+        if now - last > OBSERVATION_HORIZON_SECONDS:
+            table.pop(old, None)
+    first = table[stamp][0] if stamp in table else now
+    if stamp not in table and len(table) >= _MAX_OBSERVATIONS:
+        table.pop(min(table, key=lambda k: table[k][1]))  # the one unseen longest
+    table[stamp] = (first, now)
+    return now - first
+
+
 _SHOWN_TEMPERATURES = ("bed", "bed_target", "chamber", "chamber_target")
 _ITEM_FIELDS = (
     "id",
@@ -270,13 +294,7 @@ def _runtime_age(key, f, issue) -> float:
         r["telemetry"].get("state"),
         queue_sources.current_epoch(),
     )
-    now = clock()
-    for old in list(_runtime_observations):
-        if now - _runtime_observations[old] > 300:
-            _runtime_observations.pop(old, None)
-    if len(_runtime_observations) >= 1000 and stamp not in _runtime_observations:
-        _runtime_observations.pop(next(iter(_runtime_observations)))
-    return now - _runtime_observations.setdefault(stamp, now)
+    return _seen_for(_runtime_observations, stamp)
 
 
 def unknown_inbound_refs() -> bool:
@@ -434,14 +452,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
                 previews.digest(live["identity"]),
                 queue_sources.current_epoch(),
             )
-            mono = time.monotonic()
-            for old in list(_observations):
-                if mono - _observations[old] > 300:
-                    _observations.pop(old, None)
-            if len(_observations) >= 1000:
-                _observations.pop(next(iter(_observations)))
-            seen = _observations.setdefault(stamp, mono)
-            live = {**live, "stable_inactive": mono - seen >= 10}
+            live = {**live, "stable_inactive": _seen_for(_observations, stamp) >= 10}
         result[(pid, kind, key)] = RecoveryFacts(
             pid,
             project(q, _QUEUE_FIELDS),
@@ -551,7 +562,7 @@ def _episode_rows(pids, after) -> dict[tuple, object]:
     rows = {}
     for pid in pids:
         for episode in dispatch_stall_tracker.snapshot(pid):
-            if not episode.stalled:
+            if not (episode.stalled or episode.reached):
                 continue
             row = (pid, "episode", episode.item_id or 0)
             if (after is None or row > tuple(after)) and (row not in rows or rows[row].last_seen < episode.last_seen):
@@ -559,9 +570,12 @@ def _episode_rows(pids, after) -> dict[tuple, object]:
     return rows
 
 
-def _episode_issue(key, episode, item, runtime_rows) -> dict:
-    """R3 ``dispatch_no_progress``: the job, the attempts, the blocker -- and the row that explains it."""
-    related = (key[0], "runtime", episode.blocker_archive_id or 0)
+def _episode_issue(key, episode, item) -> dict:
+    """R3 ``dispatch_no_progress``: the job, the attempts, the blocker -- and the row that explains it.
+
+    One that went quiet (a repair, a pause, nothing tried since) is inactive, not resolved (R4): it stays, as an
+    observation Health does not count, until progress or the job's end.
+    """
     return {
         "code": "dispatch_no_progress",
         "actions": [],
@@ -578,8 +592,67 @@ def _episode_issue(key, episode, item, runtime_rows) -> dict:
         "completed_at": None,
         "attempts": episode.count,
         "span_seconds": int(episode.span),
-        "related": {"kind": "runtime", "target_id": related[2]} if related in runtime_rows else None,
+        "active": episode.stalled,
+        "quiet_seconds": int(episode.quiet),
+        "observation": not episode.stalled,
+        # Linked by the page once it knows the runtime row is shown (``_link_episodes``).
+        "related": {"kind": "runtime", "target_id": episode.blocker_archive_id or 0},
     }
+
+
+async def _last_repairs(db, printer_ids: list[int]) -> dict[int, dict]:
+    """Each printer's latest in-memory repair and how it ended: why its queue may be paused (R8.6, A26).
+
+    Two bounded reads for the page: the latest intents, then their outcomes by their own ids.
+    """
+    if not printer_ids:
+        return {}
+    rows = (
+        await db.scalars(
+            select(PrintStateRecoveryAction)
+            .where(
+                PrintStateRecoveryAction.printer_id.in_(printer_ids),
+                PrintStateRecoveryAction.action == RUNTIME_ACTION,
+            )
+            .order_by(PrintStateRecoveryAction.created_at.desc(), PrintStateRecoveryAction.id.desc())
+            .limit(20 * len(printer_ids))
+        )
+    ).all()
+    latest = {}
+    for row in rows:
+        if isinstance(row.result, dict) and row.result.get("phase") == "intent":
+            latest.setdefault(row.printer_id, row)
+    outcomes = {
+        row.id: row
+        for row in (
+            await db.scalars(
+                select(PrintStateRecoveryAction).where(
+                    PrintStateRecoveryAction.id.in_([outcome_id(row.id) for row in latest.values()])
+                )
+            )
+        ).all()
+    }
+    answer = {}
+    for pid, intent in latest.items():
+        outcome = outcomes.get(outcome_id(intent.id))
+        result = outcome.result if outcome is not None and isinstance(outcome.result, dict) else {}
+        answer[pid] = {
+            "at": intent.created_at.isoformat() if intent.created_at else None,
+            "archive_id": intent.archive_id,
+            "queue_was_paused": bool((intent.result.get("before") or {}).get("queue_was_paused")),
+            "outcome": result.get("outcome"),
+            "reason": result.get("reason"),
+            "process_ended": outcome is None and intent.result.get("incarnation") != previews.incarnation(),
+        }
+    return answer
+
+
+def _link_episodes(issues: list[dict]) -> None:
+    """An episode points at the context that holds its printer only when that row is on this page."""
+    shown = {(i["printer_id"], i["target_id"]) for i in issues if i["kind"] == "runtime"}
+    for issue in issues:
+        if issue["kind"] == "episode" and (issue["printer_id"], issue["related"]["target_id"]) not in shown:
+            issue["related"] = None
 
 
 async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
@@ -674,7 +747,7 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
         if key[1] == "episode":
             item = waiting.get(episodes[key].item_id)
             if item is not None:
-                issue = _episode_issue(key, episodes[key], item, set(held))
+                issue = _episode_issue(key, episodes[key], item)
                 issues.append({**issue, "printer_name": names[key[0]]})
             continue
         f = facts.get(key)
@@ -685,22 +758,76 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
             # A runtime divergence is shown once seen unchanged twice, 10 s apart: a run between its
             # terminal and its finishing lease is not a problem. Display only; apply re-reads everything.
             age = _runtime_age(key, f, issue)
-            if age < _RUNTIME_STABLE_SECONDS:
+            if age < (LINGERING_SECONDS if issue.get("observation") else _RUNTIME_STABLE_SECONDS):
                 continue
             issue = {**issue, "age_seconds": round(age)}
         if issue:
             issues.append({**issue, "printer_name": names[key[0]]})
+    _link_episodes(issues)
+    repairs = await _last_repairs(db, sorted({i["printer_id"] for i in issues if i["kind"] == "runtime"}))
+    for issue in issues:
+        if issue["kind"] == "runtime":
+            issue["last_repair"] = repairs.get(issue["printer_id"])
     next_cursor = (
         encode_cursor(rows[99])
         if len(rows) > 100
         else (encode_cursor((printers[20].id, "archive", -1)) if len(printers) > 20 else None)
     )
+    from backend.app.services import dispatch_stall_tracker
+
     return {
         "issues": issues,
         "next_cursor": next_cursor,
         "truncated": next_cursor is not None,
         "checked_at": datetime.now(timezone.utc),
-    }, pids
+        # What the stall records can vouch for: tracked since this process started, minus what was dropped.
+        "stall_tracking": dispatch_stall_tracker.coverage_view(),
+        # A page cut at its row limit has read nobody past the cut: those printers come with the next page.
+    }, ([pid for pid in pids if pid <= rows[99][0]] if len(rows) > 100 else pids)
+
+
+#: ``nonce -> (expires, the objects the preview named)``. A runtime revision names objects by ``id()``; holding
+#: them for the preview's lifetime keeps Python from freeing one and handing its id to a newcomer with the same
+#: content, which the compare-and-clear would then take for the object the operator saw (R7a, A24).
+_preview_pins: dict[str, tuple[float, object]] = {}
+_MAX_PREVIEW_PINS = 256
+
+
+def _pin_runtime_objects(nonce: str, f: RecoveryFacts) -> None:
+    from backend.app.services import runtime_context_release
+    from backend.app.services.printer_manager import printer_manager
+
+    now = previews.clock()
+    for old, (expires, _objects) in list(_preview_pins.items()):
+        if now > expires:
+            _preview_pins.pop(old, None)
+    while len(_preview_pins) >= _MAX_PREVIEW_PINS:
+        _preview_pins.pop(next(iter(_preview_pins)))
+    expected = runtime_context_release.capture(printer_manager, f.printer_id)
+    r = f.runtime
+    admission = r.get("admission")
+    named = (
+        (r.get("current") or {}).get("ref"),
+        admission.get("ref") if isinstance(admission, dict) else None,
+        (r.get("macro_selection") or {}).get("ref"),
+        (r.get("swap_config") or {}).get("ref"),
+    )
+    held = (
+        None
+        if expected is None
+        else (
+            id(expected.run.current),
+            None if expected.run.admission is None else id(expected.run.admission),
+            *(id(value) if present else None for present, value, _content in expected.config),
+        )
+    )
+    if held != named:
+        raise ValueError("recovery_changed")  # it moved while the preview was read: no preview of a moving target
+    _preview_pins[nonce] = (now + previews.TTL, expected)
+
+
+def _unpin(nonce: str) -> None:
+    _preview_pins.pop(nonce, None)
 
 
 async def make_preview(db, printer_id, kind, target_id, action, actor, *, confirmed_completed=False, note=""):
@@ -725,6 +852,8 @@ async def make_preview(db, printer_id, kind, target_id, action, actor, *, confir
         "epoch": queue_sources.current_epoch(),
         "plan_hash": previews.digest(plan),
     }
+    if f.runtime is not None and action == RUNTIME_ACTION:
+        _pin_runtime_objects(nonce, f)
     return {
         "preview_token": previews.sign(body),
         "action": action,
@@ -775,6 +904,8 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
         operation = asyncio.ensure_future(_apply_runtime(session_factory, payload, actor, actor_label, recheck))
         _runtime_operations.add(operation)
         operation.add_done_callback(_runtime_operations.discard)
+        operation.add_done_callback(lambda _done: _unpin(payload.get("nonce")))
+        operation.add_done_callback(_retrieve)
         return await asyncio.shield(operation)
     key = (payload["printer_id"], payload["kind"], payload["target_id"])
     nonce = payload["nonce"]
@@ -941,6 +1072,26 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
 _runtime_operations: set[asyncio.Task] = set()
 
 
+def _retrieve(operation: asyncio.Future) -> None:
+    """Read an operation's end even when its client left: a refusal is ordinary, anything else is logged."""
+    if operation.cancelled():
+        return
+    error = operation.exception()
+    if error is not None and not isinstance(error, ValueError):
+        logger.warning("operator print-state recovery operation failed", exc_info=error)
+
+
+async def drain_runtime_operations(timeout: float = 10.0) -> int:
+    """Shutdown: let every in-memory repair in flight reach its outcome. Returns how many did not in time."""
+    pending = [operation for operation in _runtime_operations if not operation.done()]
+    if pending:
+        await asyncio.wait(pending, timeout=timeout)
+    left = sum(1 for operation in pending if not operation.done())
+    if left:
+        logger.warning("operator print-state recovery: %d operation(s) still running at shutdown", left)
+    return left
+
+
 def outcome_id(nonce: str) -> str:
     """The outcome row's own id, derived from the intent's nonce: one per operation, found without a scan."""
     return str(uuid5(NAMESPACE_URL, f"bamdude:print-state-recovery:outcome:{nonce}"))
@@ -997,6 +1148,22 @@ def _final_release(key, f: RecoveryFacts, payload: dict, was_paused: bool) -> bo
     if expected is None or current is None or id(expected.run.current) != current["ref"]:
         return False
     return runtime_context_release.release(printer_manager, expected)
+
+
+def _outcome_record(nonce: str, outcome: str, reason: str | None) -> dict:
+    return json.loads(
+        previews.canonical(
+            {
+                "id": outcome_id(nonce),
+                "phase": "outcome",
+                "operation_id": nonce,
+                "action": RUNTIME_ACTION,
+                "outcome": outcome,
+                "reason": reason,
+                "at": datetime.now(timezone.utc),
+            }
+        )
+    )
 
 
 def _audit_row(nonce_or_id, actor, actor_label, key, queue_id, archive_id, input_hash, result):
@@ -1105,57 +1272,84 @@ async def _apply_runtime(session_factory, payload, actor, actor_label, recheck):
 
         # Second commit: the guards again (PostgreSQL released them at the first commit), the facts, the rights
         # and the epoch afresh, the compare-and-clear, the outcome.
-        outcome, reason, applied = "not_applied_changed", None, False
-        async with session_factory() as db, AsyncExitStack() as guards:
-            await _take_guards(db, guards, queue_id, archive_id)
-            try:
-                if recheck:
-                    await recheck(payload["action"], db)
-            except Exception:  # noqa: BLE001 - a revoked or changed authority, whatever form its refusal takes
-                reason = "rights_changed"
-            if reason is None:
-                facts, _, _ = await read_facts(db, [key[0]], [key], locked=True)
-                f2 = facts.get(key)
-                if queue_sources.current_epoch() != payload["epoch"]:
-                    reason = "restored"
-                elif previews.clock() > payload["expires"]:
-                    reason = "preview_expired"
-                elif (
-                    f2 is None
-                    or not f2.queue
-                    or not f2.queue["is_paused"]
-                    # Last, and only when every check above held: the synchronous compare-and-clear.
-                    or not _final_release(key, f2, payload, was_paused)
-                ):
-                    reason = "context_changed"
-                else:
-                    outcome, applied = "applied", True
-            record = json.loads(
-                previews.canonical(
-                    {
-                        "id": outcome_id(nonce),
-                        "phase": "outcome",
-                        "operation_id": nonce,
-                        "action": RUNTIME_ACTION,
-                        "outcome": outcome,
-                        "reason": reason,
-                        "at": datetime.now(timezone.utc),
-                    }
-                )
-            )
-            db.add(_audit_row(outcome_id(nonce), actor, actor_label, key, queue_id, archive_id, input_hash, record))
-            try:
-                await db.commit()
-            except Exception:  # noqa: BLE001 - the outcome is unknown to history; what happened is not undone
+        outcome, reason, applied, record = "not_applied_changed", None, False, None
+        in_cas = False
+        try:
+            async with session_factory() as db, AsyncExitStack() as guards:
+                await _take_guards(db, guards, queue_id, archive_id)
+                try:
+                    if recheck:
+                        await recheck(payload["action"], db)
+                except HTTPException:  # a revoked or changed authority
+                    reason = "rights_changed"
+                if reason is None:
+                    facts, _, _ = await read_facts(db, [key[0]], [key], locked=True)
+                    f2 = facts.get(key)
+                    if queue_sources.current_epoch() != payload["epoch"]:
+                        reason = "restored"
+                    elif previews.clock() > payload["expires"]:
+                        reason = "preview_expired"
+                    elif f2 is None or not f2.queue or not f2.queue["is_paused"]:
+                        reason = "context_changed"
+                    else:
+                        # Last, and only when every check above held: the synchronous compare-and-clear.
+                        in_cas = True
+                        applied = _final_release(key, f2, payload, was_paused)
+                        in_cas = False
+                        if applied:
+                            outcome = "applied"
+                        else:
+                            reason = "context_changed"
+                record = _outcome_record(nonce, outcome, reason)
+                db.add(_audit_row(outcome_id(nonce), actor, actor_label, key, queue_id, archive_id, input_hash, record))
+                try:
+                    await db.commit()
+                except Exception:  # noqa: BLE001 - the outcome is unknown to history; what happened is not undone
+                    logger.warning(
+                        "operator print-state recovery action=%s printer=%s outcome=%s could not be recorded",
+                        nonce,
+                        key[0],
+                        outcome,
+                        exc_info=True,
+                    )
+                    if applied:
+                        record = None
+        except Exception:  # noqa: BLE001 - every failure of the second transaction is answered, never re-raised
+            if in_cas or applied:
+                # Memory may have changed and nothing recorded it: the result is unknown, not "not applied".
                 logger.warning(
-                    "operator print-state recovery action=%s printer=%s outcome=%s could not be recorded",
+                    "operator print-state recovery action=%s printer=%s failed during the compare-and-clear",
                     nonce,
                     key[0],
-                    outcome,
                     exc_info=True,
                 )
-                if applied:
-                    record = None
+                record = None
+            else:
+                # Memory was never touched; the pause stays. Say so in history, from a session of its own.
+                logger.warning(
+                    "operator print-state recovery action=%s printer=%s could not be checked again; nothing released",
+                    nonce,
+                    key[0],
+                    exc_info=True,
+                )
+                outcome, reason = "not_applied_changed", "unavailable"
+                record = _outcome_record(nonce, outcome, reason)
+                try:
+                    async with session_factory() as db:
+                        db.add(
+                            _audit_row(
+                                outcome_id(nonce), actor, actor_label, key, queue_id, archive_id, input_hash, record
+                            )
+                        )
+                        await db.commit()
+                except Exception:  # noqa: BLE001 - not recorded, but known: nothing was released
+                    logger.warning(
+                        "operator print-state recovery action=%s printer=%s outcome=%s could not be recorded",
+                        nonce,
+                        key[0],
+                        outcome,
+                        exc_info=True,
+                    )
         logger.info(
             "operator print-state recovery action=%s printer=%s phase=outcome outcome=%s reason=%s",
             nonce,

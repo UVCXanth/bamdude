@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import BinaryIO
 
 import psutil
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Receive, Scope, Send
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
@@ -1064,8 +1064,25 @@ async def _collect_git_backup_info(db: AsyncSession) -> dict:
     }
 
 
-async def _collect_support_info(*, print_state_scope=None) -> dict:
-    """Collect all support information. ``print_state_scope`` narrows the print-state section to a key's printers."""
+async def _print_state_access(request: Request | None, creds) -> tuple[bool, frozenset | None]:
+    """Whether this caller may read the print-state section, and which printers: the gates Info and Health ask.
+
+    Without request credentials (an internal call) nobody is authorised, so nothing is included.
+    """
+    from backend.app.api.routes.print_state_recovery import READ
+    from backend.app.core.api_key_scope import key_printer_scope
+
+    if not isinstance(creds, RequestCredentials):
+        return False, None
+    for gate in READ:
+        if not await creds.allows(gate):
+            return False, None
+    return True, key_printer_scope(request) if request is not None else None
+
+
+async def _collect_support_info(*, print_state_scope=None, include_print_state: bool = False) -> dict:
+    """Collect all support information. The print-state section is included only for a caller with its read
+    rights (``include_print_state``), narrowed to its printers (``print_state_scope``)."""
     from backend.app.services.farm_startup_guard import farm_startup_guard
 
     in_docker = is_running_in_docker()
@@ -1506,7 +1523,9 @@ async def _collect_support_info(*, print_state_scope=None) -> dict:
         from backend.app.services.diagnostic_snapshot import collect_diagnostic_snapshot
 
         async with async_session() as db:
-            info["diagnostics"] = await collect_diagnostic_snapshot(db, print_state_scope=print_state_scope)
+            info["diagnostics"] = await collect_diagnostic_snapshot(
+                db, print_state_scope=print_state_scope, include_print_state=include_print_state
+            )
     except Exception:
         logger.warning("Failed to collect diagnostic snapshot", exc_info=True)
 
@@ -1647,6 +1666,7 @@ async def generate_support_bundle(
     request: Request = None,
     mqtt_printer_ids: str = "",
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Generate a support bundle ZIP file for issue reporting.
 
@@ -1693,10 +1713,8 @@ async def generate_support_bundle(
             sensitive_strings[cloud_email] = "[EMAIL]"
 
     # Collect support info
-    from backend.app.core.api_key_scope import key_printer_scope
-
-    scope = key_printer_scope(request) if request is not None else None
-    support_info = await _collect_support_info(print_state_scope=scope)
+    allowed, scope = await _print_state_access(request, creds)
+    support_info = await _collect_support_info(print_state_scope=scope, include_print_state=allowed)
 
     # Create ZIP in memory
     zip_buffer = io.BytesIO()

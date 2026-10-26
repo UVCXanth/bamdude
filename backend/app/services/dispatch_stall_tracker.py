@@ -67,6 +67,10 @@ class EpisodeView:
     active: bool
     #: Over the threshold now (three fresh failures, a minute since the first, no progress).
     stalled: bool
+    #: Crossed the threshold at some point -- an episode that went quiet since is inactive, not resolved.
+    reached: bool = False
+    #: Seconds since its last failure.
+    quiet: float = 0.0
 
 
 _episodes: dict[tuple, _Episode] = {}
@@ -197,6 +201,8 @@ def snapshot(printer_id: int | None = None) -> tuple[EpisodeView, ...]:
             e.last_seen - e.first_seen,
             active=now - e.last_seen <= WINDOW_SECONDS,
             stalled=now - e.last_seen <= WINDOW_SECONDS and _is_stalled(e, now),
+            reached=e.warned,
+            quiet=now - e.last_seen,
         )
         for e in list(_episodes.values())
         if printer_id is None or e.printer_id == printer_id
@@ -207,3 +213,8 @@ def snapshot(printer_id: int | None = None) -> tuple[EpisodeView, ...]:
 def coverage() -> dict:
     """What the tracker can vouch for: since when, how many episodes, how many it had to drop."""
     return {"since": _started, "episodes": len(_episodes), "evicted": _evicted, "max_episodes": MAX_EPISODES}
+
+
+def coverage_view() -> dict:
+    """The part of :func:`coverage` an operator reads: how long it has been tracking, and what it dropped."""
+    return {"since_seconds": int(clock() - _started), "evicted": _evicted}

@@ -15,7 +15,7 @@ from backend.app.api.routes.support import (
     _get_recent_sanitized_logs,
     _set_debug_setting,
 )
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.bug_report import BugReport
@@ -139,15 +139,16 @@ async def submit_bug_report(
     report: BugReportRequest,
     request: Request = None,
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Submit a bug report via the configured relay."""
     support_info = None
     if report.include_support_info:
         try:
-            from backend.app.core.api_key_scope import key_printer_scope
+            from backend.app.api.routes.support import _print_state_access
 
-            scope = key_printer_scope(request) if request is not None else None
-            support_info = await _collect_support_info(print_state_scope=scope)
+            allowed, scope = await _print_state_access(request, creds)
+            support_info = await _collect_support_info(print_state_scope=scope, include_print_state=allowed)
             if report.debug_logs:
                 support_info["recent_logs"] = report.debug_logs
             # ⚠️ Only this path is budgeted. The relay prints the whole payload

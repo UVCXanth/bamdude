@@ -95,6 +95,18 @@ describe('SystemHealthPanel print-state mention', () => {
     expect(screen.getByText(/has not finished checking every printer/)).toBeInTheDocument();
   });
 
+  it('says when stall records were dropped, even with no problem listed', () => {
+    renderWith({ ...BASE, print_state: { by_code: {}, error: null, checked_at: null, printers: [], coverage,
+      stall_tracking: { since_seconds: 600, evicted: 5 } } });
+    expect(screen.getByText(/5 stall records were dropped/)).toBeInTheDocument();
+  });
+
+  it('counts no observation as a problem', () => {
+    renderWith({ ...BASE, print_state: { by_code: {}, observations: { runtime_phase_lingering: 1 }, error: null,
+      checked_at: null, printers: [], coverage } });
+    expect(screen.queryByText(/print-state problem/i)).not.toBeInTheDocument();
+  });
+
   it('says when the check is unavailable', () => {
     renderWith({ ...BASE, print_state: { by_code: {}, error: 'unavailable', checked_at: null, printers: [],
       coverage: { cycle_complete: false, truncated: true, checked: 0 } } });

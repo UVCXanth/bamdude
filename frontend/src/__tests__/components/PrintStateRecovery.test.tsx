@@ -221,6 +221,53 @@ describe('A finished run held in memory', () => {
     await user.click(await screen.findByRole('button', { name: 'Recovery history' }));
     expect(await screen.findByText(/context released/)).toBeInTheDocument();
     expect(screen.getByText(/process ended before a confirmed result/)).toBeInTheDocument();
+    // An in-memory repair names an archive, never an empty queue item.
+    expect(screen.queryByText(/Queue item #—/)).not.toBeInTheDocument();
+  });
+
+  it('shows a start or completion past its budget as an observation, not a contradiction', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([{
+      ...held, code: 'runtime_phase_lingering', archive_id: null, context: null, actions: [], observation: true,
+      blocked_reasons: ['finishing_in_progress'], age_seconds: 450,
+    }]));
+    panel();
+    expect(await screen.findByText(/still in progress/)).toBeInTheDocument();
+    expect(screen.getByText(/longer than its usual budget/)).toBeInTheDocument();
+    expect(screen.queryByText(/does not match the records/)).not.toBeInTheDocument();
+  });
+
+  it('says a stall that went quiet is inactive, not resolved, and counts attempts in words', async () => {
+    const quiet = {
+      ...held, kind: 'episode', target_id: 11, item_id: 11, code: 'dispatch_no_progress', actions: [],
+      blocked_reasons: ['current_run_conflict'], attempts: 1, span_seconds: 0, related: null,
+      active: false, quiet_seconds: 420, observation: true,
+    } as unknown as PrintStateIssue;
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([quiet]));
+    panel();
+    expect(await screen.findByText(/Start deferred once without progress/)).toBeInTheDocument();
+    expect(screen.getByText(/No new attempt for 420 s/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Show what holds the printer' })).not.toBeInTheDocument();
+  });
+
+  it('says which repair paused the queue, and how it ended', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([{
+      ...held, actions: [], queue_paused: true, blocked_reasons: ['printer_printing'],
+      last_repair: { at: '2026-10-01T12:00:00', archive_id: 19, queue_was_paused: false, outcome: 'not_applied_changed',
+        reason: 'unavailable', process_ended: false },
+    }]));
+    panel();
+    expect(await screen.findByText(/paused by a release attempt for archive #19/)).toBeInTheDocument();
+    expect(screen.getByText(/could not check the printer again/)).toBeInTheDocument();
+    expect(screen.getByText(/reports that it is printing/)).toBeInTheDocument();
+  });
+
+  it('says how much of the past the stall records cover', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({
+      ...page([held]), stall_tracking: { since_seconds: 300, evicted: 2 },
+    });
+    panel();
+    expect(await screen.findByText(/tracked since BamDude started, 5 min ago/)).toBeInTheDocument();
+    expect(screen.getByText(/2 stall records were dropped/)).toBeInTheDocument();
   });
 });
 

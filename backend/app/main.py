@@ -11949,6 +11949,11 @@ async def _application_lifespan(app: FastAPI):
 
     # The observer reads what the services below own: it goes before they do.
     await print_state_observer.stop()
+    # An in-memory repair whose client went away still owes its outcome row: let it finish while the run
+    # registries and the database are still here (its compare-and-clear is fenced by the revocation below).
+    from backend.app.services.print_state_recovery_store import drain_runtime_operations
+
+    await drain_runtime_operations(timeout=10)
     revoke_print_effects(printer_manager)
     await stop_part_render()  # its attempt ends with its proof before any worker or the broker goes
     from backend.app.services import part_images

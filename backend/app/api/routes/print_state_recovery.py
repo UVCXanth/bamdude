@@ -208,16 +208,31 @@ async def history(
                 )
             ).all()
         )
+
+        def phase_of(row):
+            return row.result.get("phase") if isinstance(row.result, dict) else None
+
+        # The pairs of in-memory repairs, read by the outcomes' own ids in one go, wherever the page boundary fell.
+        wanted = [store.outcome_id(row.id) for row in rows[:50] if phase_of(row) == "intent"]
+        outcomes = (
+            {
+                row.id: row
+                for row in (
+                    await db.scalars(select(PrintStateRecoveryAction).where(PrintStateRecoveryAction.id.in_(wanted)))
+                ).all()
+            }
+            if wanted
+            else {}
+        )
         actions = []
         for row in rows[:50]:
-            phase = row.result.get("phase") if isinstance(row.result, dict) else None
+            phase = phase_of(row)
             if phase == "outcome":
                 continue  # shown inside its intent, wherever the page boundary fell
             action = {"created_at": row.created_at, "actor_label": row.actor_label, **row.result}
             if phase == "intent":
-                # The pair of an in-memory repair, read by the outcome's own id; an intent with no outcome
-                # proves nothing, and one of an ended process is said to be so.
-                outcome = await db.get(PrintStateRecoveryAction, store.outcome_id(row.id))
+                # An intent with no outcome proves nothing, and one of an ended process is said to be so.
+                outcome = outcomes.get(store.outcome_id(row.id))
                 action["outcome"] = outcome.result if outcome is not None else None
                 action["process_ended"] = outcome is None and row.result.get("incarnation") != tokens.incarnation()
             actions.append(action)

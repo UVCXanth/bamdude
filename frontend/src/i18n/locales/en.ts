@@ -93,6 +93,7 @@ export default {
       terminal_runtime_context: 'A finished print is still held in memory',
       runtime_context_unresolved: 'The print context held in memory does not match the records',
       dispatch_no_progress: 'A start keeps being deferred without progress',
+      runtime_phase_lingering: 'A print start or completion is still in progress',
     },
     reasons: {
       live_unknown: 'A fresh, unambiguous printer observation is required.', live_busy: 'A start or dispatch is still in progress.',
@@ -126,6 +127,7 @@ export default {
       auto_eject_changed: 'The job’s auto-eject settings changed.',
       source_link_changed: 'The job was pointed at another source while its copy was taken.',
       current_run_conflict: 'Another print is still bound to this printer.',
+      printer_printing: 'The printer reports that it is printing.',
       unknown: 'The cause is not established.',
     },
     live: { inactive: 'Fresh inactive printer observation', successor: 'A positively identified newer print is active', unknown: 'Printer state cannot authorize a repair' },
@@ -139,6 +141,9 @@ export default {
       heldBusy: 'Archive #{{archive}} has finished, but its context is still active.',
       unresolved: 'Archive #{{archive}}: the context held in memory does not match the records.',
       age: 'Seen unchanged for {{seconds}} s.',
+      lingering: 'It has lasted longer than its usual budget. This is shown for information; nothing here repairs it.',
+      lastRepair: 'The queue was paused by a release attempt for archive #{{archive}} at {{when}}: {{result}}',
+      lastRepairWasPaused: 'The queue was already paused before that attempt.',
       paused: 'The queue is paused.',
       plateGate: 'The plate-clear check is still waiting for an answer; this repair does not change it.',
       willPause: 'The queue will be paused. Resume it yourself after checking the printer.',
@@ -157,9 +162,14 @@ export default {
       heater: { bed: 'bed', chamber: 'chamber', airduct: 'air duct' },
     },
     episode: {
-      attempts: 'Start deferred {{count}} times without progress over {{seconds}} s.',
+      attempts_one: 'Start deferred once without progress over {{seconds}} s.',
+      attempts_other: 'Start deferred {{count}} times without progress over {{seconds}} s.',
+      inactive: 'No new attempt for {{seconds}} s: the episode is inactive, not resolved.',
       job: 'Job #{{item}}',
       related: 'Show what holds the printer',
+      tracking: 'Stalled starts are tracked since BamDude started, {{minutes}} min ago.',
+      dropped_one: '{{count}} stall record was dropped because the tracker was full.',
+      dropped_other: '{{count}} stall records were dropped because the tracker was full.',
     },
     outcome: {
       applied: 'The finished context was released.',
@@ -171,6 +181,7 @@ export default {
       rights_changed: 'Your permissions changed during the repair.',
       restored: 'A database restore happened during the repair.',
       preview_expired: 'The preview expired during the repair.',
+      unavailable: 'The repair could not check the printer again; nothing was released.',
     },
     historyOutcome: {
       applied: 'context released',
@@ -178,6 +189,7 @@ export default {
       unknown: 'result unknown',
       processEnded: 'the process ended before a confirmed result',
     },
+    targetArchive: 'Archive #{{archive}}',
   },
   autoEject: {
     badgeUnchecked: 'Auto-eject · no plate check',

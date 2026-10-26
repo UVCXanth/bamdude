@@ -88,18 +88,26 @@ class PrintStateObserver:
         """What the cache says, narrowed to the caller's printer scope (``None`` = every printer)."""
         self._check_epoch()
         by_code: Counter = Counter()
+        observations: Counter = Counter()
         printers = []
         for pid in sorted(self._cache):
             if scope is not None and pid not in scope:
                 continue
-            issues = self._cache[pid]
+            # An observation (a phase still under way, a stall that went quiet) is shown in Info, never counted
+            # as a problem here.
+            observations.update(issue["code"] for issue in self._cache[pid] if issue.get("observation"))
+            issues = [issue for issue in self._cache[pid] if not issue.get("observation")]
             if not issues:
                 continue
             by_code.update(issue["code"] for issue in issues)
             printers.append({"printer_id": pid, "codes": sorted({issue["code"] for issue in issues})})
         checked = sorted(pid for pid in self._checked if scope is None or pid in scope)
+        from backend.app.services import dispatch_stall_tracker
+
         return {
             "by_code": dict(by_code),
+            "observations": dict(observations),
+            "stall_tracking": dispatch_stall_tracker.coverage_view(),
             "printers": printers,
             "checked_at": self._checked_at,
             "error": self._error,

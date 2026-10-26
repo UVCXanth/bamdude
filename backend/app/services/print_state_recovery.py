@@ -107,12 +107,18 @@ def effects_pending(archive: dict | None, *, intents: bool = True) -> bool:
     )
 
 
+#: Stages of a completion effect's diagnostic record (``main._record_terminal_effect_stage``) that end it:
+#: completion never replays printer I/O, so a failed effect owes nothing either, and finish macros handed to
+#: their tasks are watched as a live owner (``macro_trigger.has_event_tasks``) while they run.
+_SETTLED_EFFECT_STAGES = frozenset({"finished", "skipped", "failed", "scheduled"})
+
+
 def runtime_effect_debt(extra) -> list[str]:
     """What a finished run's archive still owes, read strictly (spec r3 R7.5, R7a).
 
     Unlike :func:`effects_pending` it understands the swap claim: ``finished`` is settled, any other stage is
-    debt, and a stage it cannot read is unreadable -- never "nothing owed". Every other completion record is
-    left to its owner and vetoes.
+    debt, and a stage it cannot read is unreadable -- never "nothing owed". Another completion effect is
+    settled only at a stage that ended it; in flight, uncertain or an unknown stage vetoes.
     """
     if extra is None:
         return []
@@ -131,10 +137,13 @@ def runtime_effect_debt(extra) -> list[str]:
             debt.add("effects_unreadable")
         else:
             for name, record in effects.items():
-                if name != "swap_change_table":
-                    debt.add("effects_pending")
-                    continue
                 stage = record.get("stage") if isinstance(record, dict) else None
+                if name != "swap_change_table":
+                    if not isinstance(record, dict):
+                        debt.add("effects_unreadable")
+                    elif stage not in _SETTLED_EFFECT_STAGES:
+                        debt.add("effects_pending")  # in flight, uncertain, or a stage this reader does not know
+                    continue
                 if stage == "finished":
                     continue
                 debt.add("swap_debt" if stage in ("owed", "attempted", "failed") else "effects_unreadable")
@@ -178,6 +187,12 @@ def _registration_reasons(registration) -> list[str]:
     return []
 
 
+def _an_owner_explains(r: dict) -> bool:
+    """A live owner positively holds the run -- a dispatch, a completion, a start still being resolved."""
+    owners = r.get("owners") if isinstance(r.get("owners"), dict) else {}
+    return any(owners.get(name) is True for name in RUNTIME_OWNERS) or r.get("resolution") is True
+
+
 def _classify_runtime(f: RecoveryFacts) -> dict | None:
     """A printer's in-process context against its database rows (spec r3 R3, R7).
 
@@ -196,7 +211,14 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
             lingering.add("terminal_buffered")
         if not lingering:
             return None
-        return {"code": "runtime_context_unresolved", "actions": [], "blocked_reasons": sorted(lingering)}
+        # A start or a completion still under way is a phase, not a contradiction: observed with its age once it
+        # outlives its own budget (R3), never repaired and never counted as a problem.
+        return {
+            "code": "runtime_phase_lingering",
+            "actions": [],
+            "blocked_reasons": sorted(lingering),
+            "observation": True,
+        }
 
     q, a = f.queue, f.archive
     telemetry = r.get("telemetry") if isinstance(r.get("telemetry"), dict) else {}
@@ -211,8 +233,10 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
         code = "runtime_context_unresolved"
         reasons.add("archive_foreign")
     elif a.get("status") not in OUTCOMES:
-        if not fresh_idle:
-            return None  # a print in progress, or a printer we cannot see: nothing contradicts the run
+        if not fresh_idle or _an_owner_explains(r):
+            # A print in progress, a printer we cannot see, or a start its own dispatch still owns (the printer
+            # has not left FINISH yet): nothing contradicts the run.
+            return None
         code = "runtime_context_unresolved"
         reasons.add("archive_not_terminal")
     if a is not None:
@@ -224,7 +248,8 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
         reasons.update(runtime_effect_debt(extra))
 
     if not fresh_idle:
-        reasons.add("live_busy" if telemetry.get("fresh") is True and state in ("RUNNING", "PAUSE") else "live_unknown")
+        printing = telemetry.get("fresh") is True and state in ("RUNNING", "PAUSE")
+        reasons.add("printer_printing" if printing else "live_unknown")
 
     owners = r.get("owners") if isinstance(r.get("owners"), dict) else {}
     for name in RUNTIME_OWNERS:

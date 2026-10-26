@@ -116,6 +116,15 @@ def test_a_printing_archive_on_an_idle_printer_is_shown_without_repair():
     assert issue["actions"] == [] and "archive_not_terminal" in issue["blocked_reasons"]
 
 
+@pytest.mark.parametrize("owner", ["dispatch_in_flight", "dispatch_work", "completion_scope"])
+def test_a_printing_archive_its_own_dispatch_still_explains_is_no_problem(owner):
+    """A start just sent, the printer not yet out of FINISH: the dispatch that owns it explains the gap."""
+    f = facts()
+    printing = RecoveryFacts(**{**f.__dict__, "archive": {**f.archive, "status": "printing", "completed_at": None}})
+    owners = {**printing.runtime["owners"], owner: True}
+    assert classify(changed(printing, owners=owners)) is None
+
+
 @pytest.mark.parametrize(
     ("archive_change", "reason"),
     [
@@ -139,8 +148,8 @@ def test_an_unproven_execution_is_explained_not_released(archive_change, reason)
 @pytest.mark.parametrize(
     ("telemetry", "reason"),
     [
-        ({"fresh": True, "state": "RUNNING"}, "live_busy"),
-        ({"fresh": True, "state": "PAUSE"}, "live_busy"),
+        ({"fresh": True, "state": "RUNNING"}, "printer_printing"),
+        ({"fresh": True, "state": "PAUSE"}, "printer_printing"),
         ({"fresh": False, "state": "FINISH"}, "live_unknown"),
         ({"fresh": True, "state": None}, "live_unknown"),
         ({"fresh": True, "state": "PREPARE"}, "live_unknown"),
@@ -312,6 +321,15 @@ def test_an_unreadable_swap_config_blocks():
         ({"bamdude_terminal_effects": {"swap_change_table": "finished"}}, ["effects_unreadable"]),
         ({"bamdude_terminal_effects": "x"}, ["effects_unreadable"]),
         ({"bamdude_terminal_effects": {"printer_cleanup": {"stage": "attempted"}}}, ["effects_pending"]),
+        ({"bamdude_terminal_effects": {"printer_cleanup": {"stage": "uncertain"}}}, ["effects_pending"]),
+        ({"bamdude_terminal_effects": {"finish_photo": {"stage": "later"}}}, ["effects_pending"]),
+        ({"bamdude_terminal_effects": {"finish_photo": "finished"}}, ["effects_unreadable"]),
+        # An effect that ended -- done, skipped, failed (completion never replays printer I/O), or finish
+        # macros handed to their tasks (live ones are an owner of their own) -- owes nothing.
+        ({"bamdude_terminal_effects": {"finish_photo": {"stage": "finished"}}}, []),
+        ({"bamdude_terminal_effects": {"printer_cleanup": {"stage": "skipped"}}}, []),
+        ({"bamdude_terminal_effects": {"smart_plug": {"stage": "failed"}}}, []),
+        ({"bamdude_terminal_effects": {"finish_macros": {"stage": "scheduled"}}}, []),
         ({"swap_hold": {"reason": "r"}}, ["effects_pending"]),
         ({"auto_eject_pending": True}, ["effects_pending"]),
         ({"cleanup_pending": True}, ["effects_pending"]),
@@ -365,8 +383,9 @@ def test_lingering_start_or_finish_without_a_run_is_an_observation(field):
     base = facts()
     value = True if field == "resolution" else 1
     issue = classify(changed(base, current=None, **{field: value}))
-    assert issue["code"] == "runtime_context_unresolved"
-    assert issue["actions"] == []
+    # A start or completion still under way is a phase, not a contradiction (R3): observed, never repaired.
+    assert issue["code"] == "runtime_phase_lingering"
+    assert issue["actions"] == [] and issue["observation"] is True
 
 
 def test_no_runtime_context_is_no_problem():

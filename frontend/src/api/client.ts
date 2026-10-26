@@ -32,8 +32,20 @@ export interface PrintStateEpisodeView {
   attempts: number; span_seconds: number;
   /** The row that explains it -- the context holding the printer -- when that row is on the page. */
   related: { kind: 'runtime'; target_id: number } | null;
+  /** ``false`` once no new attempt came for a while: inactive, not resolved. */
+  active: boolean; quiet_seconds: number;
 }
+/** The printer's latest in-memory repair, read from the audit: why its queue may be paused. */
+export interface PrintStateLastRepair {
+  at: string | null; archive_id: number | null; queue_was_paused: boolean;
+  outcome: 'applied' | 'not_applied_changed' | null; reason: string | null; process_ended: boolean;
+}
+/** Since when the stalled-start records reach back, and how many were dropped. */
+export interface PrintStateStallTracking { since_seconds: number; evicted: number }
 export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial<PrintStateEpisodeView> {
+  /** Shown for information and never counted as a problem: a phase still under way, a stall gone quiet. */
+  observation?: boolean;
+  last_repair?: PrintStateLastRepair | null;
   /** ``null`` only for a runtime row of a printer that has no queue: shown, never repairable. */
   printer_id: number; printer_name: string; queue_id: number | null;
   kind: 'item' | 'header' | 'archive' | 'runtime' | 'episode';
@@ -44,6 +56,7 @@ export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial
 }
 export interface PrintStateIssuePage {
   issues: PrintStateIssue[]; next_cursor: string | null; truncated: boolean; checked_at: string;
+  stall_tracking?: PrintStateStallTracking;
 }
 export interface PrintStatePreviewInput {
   kind: 'item' | 'header' | 'runtime'; target_id: number; action: PrintStateAction; confirmed_completed: boolean;
@@ -4597,6 +4610,9 @@ export interface SystemHealthResult {
 /** One short mention of the print-state diagnostics: counts and codes, never a repair. */
 export interface PrintStateHealth {
   by_code: Record<string, number>;
+  /** Shown in Info, never counted here. */
+  observations?: Record<string, number>;
+  stall_tracking?: PrintStateStallTracking;
   printers: { printer_id: number; codes: string[] }[];
   checked_at: string | null;
   /** ``unavailable`` when the last background read failed -- never read as a healthy farm. */

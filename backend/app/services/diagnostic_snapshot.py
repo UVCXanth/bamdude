@@ -110,7 +110,9 @@ async def _run_log_health() -> Any:
         return {"error": str(e)}
 
 
-async def collect_diagnostic_snapshot(db: AsyncSession, *, print_state_scope=None) -> dict[str, Any]:
+async def collect_diagnostic_snapshot(
+    db: AsyncSession, *, print_state_scope=None, include_print_state: bool = True
+) -> dict[str, Any]:
     """Return the three-section diagnostic snapshot.
 
     Always returns connection/VP/log-health probes plus bounded runtime
@@ -121,7 +123,8 @@ async def collect_diagnostic_snapshot(db: AsyncSession, *, print_state_scope=Non
     ``print_state`` is the background observer's cached reading (spec
     printer-runtime-stall r3 R5), narrowed to ``print_state_scope`` -- the
     caller's printers -- so the exact cause is in the bundle before anyone
-    repairs anything. It repairs nothing and opens no printer session.
+    repairs anything. It repairs nothing and opens no printer session. A
+    caller without the print-state read rights gets it marked omitted.
     """
     from backend.app.models.printer import Printer
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -173,7 +176,11 @@ async def collect_diagnostic_snapshot(db: AsyncSession, *, print_state_scope=Non
     try:
         from backend.app.services.print_state_observer import print_state_observer
 
-        snapshot["print_state"] = print_state_observer.public_summary(print_state_scope)
+        snapshot["print_state"] = (
+            print_state_observer.public_summary(print_state_scope)
+            if include_print_state
+            else {"omitted": "permissions"}  # the caller may not read print-state diagnostics
+        )
     except Exception as e:
         logger.warning("Print-state diagnostic snapshot failed: %s", e, exc_info=True)
         snapshot["print_state"] = {"error": str(e)}

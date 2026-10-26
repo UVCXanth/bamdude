@@ -82,7 +82,9 @@ function PrintStateMention({ state }: { state: PrintStateHealth }) {
   const { t } = useTranslation();
   const count = Object.values(state.by_code).reduce((sum, n) => sum + n, 0);
   const partial = !state.coverage.cycle_complete;
-  if (!state.error && count === 0 && !partial) return null;
+  // Records the stall tracker had to drop are lost coverage: said even when nothing else is listed.
+  const dropped = state.stall_tracking?.evicted ?? 0;
+  if (!state.error && count === 0 && !partial && dropped === 0) return null;
   return (
     <div className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 px-4 py-3 text-sm text-amber-700 dark:text-amber-300 space-y-1">
       {state.error ? (
@@ -91,6 +93,7 @@ function PrintStateMention({ state }: { state: PrintStateHealth }) {
         <>
           {count > 0 && <p>{t('systemHealth.printState.problems', { count, printers: state.printers.length })}</p>}
           {partial && <p>{t('systemHealth.printState.partial')}</p>}
+          {dropped > 0 && <p>{t('printStateRecovery.episode.dropped', { count: dropped })}</p>}
         </>
       )}
       <a href="#print-state" className="inline-flex items-center gap-1 text-xs text-bambu-green hover:underline">

@@ -1,8 +1,9 @@
 """The in-memory repair against real independent DB sessions (spec printer-runtime-stall r3 A16).
 
 Run on a SQLite WAL file (``test_runtime_recovery_wal.py``) and on PostgreSQL (``postgres_scenario_runner.py``,
-mode ``runtime_recovery``). The process-local locks are the real ones here except where a scenario says so; no
-hardware, the printer state is synthetic.
+mode ``runtime_recovery``). The racing session stands for another process, so this scenario's queue and archive
+get no-op process locks (as ``print_state_recovery_scenarios`` does): only the database's guards make it wait.
+No hardware; the printer state is synthetic.
 """
 
 import asyncio
@@ -11,6 +12,16 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import func, select, text
+
+
+class _NoProcessLock:
+    """A reusable stand-in for an in-process lock: entering it never waits."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
 
 
 async def run():
@@ -22,6 +33,7 @@ async def run():
     from backend.app.models.printer import Printer
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services import (
+        archive_write_scope,
         print_state_recovery_preview as tokens,
         print_state_recovery_store as store,
         queue_ops,
@@ -73,6 +85,10 @@ async def run():
                 expected_submission_id="9",
                 origin="dispatch",
             )
+            # The in-process lane and archive locks would serialize the race before the database is asked: the
+            # racer stands for another process, so only the database's own guards may make it wait.
+            queue_ops._queue_claim_locks[queue.id] = _NoProcessLock()
+            archive_write_scope._archive_locks[archive.id] = _NoProcessLock()
             return printer.id, queue.id, archive.id
 
     async def preview(ids):
@@ -112,6 +128,10 @@ async def run():
 
     results = {}
     with ExitStack() as patches:
+        # The lane and archive locks are process-wide and keyed by ids that repeat between tests; a lock an
+        # earlier test contended belongs to that test's event loop. This scenario owns fresh ones.
+        patches.enter_context(patch.dict(queue_ops._queue_claim_locks, clear=True))
+        patches.enter_context(patch.dict(archive_write_scope._archive_locks, clear=True))
         for registry in (
             "_print_run_bindings",
             "_print_start_admissions",

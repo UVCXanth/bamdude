@@ -229,6 +229,95 @@ async def test_rights_revoked_after_the_intent_keep_the_pause(db_session, a01, r
     assert (await db_session.get(PrinterQueue, a01.queue_id)).is_paused is True
 
 
+async def test_while_a_preview_lives_no_new_object_takes_an_identity_it_named(db_session, a01, released):
+    """Minor 2: the preview names the run by object identity. A rebind (``replace()``) with the same content
+    must stay a different object for as long as the preview can be applied -- the old one cannot be freed and
+    its id handed to a newcomer."""
+    from dataclasses import replace as dc_replace
+
+    _, payload = await preview(db_session, a01)
+    named = id(a01.run)
+    a01.run = None
+    seen = set()
+    for _ in range(50):
+        newcomer = dc_replace(printer_manager._print_run_bindings[a01.printer_id])
+        printer_manager._print_run_bindings[a01.printer_id] = newcomer
+        seen.add(id(newcomer))
+    assert named not in seen
+    # Seen before the first commit: refused whole, nothing paused, nothing written.
+    with pytest.raises(ValueError, match="recovery_changed"):
+        await apply(a01, payload)
+    assert released == [] and await rows(db_session) == []
+    assert current_print_run(printer_manager, a01.printer_id) is newcomer
+
+
+async def test_a_failure_before_the_cas_is_recorded_as_not_applied(db_session, a01, released, monkeypatch):
+    """Minor 1: the guards of the second transaction fail -- memory was never touched, and history says so."""
+    _, payload = await preview(db_session, a01)
+    real = store._take_guards
+    calls = 0
+
+    async def second_fails(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("database is locked")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_take_guards", second_fails)
+    result = await apply(a01, payload)
+    assert result["outcome"] == "not_applied_changed" and result["reason"] == "unavailable"
+    assert released == [] and current_print_run(printer_manager, a01.printer_id) is a01.run
+    intent, outcome = await rows(db_session)
+    assert outcome.id == outcome_id(payload["nonce"])
+    assert outcome.result["outcome"] == "not_applied_changed" and outcome.result["reason"] == "unavailable"
+    db_session.expire_all()
+    assert (await db_session.get(PrinterQueue, a01.queue_id)).is_paused is True
+    # The repeat reads the recorded answer.
+    again = await apply(a01, payload)
+    assert again["outcome"] == "not_applied_changed" and again["reason"] == "unavailable"
+
+
+async def test_a_database_error_in_the_recheck_is_not_called_lost_rights(db_session, a01, released):
+    _, payload = await preview(db_session, a01)
+    checks = 0
+
+    async def broken_later(_action, _db):
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise RuntimeError("database is locked")
+
+    result = await apply(a01, payload, recheck=broken_later)
+    assert result["outcome"] == "not_applied_changed" and result["reason"] == "unavailable"
+    assert released == [] and current_print_run(printer_manager, a01.printer_id) is a01.run
+
+
+async def test_the_row_says_which_repair_paused_its_queue(db_session, a01, released, clock):
+    """Minor 6 / R8.6, A26: after a reload the row itself says the pause came from a repair, and how it ended."""
+    from fastapi import HTTPException
+
+    _, payload = await preview(db_session, a01)
+    checks = 0
+
+    async def revoked_later(_action, _db):
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise HTTPException(403, "recovery_changed")
+
+    await apply(a01, payload, recheck=revoked_later)
+    await store.list_issues(db_session, None)
+    clock.advance(11)
+    page = await store.list_issues(db_session, None)
+    (row,) = [r for r in page["issues"] if r["printer_id"] == a01.printer_id and r["kind"] == "runtime"]
+    assert row["queue_paused"] is True
+    repair = row["last_repair"]
+    assert (repair["outcome"], repair["reason"]) == ("not_applied_changed", "rights_changed")
+    assert repair["archive_id"] == a01.archive_id and repair["queue_was_paused"] is False
+    assert repair["process_ended"] is False and repair["at"]
+
+
 async def test_a_restore_between_the_commits_keeps_the_pause(db_session, a01, released):
     _, payload = await preview(db_session, a01)
 
@@ -301,6 +390,49 @@ async def test_a_cancelled_request_still_ends_the_operation(db_session, a01, rel
     assert outcome.result["outcome"] == "applied" and released == [True]
 
 
+async def test_shutdown_waits_for_an_operation_whose_client_went_away(db_session, a01, released):
+    """Minor 7: the shielded operation is drained at shutdown, so its outcome is written before the process ends."""
+    _, payload = await preview(db_session, a01)
+    committed = asyncio.Event()
+
+    def mark(_mapper, _connection, target):
+        if target.result.get("phase") == "intent":
+            committed.set()
+
+    event.listen(PrintStateRecoveryAction, "after_insert", mark)
+    try:
+        request = asyncio.ensure_future(apply(a01, payload))
+        await asyncio.wait_for(committed.wait(), 10)
+        request.cancel()
+        assert await store.drain_runtime_operations(timeout=10) == 0
+    finally:
+        event.remove(PrintStateRecoveryAction, "after_insert", mark)
+    intent, outcome = await rows(db_session)
+    assert outcome.result["outcome"] == "applied" and released == [True]
+
+
+async def test_a_failure_nobody_waits_for_is_still_logged(db_session, a01, monkeypatch, caplog):
+    """Minor 7: ``asyncio.shield`` quietly takes the exception of an operation whose client left -- so the
+    operation reports its own failure, or it would vanish without a trace."""
+    import logging
+
+    _, payload = await preview(db_session, a01)
+    gate = asyncio.Event()
+
+    async def broken(*_args, **_kwargs):
+        await gate.wait()
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(store, "_apply_runtime", broken)
+    request = asyncio.ensure_future(apply(a01, payload))
+    await asyncio.sleep(0)
+    request.cancel()
+    with caplog.at_level(logging.WARNING, logger=store.__name__):
+        gate.set()
+        assert await store.drain_runtime_operations(timeout=10) == 0
+    assert any("operation failed" in r.getMessage() for r in caplog.records), caplog.records
+
+
 async def test_history_groups_the_pair_and_names_an_ended_process(async_client, db_session, a01, monkeypatch):
     _, payload = await preview(db_session, a01)
     await apply(a01, payload)
@@ -309,6 +441,37 @@ async def test_history_groups_the_pair_and_names_an_ended_process(async_client, 
     (action,) = response.json()["actions"]
     assert action["id"] == payload["nonce"] and action["outcome"]["outcome"] == "applied"
     assert action["process_ended"] is False
+
+
+async def test_history_reads_the_outcomes_of_a_page_at_once(async_client, db_session, test_engine, a01):
+    """Minor 9: one read of the page and one of its outcomes, however many repairs the page holds."""
+    for n in range(12):
+        db_session.add(
+            store._audit_row(
+                f"00000000-0000-4000-8000-{n:012d}",
+                "user:1",
+                "Operator",
+                (a01.printer_id, "runtime", a01.archive_id),
+                a01.queue_id,
+                a01.archive_id,
+                "h",
+                {"id": f"00000000-0000-4000-8000-{n:012d}", "phase": "intent", "action": RUNTIME_ACTION},
+            )
+        )
+    await db_session.commit()
+    statements = []
+
+    def count(_conn, _cursor, statement, *_args):
+        if "print_state_recovery_actions" in statement:
+            statements.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+    try:
+        response = await async_client.get(f"/api/v1/system/printers/{a01.printer_id}/print-state/history")
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+    assert response.status_code == 200 and len(response.json()["actions"]) == 12
+    assert len(statements) <= 2, statements
 
 
 async def test_an_intent_without_outcome_of_an_ended_process_proves_nothing(async_client, db_session, a01, monkeypatch):

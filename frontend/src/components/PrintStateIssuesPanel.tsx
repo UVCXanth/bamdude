@@ -11,18 +11,36 @@ import { formatDateTime } from '../utils/date';
 
 /** The anchor of a row: the stalled-start row links to the context row that holds its printer. */
 const rowAnchor = (printerId: number, kind: string, target: number) => `print-state-${printerId}-${kind}-${target}`;
-const LIVE_REASONS = ['live_busy', 'live_unknown'];
+const LIVE_REASONS = ['live_busy', 'live_unknown', 'printer_printing'];
+const RUNTIME_ACTION = 'clear_terminal_runtime_context';
+
+/** How an in-memory repair ended, in words: released / not changed (why), or unknown -- never guessed. */
+function repairResult(t: (key: string) => string, outcome: { outcome?: string | null; reason?: string | null } | null,
+  processEnded: boolean): string {
+  if (outcome?.outcome) {
+    const reason = outcome.reason ? ` (${t(`printStateRecovery.outcomeReasons.${outcome.reason}`)})` : '';
+    return `${t(`printStateRecovery.historyOutcome.${outcome.outcome}`)}${reason}`;
+  }
+  return t(processEnded ? 'printStateRecovery.historyOutcome.processEnded' : 'printStateRecovery.historyOutcome.unknown');
+}
 
 function RuntimeDetails({ issue }: { issue: PrintStateIssue }) {
   const { t } = useTranslation();
   const archive = issue.archive_id ?? issue.context?.archive_id ?? '—';
   const free = !issue.blocked_reasons.some(reason => LIVE_REASONS.includes(reason));
+  const repair = issue.last_repair;
   return <div className="space-y-1">
-    <p className="text-sm">{issue.code === 'terminal_runtime_context'
-      ? t(free ? 'printStateRecovery.runtime.held' : 'printStateRecovery.runtime.heldBusy', { archive })
-      : t('printStateRecovery.runtime.unresolved', { archive })}</p>
+    <p className="text-sm">{issue.code === 'runtime_phase_lingering'
+      ? t('printStateRecovery.runtime.lingering')
+      : issue.code === 'terminal_runtime_context'
+        ? t(free ? 'printStateRecovery.runtime.held' : 'printStateRecovery.runtime.heldBusy', { archive })
+        : t('printStateRecovery.runtime.unresolved', { archive })}</p>
     {issue.age_seconds !== undefined && <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.age', { seconds: issue.age_seconds })}</p>}
     {issue.queue_paused && <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.paused')}</p>}
+    {repair && <p className="text-xs text-bambu-gray break-words">{t('printStateRecovery.runtime.lastRepair', {
+      archive: repair.archive_id ?? '—', when: repair.at ? formatDateTime(repair.at) : '—',
+      result: repairResult(t, repair, repair.process_ended),
+    })}{repair.queue_was_paused ? ` ${t('printStateRecovery.runtime.lastRepairWasPaused')}` : ''}</p>}
     {issue.plate_gate && <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.plateGate')}</p>}
     <PrintStatePreheatNote pinned={issue.preheat_pinned} temperatures={issue.temperatures} />
   </div>;
@@ -32,6 +50,7 @@ function EpisodeDetails({ issue }: { issue: PrintStateIssue }) {
   const { t } = useTranslation();
   return <div className="space-y-1">
     <p className="text-sm">{t('printStateRecovery.episode.attempts', { count: issue.attempts ?? 0, seconds: issue.span_seconds ?? 0 })}</p>
+    {issue.active === false && <p className="text-xs text-bambu-gray">{t('printStateRecovery.episode.inactive', { seconds: issue.quiet_seconds ?? 0 })}</p>}
     <p className="text-xs text-bambu-gray">{t('printStateRecovery.episode.job', { item: issue.item_id ?? '—' })}</p>
     {issue.related && <a className="text-xs text-bambu-green hover:underline"
       href={`#${rowAnchor(issue.printer_id, issue.related.kind, issue.related.target_id)}`}>{t('printStateRecovery.episode.related')}</a>}
@@ -39,13 +58,8 @@ function EpisodeDetails({ issue }: { issue: PrintStateIssue }) {
 }
 
 function historyOutcome(row: PrintStateAudit, t: (key: string) => string): string | null {
-  if (row.action !== 'clear_terminal_runtime_context') return null;
-  const outcome = row.outcome;
-  if (outcome && typeof outcome === 'object') {
-    const reason = outcome.reason ? ` (${t(`printStateRecovery.outcomeReasons.${outcome.reason}`)})` : '';
-    return `${t(`printStateRecovery.historyOutcome.${outcome.outcome}`)}${reason}`;
-  }
-  return t(row.process_ended ? 'printStateRecovery.historyOutcome.processEnded' : 'printStateRecovery.historyOutcome.unknown');
+  if (row.action !== RUNTIME_ACTION) return null;
+  return repairResult(t, row.outcome && typeof row.outcome === 'object' ? row.outcome : null, !!row.process_ended);
 }
 
 export function PrintStateIssuesPanel() {
@@ -98,6 +112,10 @@ export function PrintStateIssuesPanel() {
       {query.data && <>
         <p className="text-xs text-bambu-gray">{t('printStateRecovery.checkedAt')}: {formatDateTime(query.data.checked_at)}</p>
         <p className="text-xs text-bambu-gray">{t('printStateRecovery.count', { count: query.data.issues.length })}</p>
+        {query.data.stall_tracking && <p className="text-xs text-bambu-gray">
+          {t('printStateRecovery.episode.tracking', { minutes: Math.round(query.data.stall_tracking.since_seconds / 60) })}
+          {query.data.stall_tracking.evicted > 0 && ` ${t('printStateRecovery.episode.dropped', { count: query.data.stall_tracking.evicted })}`}
+        </p>}
         {query.data.issues.length === 0 && <p>{t(query.data.truncated ? 'printStateRecovery.partial' : 'printStateRecovery.empty')}</p>}
         <div className="space-y-3">{query.data.issues.map(issue => <article key={`${issue.printer_id}:${issue.kind}:${issue.target_id}`}
           id={rowAnchor(issue.printer_id, issue.kind, issue.target_id)}
@@ -127,7 +145,9 @@ export function PrintStateIssuesPanel() {
         {history.rows.length === 0 && <p>{t('printStateRecovery.historyEmpty')}</p>}
         {history.rows.map(row => <p key={row.id} className="text-sm break-words">{row.created_at ? formatDateTime(row.created_at) : ''}
           {' · '}{row.actor_label}{' · '}{t(`printStateRecovery.actions.${row.action}`)}{' · '}
-          {t('printStateRecovery.target', { item: row.item_id ?? '—', archive: row.archive_id ?? '—' })}
+          {row.action === RUNTIME_ACTION
+            ? t('printStateRecovery.targetArchive', { archive: row.archive_id ?? '—' })
+            : t('printStateRecovery.target', { item: row.item_id ?? '—', archive: row.archive_id ?? '—' })}
           {historyOutcome(row, t) ? ` · ${historyOutcome(row, t)}` : ''}
           {row.note ? ` · ${row.note}` : ''}</p>)}
         {history.next && <Button variant="secondary" onClick={() => void showHistory(history.printer, history.next ?? undefined)}

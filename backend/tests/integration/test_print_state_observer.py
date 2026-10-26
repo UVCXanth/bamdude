@@ -87,6 +87,68 @@ async def test_a_stalled_dispatch_is_a_row_beside_the_context_that_holds_it(
     assert "terminal_runtime_context" in rows
 
 
+async def test_a_stall_that_went_quiet_is_inactive_not_resolved(
+    db_session, factory, printer_factory, telemetry, runtime, clock, stall_clock
+):
+    """Minor 5 / R4: after a repair or a pause no new attempt comes. The row stays -- inactive, with how long it
+    has been quiet -- and is not a problem Health counts; only progress or the job's end removes it."""
+    printer = await printer_factory()
+    archive_id, queue_id = await a_held_run_and_queue(db_session, printer.id)
+    pending = PrintQueueItem(queue_id=queue_id, status="pending", position=1)
+    db_session.add(pending)
+    await db_session.commit()
+    telemetry.state = "FINISH"
+    for _ in range(3):
+        tracker.observe_deferral(printer.id, pending.id, "dispatch_claim_changed", "current_run_conflict", archive_id)
+        stall_clock.advance(30)
+    stall_clock.advance(tracker.WINDOW_SECONDS + 1)
+
+    observer = PrintStateObserver(session_factory=factory)
+    await observer.tick()
+    clock.advance(11)
+    await observer.tick()
+    page = await store.list_issues(db_session, None)
+    (row,) = [r for r in page["issues"] if r["code"] == "dispatch_no_progress"]
+    assert row["active"] is False and row["observation"] is True
+    assert row["quiet_seconds"] == tracker.WINDOW_SECONDS + 31
+    summary = observer.summary(None)
+    assert "dispatch_no_progress" not in summary["by_code"]
+    assert summary["observations"]["dispatch_no_progress"] == 1
+
+
+async def test_an_episode_links_only_to_a_row_that_is_shown(
+    db_session, printer_factory, telemetry, runtime, clock, stall_clock
+):
+    """Minor 5: the held context is not on the page yet (seen once only) -- no link that leads nowhere."""
+    printer = await printer_factory()
+    archive_id, queue_id = await a_held_run_and_queue(db_session, printer.id)
+    pending = PrintQueueItem(queue_id=queue_id, status="pending", position=1)
+    db_session.add(pending)
+    await db_session.commit()
+    telemetry.state = "FINISH"
+    for _ in range(3):
+        tracker.observe_deferral(printer.id, pending.id, "dispatch_claim_changed", "current_run_conflict", archive_id)
+        stall_clock.advance(30)
+    page = await store.list_issues(db_session, None)
+    (row,) = [r for r in page["issues"] if r["code"] == "dispatch_no_progress"]
+    assert not [r for r in page["issues"] if r["kind"] == "runtime"]
+    assert row["related"] is None
+
+
+async def test_what_the_stall_tracking_covers_is_said(
+    db_session, factory, printer_factory, telemetry, runtime, clock, stall_clock, monkeypatch
+):
+    """Minor 5 / R4: since when stalls are tracked, and whether any record was dropped, reach Info and Health."""
+    await printer_factory()
+    stall_clock.advance(120)
+    monkeypatch.setattr(tracker, "_evicted", 3)
+    page = await store.list_issues(db_session, None)
+    assert page["stall_tracking"] == {"since_seconds": 120, "evicted": 3}
+    observer = PrintStateObserver(session_factory=factory)
+    await observer.tick()
+    assert observer.public_summary(None)["stall_tracking"] == {"since_seconds": 120, "evicted": 3}
+
+
 async def test_an_episode_of_a_job_that_is_gone_is_not_a_row(
     db_session, printer_factory, telemetry, runtime, stall_clock
 ):
@@ -139,6 +201,54 @@ async def test_the_observer_counts_what_the_panel_shows(
     assert summary["by_code"] == {"terminal_runtime_context": 1}
     assert summary["printers"] == [{"printer_id": printer.id, "codes": ["terminal_runtime_context"]}]
     assert summary["checked_at"] is not None and summary["error"] is None
+
+
+async def test_a_page_cut_short_marks_only_the_printers_it_read(
+    db_session, factory, printer_factory, telemetry, runtime, clock
+):
+    """Minor 8: rows past the page's cut belong to the next page -- their printers are not "checked" yet."""
+    first = await printer_factory(name="busy")
+    second = await printer_factory(name="after the cut")
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    db_session.add_all(
+        PrintArchive(
+            printer_id=first.id,
+            filename=f"part-{n}.gcode.3mf",
+            file_path=f"archives/part-{n}.gcode.3mf",
+            file_size=1,
+            status="printing",
+            started_at=started,
+            extra_data={},
+        )
+        for n in range(101)
+    )
+    await db_session.commit()
+    observer = PrintStateObserver(session_factory=factory)
+    await observer.tick()
+    assert second.id not in observer.summary(None)["coverage"]["printer_ids"]
+    await observer.tick()
+    assert {first.id, second.id} <= set(observer.summary(None)["coverage"]["printer_ids"])
+
+
+async def test_an_observation_is_shown_but_never_counted_as_a_problem(
+    db_session, factory, printer_factory, telemetry, runtime, clock
+):
+    """A completion past its budget is listed in Info as an observation; Health counts problems only."""
+    from backend.app.services.print_run_binding import begin_print_run_finishing
+
+    printer = await printer_factory()
+    bind_print_run(printer_manager, printer_id=printer.id, archive_id=77, origin="dispatch")
+    begin_print_run_finishing(printer_manager, printer.id, 77)
+    telemetry.state = "FINISH"
+    observer = PrintStateObserver(session_factory=factory)
+    await observer.tick()
+    clock.advance(store.LINGERING_SECONDS + 1)
+    await observer.tick()
+    page = await store.list_issues(db_session, None)
+    assert [r["code"] for r in page["issues"] if r["printer_id"] == printer.id] == ["runtime_phase_lingering"]
+    summary = observer.summary(None)
+    assert summary["by_code"] == {} and summary["printers"] == []
+    assert summary["observations"] == {"runtime_phase_lingering": 1}
 
 
 async def test_the_summary_follows_the_callers_printer_scope(
@@ -289,6 +399,31 @@ async def test_system_health_counts_only_the_keys_printers(
     assert response.status_code == 200, response.text
     state = response.json()["print_state"]
     assert state is None or (state["by_code"] == {} and state["printers"] == [])
+
+
+async def test_the_support_bundle_asks_the_print_state_read_rights(db_session, monkeypatch):
+    """Minor 11: the bundle's print-state section is read with the very gates Info and Health ask."""
+    from backend.app.api.routes import support
+    from backend.app.api.routes.print_state_recovery import READ
+    from backend.app.core.auth import RequestCredentials
+    from backend.app.services import diagnostic_snapshot
+
+    def denying(denied):
+        class Creds(RequestCredentials):
+            async def allows(self, gate):
+                return gate is not denied
+
+        return Creds(None, None, None)
+
+    for gate in READ:
+        assert await support._print_state_access(None, denying(gate)) == (False, None)
+    assert await support._print_state_access(None, denying(None)) == (True, None)
+    assert await support._print_state_access(None, None) == (False, None)  # no request credentials: nobody
+
+    monkeypatch.setattr(diagnostic_snapshot, "_run_connection_for", lambda p: asyncio.sleep(0, result={}))
+    monkeypatch.setattr(diagnostic_snapshot, "_run_log_health", lambda: asyncio.sleep(0, result={}))
+    snapshot = await diagnostic_snapshot.collect_diagnostic_snapshot(db_session, include_print_state=False)
+    assert snapshot["print_state"] == {"omitted": "permissions"}
 
 
 async def test_the_support_snapshot_carries_the_same_bounded_reading(
