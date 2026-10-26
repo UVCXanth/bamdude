@@ -81,7 +81,7 @@ def test_the_integer_solver_gets_more_time_never_past_its_turn(monkeypatch, exte
     monkeypatch.setattr(fit.time, "monotonic", lambda: 100.0)
     monkeypatch.setattr(scipy.optimize, "milp", limited)
     assert fit.solve(s, 1, 5, 1, 100 + remaining, extended_search=extended) == (None, "limited")
-    assert options == [{"time_limit": min(cap, remaining), "mip_rel_gap": 0.0, "node_limit": nodes}]
+    assert options == [{"time_limit": min(cap, remaining), "mip_rel_gap": 0.0, "node_limit": nodes, "threads": 1}]
 
 
 # --- each candidate's canonical check: 3 seconds, and what its answer proves -------------------------------------

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import warnings
 from dataclasses import asdict, dataclass, field, replace
 from fractions import Fraction
 from math import gcd
@@ -594,17 +595,25 @@ def solve(
                 [upper] + [MAX_QUANTITY] * m + [np.inf] * n + [ready] + loose,
             )
             try:
-                result = milp(
-                    objective,
-                    integrality=np.ones(size),
-                    bounds=bounds,
-                    constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
-                    options={
-                        "time_limit": min(7.5 if extended_search else 1.5, seconds),
-                        "mip_rel_gap": 0.0,
-                        "node_limit": 500_000 if extended_search else 100_000,
-                    },
-                )
+                with warnings.catch_warnings():
+                    # SciPy passes ``threads`` to HiGHS verbatim and says so; that is exactly what is wanted here.
+                    warnings.filterwarnings("ignore", r"Unrecognized options detected: \{'threads'\}", RuntimeWarning)
+                    result = milp(
+                        objective,
+                        integrality=np.ones(size),
+                        bounds=bounds,
+                        constraints=LinearConstraint(np.array(matrix, dtype=float), lo, hi),
+                        options={
+                            "time_limit": min(7.5 if extended_search else 1.5, seconds),
+                            "mip_rel_gap": 0.0,
+                            "node_limit": 500_000 if extended_search else 100_000,
+                            # No HiGHS worker threads: SciPy's Windows build can spin for ever under the loader
+                            # lock when one exits (it then blocks every thread start and exit of the process).
+                            # HiGHS refuses a different count on a thread that already solved, so plate fit is
+                            # its only caller and always asks for one.
+                            "threads": 1,
+                        },
+                    )
             except (ValueError, RuntimeError):
                 return None, "limited"
             if result.status == 2:
