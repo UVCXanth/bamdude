@@ -247,6 +247,62 @@ class TestInternalWriter:
         assert reported == [(label, 10.0)]
         notify.assert_awaited_once()
 
+    @pytest.mark.parametrize("total", [0, None])
+    @pytest.mark.parametrize(
+        "chronology, rows, label",
+        [
+            ([(0, 0)], [(EVENT_RUNOUT, KIND_MANUAL, 0, 40, "a"), (EVENT_SPOOL_LOADED, None, 0, 40, "b")], 0),
+            ([(0, 0), (1, 40)], [(EVENT_TRAY_CHANGE, None, 1, 40, "b")], UNKNOWN_FEED),
+        ],
+        ids=["one_tray", "two_trays"],
+    )
+    async def test_no_layer_at_all_still_sizes_the_weight_by_progress(
+        self, db_session, stage, total, chronology, rows, label
+    ):
+        """PL-R1 parity: no terminal, captured or plate layer count — 25 % of 40 g is still a
+        known 10 g, reported not recorded exactly as the Spoolman writer reports it."""
+        spool = {"a": stage.a, "b": stage.b}
+        await journal(
+            db_session,
+            stage.printer,
+            stage.archive,
+            [(EVENT_START, None, 0, 0, stage.a)] + [(e, k, t, layer, spool[s]) for e, k, t, layer, s in rows],
+        )
+        _active_sessions[stage.printer.id] = by_snapshot(stage)
+
+        notify, reported = await run_internal(
+            db_session,
+            stage.printer,
+            stage.archive,
+            failed_at(0, captured=0, total=total, progress=25.0, captured_progress=25.0),
+            next_print_state(chronology),
+        )
+
+        assert await history(db_session) == set()
+        notify.assert_awaited_once()
+        assert reported == [(label, 10.0)]
+
+    async def test_no_layer_and_no_progress_invent_no_weight(self, db_session, stage):
+        """PL-R1 control on the internal writer: nothing sizes the weight, nothing is written."""
+        await journal(
+            db_session,
+            stage.printer,
+            stage.archive,
+            [(EVENT_START, None, 0, 0, stage.a), (EVENT_TRAY_CHANGE, None, 1, 40, stage.b)],
+        )
+        _active_sessions[stage.printer.id] = by_snapshot(stage)
+
+        notify, _reported = await run_internal(
+            db_session,
+            stage.printer,
+            stage.archive,
+            failed_at(0, captured=0, total=0, progress=0, captured_progress=0),
+            next_print_state([(0, 0), (1, 40)]),
+        )
+
+        assert await history(db_session) == set()
+        notify.assert_not_awaited()
+
     async def test_one_reel_in_every_stretch_takes_the_whole_weight_without_a_boundary(self, db_session, stage):
         """A08 control: the same reel on both sides of the boundary — nothing to divide."""
         await journal(
@@ -488,6 +544,55 @@ class TestSpoolmanWriter:
         assert charged == {}
         notify.assert_awaited_once()
         assert notify.await_args.args[1] == [(label, 10.0)]
+
+    @pytest.mark.parametrize("total", [0, None])
+    @pytest.mark.parametrize(
+        "events, chronology, label",
+        [(REEL_CHANGE_IN_TRAY_0, [(0, 0)], 0), (BACKUP_TAKEOVER, [(0, 0), (1, 40)], UNKNOWN_FEED)],
+        ids=["one_tray", "two_trays"],
+    )
+    async def test_no_layer_at_all_still_sizes_the_weight_by_progress(self, total, events, chronology, label):
+        """PL-R1 (Codex r1): no terminal, captured or plate layer count — but 25 % of the 40 g
+        estimate is a known 10 g. An unknown boundary is no unknown weight: the 10 g are reported
+        not recorded, never dropped without a word."""
+        data = failed_at(0, captured=0, total=total, progress=25.0, captured_progress=25.0)
+        charged, notify = await run_spoolman(data, usage=ONE_SLOT, journal_events=events, tray_change_log=chronology)
+        assert charged == {}
+        notify.assert_awaited_once()
+        assert notify.await_args.args[1] == [(label, 10.0)]
+
+    async def test_no_layer_at_all_charges_a_single_reel_its_progress_share(self):
+        """PL-R1 control: one reel fed the print — it takes the 10 g with no boundary needed."""
+        charged, notify = await run_spoolman(
+            failed_at(0, captured=0, total=0, progress=25.0),
+            usage=ONE_SLOT,
+            journal_events=[REEL_CHANGE_IN_TRAY_0[0]],
+            tray_change_log=[(0, 0)],
+        )
+        assert charged == {11: 10.0}
+        notify.assert_not_awaited()
+
+    async def test_no_layer_and_no_progress_invent_no_weight(self):
+        """PL-R1 control: neither a layer nor a progress — nothing to size the weight by."""
+        charged, notify = await run_spoolman(
+            failed_at(0, captured=0, total=0, progress=0, captured_progress=0),
+            usage=ONE_SLOT,
+            journal_events=REEL_CHANGE_IN_TRAY_0,
+            tray_change_log=[(0, 0)],
+        )
+        assert charged == {}
+        notify.assert_not_awaited()
+
+    async def test_a_captured_layer_without_a_plate_count_still_divides(self):
+        """PL-R1 control: captured 50, L reset — 10 g by progress, divided at 50 → 8 / 2."""
+        charged, notify = await run_spoolman(
+            failed_at(0, captured=50, total=0, progress=25.0),
+            usage=ONE_SLOT,
+            journal_events=REEL_CHANGE_IN_TRAY_0,
+            tray_change_log=[(0, 0)],
+        )
+        assert charged == {11: 8.0, 12: 2.0}
+        notify.assert_not_awaited()
 
     async def test_every_branch_reports_in_one_notice(self):
         """A20: the journal split's unrecorded reel and a mapped slot with no Spoolman spool —

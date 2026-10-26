@@ -1296,7 +1296,10 @@ async def _report_partial_usage(
             current_layer,
         )
 
-    if not current_layer or current_layer <= 0:
+    # An unknown boundary is no unknown weight (PL-R1): with no layer at all, the progress still
+    # sizes the weight by percentage below, and the split, having no boundary, reports it not
+    # recorded unless one reel fed the whole print. Only with neither is there nothing to report.
+    if not current_layer and progress_ratio_from_event is None:
         logger.debug(
             "[SPOOLMAN] No progress to report (layer 0/unknown, last_layer_num=%s, last_progress=%s)",
             last_layer_num,
@@ -1304,7 +1307,7 @@ async def _report_partial_usage(
         )
         return
 
-    logger.info("[SPOOLMAN] Reporting partial usage at layer %s/%s", current_layer, total_layers or "?")
+    logger.info("[SPOOLMAN] Reporting partial usage at layer %s/%s", current_layer or "?", total_layers or "?")
 
     # What the aborted print was actually charged, for the archive: its weight
     # is what was used, not the estimate, and the cost follows (#2591, D6).
@@ -1421,8 +1424,8 @@ async def _report_partial_usage(
         await _settle_archive()
         return
 
-    # Try to use accurate G-code parsed data
-    if layer_usage:
+    # Try to use accurate G-code parsed data — it measures the weight AT a layer, so it needs one.
+    if layer_usage and current_layer:
         layer_usage_int = {
             int(layer): {int(fid): mm for fid, mm in filaments.items()} for layer, filaments in layer_usage.items()
         }
@@ -1467,7 +1470,7 @@ async def _report_partial_usage(
 
     # Fallback: linear interpolation (if no G-code data available)
     progress_ratio = None
-    if total_layers and total_layers > 0:
+    if current_layer and total_layers and total_layers > 0:
         progress_ratio = min(current_layer / total_layers, 1.0)
     elif progress_ratio_from_event is not None:
         progress_ratio = progress_ratio_from_event
