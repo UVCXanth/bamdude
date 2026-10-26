@@ -16,7 +16,12 @@ from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
-from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write, locked_print
+from backend.app.services.archive_write_scope import (
+    archive_process_lock,
+    archive_write_scope,
+    load_active_archive_for_write,
+    locked_print,
+)
 from backend.app.services.order_filing import FILING_FORBIDDEN, resolve_link
 from backend.app.services.plate_hold import (
     StalePlateAnswer,
@@ -182,6 +187,21 @@ async def answer_plate_run(
     from backend.app.services.printer_manager import printer_manager
 
     async with _printer_locks[printer_id], AsyncExitStack() as write_scopes:
+
+        async def guard_archive(archive_id):
+            # As with queue_ops.lane_held_in_process, a caller that may already
+            # own SQLite's writer must NEVER wait for a process guard: its
+            # holder can be waiting for that same writer. Refuse without ending
+            # the caller's transaction. Check and acquire have no intervening
+            # await that can suspend when the asyncio lock is free.
+            if (
+                db.get_bind().dialect.name == "sqlite"
+                and db.in_transaction()
+                and archive_process_lock(archive_id).locked()
+            ):
+                raise StalePlateAnswer("This print is being changed; try clearing the plate again")
+            await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+
         # SQLite must become the writer before receipt/gate/row reads.  When an
         # expected archive is present its archive scope does this; legacy calls
         # have no archive identity to lock, so take the short DB-wide writer
@@ -189,7 +209,7 @@ async def answer_plate_run(
         archive_guarded = False
         manual_gate_owner = None
         if expected_archive_id is not None:
-            await write_scopes.enter_async_context(archive_write_scope(db, expected_archive_id))
+            await guard_archive(expected_archive_id)
             archive_guarded = True
         elif db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
@@ -211,7 +231,7 @@ async def answer_plate_run(
                 )
             )
             if manual_gate_owner is not None:
-                await write_scopes.enter_async_context(archive_write_scope(db, manual_gate_owner))
+                await guard_archive(manual_gate_owner)
                 archive_guarded = True
 
         # Receipt lookup happens only inside the same write transaction as the
@@ -260,7 +280,7 @@ async def answer_plate_run(
                 .execution_options(populate_existing=True),
             )
         if archive is not None and not archive_guarded:
-            await write_scopes.enter_async_context(archive_write_scope(db, archive.id))
+            await guard_archive(archive.id)
             archive = await load_active_archive_for_write(db, archive.id)
         if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
             raise StalePlateAnswer("This completion card is no longer current for this printer")
