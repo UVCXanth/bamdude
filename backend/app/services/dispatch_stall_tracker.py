@@ -188,6 +188,10 @@ def new_incarnation(item_id: int | None) -> None:
 def snapshot(printer_id: int | None = None) -> tuple[EpisodeView, ...]:
     """Immutable views of the episodes, of one printer or of all, oldest first."""
     now = clock()
+    try:
+        _prune(now)  # the retention bound holds on a farm that stopped failing, not only on the next failure
+    except Exception:  # noqa: BLE001 - reading must never fail on its housekeeping
+        logger.warning("dispatch stall tracker could not drop expired episodes", exc_info=True)
     views = [
         EpisodeView(
             e.printer_id,
@@ -212,6 +216,7 @@ def snapshot(printer_id: int | None = None) -> tuple[EpisodeView, ...]:
 
 def coverage() -> dict:
     """What the tracker can vouch for: since when, how many episodes, how many it had to drop."""
+    _prune(clock())
     return {"since": _started, "episodes": len(_episodes), "evicted": _evicted, "max_episodes": MAX_EPISODES}
 
 

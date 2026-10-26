@@ -125,8 +125,9 @@ def runtime_effect_debt(extra) -> list[str]:
     if not isinstance(extra, dict):
         return ["effects_unreadable"]
     debt = set()
-    pending = extra.get("swap_macro_events_pending")
-    if pending is not None:
+    # Only an absent key or a list proves anything; a present null is a carrier this reader cannot read.
+    if "swap_macro_events_pending" in extra:
+        pending = extra["swap_macro_events_pending"]
         if not isinstance(pending, list):
             debt.add("effects_unreadable")
         elif pending:
@@ -139,8 +140,8 @@ def runtime_effect_debt(extra) -> list[str]:
             for name, record in effects.items():
                 stage = record.get("stage") if isinstance(record, dict) else None
                 if name != "swap_change_table":
-                    if not isinstance(record, dict):
-                        debt.add("effects_unreadable")
+                    if not isinstance(stage, str):
+                        debt.add("effects_unreadable")  # no record, no stage, or a stage of another type
                     elif stage not in _SETTLED_EFFECT_STAGES:
                         debt.add("effects_pending")  # in flight, uncertain, or a stage this reader does not know
                     continue
@@ -264,6 +265,11 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
             reasons.add(busy_reason)
         elif value is not False:
             reasons.add("context_owner_unknown")
+    timelapse = r.get("layer_timelapse")
+    if timelapse is True:
+        reasons.add("timelapse_open")  # it would take the next print's layers: kept until handled on its own
+    elif timelapse is not False:
+        reasons.add("context_owner_unknown")
     finishing = r.get("finishing")
     if type(finishing) is not int:
         reasons.add("context_owner_unknown")

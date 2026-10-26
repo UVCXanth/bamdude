@@ -46,6 +46,19 @@ function RuntimeDetails({ issue }: { issue: PrintStateIssue }) {
   </div>;
 }
 
+/** A queue an in-memory repair left paused after its context went: why it is paused, until it is resumed. */
+function RepairDetails({ issue }: { issue: PrintStateIssue }) {
+  const { t } = useTranslation();
+  const repair = issue.last_repair;
+  return <div className="space-y-1">
+    {repair && <p className="text-sm break-words">{t('printStateRecovery.runtime.lastRepair', {
+      archive: repair.archive_id ?? '—', when: repair.at ? formatDateTime(repair.at) : '—',
+      result: repairResult(t, repair, repair.process_ended),
+    })}{repair.queue_was_paused ? ` ${t('printStateRecovery.runtime.lastRepairWasPaused')}` : ''}</p>}
+    <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.pausedNow')}</p>
+  </div>;
+}
+
 function EpisodeDetails({ issue }: { issue: PrintStateIssue }) {
   const { t } = useTranslation();
   return <div className="space-y-1">
@@ -123,6 +136,7 @@ export function PrintStateIssuesPanel() {
           <h3 className="font-medium break-words">{issue.printer_name} · {t(`printStateRecovery.issues.${issue.code}`)}</h3>
           {issue.kind === 'runtime' ? <RuntimeDetails issue={issue} />
             : issue.kind === 'episode' ? <EpisodeDetails issue={issue} />
+            : issue.kind === 'repair' ? <RepairDetails issue={issue} />
               : <>
                 <p className="text-sm">{t('printStateRecovery.target', { item: issue.item_id ?? '—', archive: issue.archive_id ?? '—' })}</p>
                 <p className="text-xs text-bambu-gray">{t(`printStateRecovery.live.${issue.live_mode}`)}</p>

@@ -261,6 +261,28 @@ describe('A finished run held in memory', () => {
     expect(screen.getByText(/reports that it is printing/)).toBeInTheDocument();
   });
 
+  it('after a reload, still explains a queue a finished release left paused', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([{
+      ...held, kind: 'repair', target_id: 0, code: 'queue_paused_by_repair', actions: [], observation: true,
+      context: undefined, queue_paused: true,
+      last_repair: { at: '2026-10-01T12:00:00', archive_id: 19, queue_was_paused: false, outcome: 'applied',
+        reason: null, process_ended: false },
+    } as PrintStateIssue]));
+    panel();
+    expect(await screen.findByText(/still paused after a release attempt/)).toBeInTheDocument();
+    expect(screen.getByText(/paused by a release attempt for archive #19/)).toBeInTheDocument();
+    expect(screen.getByText(/context released/)).toBeInTheDocument();
+    expect(screen.getByText(/Check the printer, then resume the queue/)).toBeInTheDocument();
+    expect(document.getElementById('print-state-7-repair-0')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Release the finished context' })).not.toBeInTheDocument();
+  });
+
+  it('names an open layer timelapse as what holds the run', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([{ ...held, actions: [], blocked_reasons: ['timelapse_open'] }]));
+    panel();
+    expect(await screen.findByText(/layer timelapse of this print is still open/)).toBeInTheDocument();
+  });
+
   it('says how much of the past the stall records cover', async () => {
     vi.mocked(api.getPrintStateIssues).mockResolvedValue({
       ...page([held]), stall_tracking: { since_seconds: 300, evicted: 2 },

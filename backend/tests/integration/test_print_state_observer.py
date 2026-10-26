@@ -203,6 +203,36 @@ async def test_the_observer_counts_what_the_panel_shows(
     assert summary["checked_at"] is not None and summary["error"] is None
 
 
+@pytest.mark.parametrize("summary_in_between", [True, False])
+async def test_a_page_read_before_a_restore_is_never_published(monkeypatch, summary_in_between):
+    """RS-R4: the read began on the old database; whatever happened to the cache meanwhile, its rows are dropped."""
+    from backend.app.services import print_state_observer as module
+
+    epoch = [0]
+    monkeypatch.setattr(module.queue_sources, "current_epoch", lambda: epoch[0])
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    observer = PrintStateObserver(session_factory=Session)
+
+    async def old_page(*_args, **_kwargs):
+        epoch[0] = 1  # a restore lands while this page is being read
+        if summary_in_between:
+            observer.summary(None)  # a Health request in between already reset the cache
+        return {"issues": [{"printer_id": 123, "code": "terminal_runtime_context"}], "next_cursor": None}, [123]
+
+    monkeypatch.setattr(store, "list_issues_page", old_page)
+    await observer.tick()
+    summary = observer.summary(None)
+    assert summary["printers"] == [] and summary["coverage"]["printer_ids"] == []
+    assert summary["coverage"]["cycle_complete"] is False
+
+
 async def test_a_page_cut_short_marks_only_the_printers_it_read(
     db_session, factory, printer_factory, telemetry, runtime, clock
 ):

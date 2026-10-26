@@ -195,7 +195,7 @@ def runtime_snapshot(printer_id: int) -> dict:
     that were checked. An owner whose accessor fails is ``None`` -- unknown, never "no owner".
     """
     from backend.app import main
-    from backend.app.services import preheat, swap_terminal
+    from backend.app.services import layer_timelapse, preheat, swap_terminal
     from backend.app.services.archive_download_retry import archive_download_retry
     from backend.app.services.background_dispatch import background_dispatch
     from backend.app.services.macro_trigger import has_event_tasks
@@ -271,6 +271,8 @@ def runtime_snapshot(printer_id: int) -> dict:
         "owners": owners,
         "macro_selection": _registration(registrations["macro_selection"], _macro_selection_valid),
         "swap_config": _registration(registrations["swap_config"], _swap_config_valid),
+        # The layer timelapse is found by printer alone: a session left open would take the next print's layers.
+        "layer_timelapse": _ask(lambda: layer_timelapse.get_session(printer_id) is not None),
         "preheat_pinned": preheat.pinned(printer_id),
         "plate_gate": _ask(lambda: printer_manager.is_awaiting_plate_clear(printer_id)),
         # Shown beside a residual preheat; never part of the revision (they move every second).
@@ -541,7 +543,7 @@ def decode_cursor(value):
             not isinstance(row, list)
             or len(row) != 3
             or type(row[0]) is not int
-            or row[1] not in {"header", "item", "archive", "runtime", "episode"}
+            or row[1] not in {"header", "item", "archive", "repair", "runtime", "episode"}
             or type(row[2]) is not int
         ):
             raise ValueError
@@ -647,6 +649,29 @@ async def _last_repairs(db, printer_ids: list[int]) -> dict[int, dict]:
     return answer
 
 
+def _repair_issue(key, repair: dict) -> dict:
+    """RS-R3: the queue is still paused by an in-memory repair whose context is gone -- an observation, not a
+    problem, until the operator resumes the queue."""
+    return {
+        "code": "queue_paused_by_repair",
+        "actions": [],
+        "blocked_reasons": [],
+        "observation": True,
+        "printer_id": key[0],
+        "queue_id": None,
+        "kind": "repair",
+        "target_id": key[2],
+        "item_id": None,
+        "archive_id": repair["archive_id"],
+        "observed_at": None,
+        "live_mode": "unknown",
+        "started_at": None,
+        "completed_at": None,
+        "queue_paused": True,
+        "last_repair": repair,
+    }
+
+
 def _link_episodes(issues: list[dict]) -> None:
     """An episode points at the context that holds its printer only when that row is on this page."""
     shown = {(i["printer_id"], i["target_id"]) for i in issues if i["kind"] == "runtime"}
@@ -697,7 +722,19 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
     archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
         PrintArchive.printer_id.in_(pids), PrintArchive.status == "printing", PrintArchive.deleted_at.is_(None)
     )
-    candidates = union_all(headers, items, archives).subquery()
+    # A queue an in-memory repair paused stays explained while it is paused, whether or not the run is still held
+    # (RS-R3): its last release attempt is read from the audit. A queue never touched by one has no such row.
+    paused_by_repair = select(PrinterQueue.printer_id, literal("repair"), literal(0)).where(
+        PrinterQueue.printer_id.in_(pids),
+        PrinterQueue.is_paused.is_(True),
+        select(PrintStateRecoveryAction.id)
+        .where(
+            PrintStateRecoveryAction.printer_id == PrinterQueue.printer_id,
+            PrintStateRecoveryAction.action == RUNTIME_ACTION,
+        )
+        .exists(),
+    )
+    candidates = union_all(headers, items, archives, paused_by_repair).subquery()
     query = select(candidates).order_by(candidates.c.pid, candidates.c.kind, candidates.c.target)
     if after:
         pid, kind, target = after
@@ -722,9 +759,13 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
             if after is None or row > tuple(after):
                 held.append(row)
     episodes = _episode_rows(pids, after)
+    held_pids = {pid for pid in pids if has_runtime_context(printer_manager, pid)}
+    # The context row explains its own pause; a separate one only once the context is gone.
+    sql_rows = [row for row in sql_rows if row[1] != "repair" or row[0] not in held_pids]
     rows = sorted(set(sql_rows) | set(held) | set(episodes))
     targets = rows[:100]
-    facts, _, _ = await read_facts(db, pids, [t for t in targets if t[1] != "episode"])
+    facts, _, _ = await read_facts(db, pids, [t for t in targets if t[1] not in ("episode", "repair")])
+    repairs = await _last_repairs(db, sorted({t[0] for t in targets if t[1] in ("runtime", "repair")}))
     # A stalled job is shown only while it still waits: one addressed read of the jobs this page names.
     episode_items = [episodes[t].item_id for t in targets if t[1] == "episode" and episodes[t].item_id]
     waiting = (
@@ -750,6 +791,10 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
                 issue = _episode_issue(key, episodes[key], item)
                 issues.append({**issue, "printer_name": names[key[0]]})
             continue
+        if key[1] == "repair":
+            if repairs.get(key[0]) is not None:
+                issues.append({**_repair_issue(key, repairs[key[0]]), "printer_name": names[key[0]]})
+            continue
         f = facts.get(key)
         if f is None:
             continue
@@ -764,7 +809,6 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
         if issue:
             issues.append({**issue, "printer_name": names[key[0]]})
     _link_episodes(issues)
-    repairs = await _last_repairs(db, sorted({i["printer_id"] for i in issues if i["kind"] == "runtime"}))
     for issue in issues:
         if issue["kind"] == "runtime":
             issue["last_repair"] = repairs.get(issue["printer_id"])

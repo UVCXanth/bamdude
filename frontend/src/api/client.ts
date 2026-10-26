@@ -48,7 +48,7 @@ export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial
   last_repair?: PrintStateLastRepair | null;
   /** ``null`` only for a runtime row of a printer that has no queue: shown, never repairable. */
   printer_id: number; printer_name: string; queue_id: number | null;
-  kind: 'item' | 'header' | 'archive' | 'runtime' | 'episode';
+  kind: 'item' | 'header' | 'archive' | 'runtime' | 'episode' | 'repair';
   target_id: number;
   item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
   blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';

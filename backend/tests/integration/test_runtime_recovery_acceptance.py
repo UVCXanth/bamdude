@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import func, select
@@ -282,6 +283,41 @@ async def test_a_swap_still_owed_keeps_everything_through_the_loop(
     assert held.extra_data["bamdude_terminal_effects"] == {"swap_change_table": {"stage": "owed"}}
     assert (await reread(db_session, PrintQueueItem, a.pending_id)).status == "pending"
     a.mqtt._client.publish.assert_not_called()
+
+
+async def test_an_open_timelapse_keeps_the_next_print_out_of_it(
+    db_session, test_engine, tmp_path, printer_factory, archive_factory, monkeypatch, sessions, runtime, stall_clock
+):
+    """RS-R2 end to end: A's layer timelapse is still open and the next job's printer has no external camera,
+    so nothing would replace the session. The repair is refused with that reason; the job stays deferred and
+    not one of its layers reaches A's session -- no B ever starts on this printer while A is held."""
+    from backend.app.services import layer_timelapse
+
+    a = await a_finished_run_held_over_a_pending_job(
+        db_session, test_engine, tmp_path, printer_factory, archive_factory, monkeypatch
+    )
+    capture = AsyncMock()
+    monkeypatch.setattr(
+        layer_timelapse,
+        "_active_sessions",
+        {a.printer_id: SimpleNamespace(archive_id=a.archive_id, capture_layer=capture)},
+    )
+    start_session = MagicMock(wraps=layer_timelapse.start_session)
+    monkeypatch.setattr(layer_timelapse, "start_session", start_session)
+
+    for _ in range(2):
+        await one_tick(a.scheduler, a.spawned)
+        stall_clock.advance(40)
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(db_session, a)
+    await one_tick(a.scheduler, a.spawned)
+
+    assert current_print_run(printer_manager, a.printer_id) is a.run
+    assert (await reread(db_session, PrintQueueItem, a.pending_id)).status == "pending"
+    start_session.assert_not_called()  # no external camera: nothing would have replaced A's session
+    capture.assert_not_awaited()
+    a.mqtt._client.publish.assert_not_called()
+    assert await audit_rows(db_session) == 0
 
 
 async def test_a_residual_preheat_pin_is_shown_kept_and_never_blocks(

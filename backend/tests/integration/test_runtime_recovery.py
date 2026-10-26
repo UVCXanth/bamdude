@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -318,6 +319,70 @@ async def test_the_row_says_which_repair_paused_its_queue(db_session, a01, relea
     assert repair["process_ended"] is False and repair["at"]
 
 
+def _repair_rows(page, printer_id):
+    return [r for r in page["issues"] if r["printer_id"] == printer_id and r["kind"] == "repair"]
+
+
+async def test_a_released_context_still_explains_its_pause_after_a_reload(db_session, a01, clock):
+    """RS-R3: the context is gone and the queue stays paused -- the printer's row still says why, read for read,
+    and as an observation Health does not count."""
+    _, payload = await preview(db_session, a01)
+    assert (await apply(a01, payload))["outcome"] == "applied"
+    first = await store.list_issues(db_session, None)
+    clock.advance(20)
+    reloaded = await store.list_issues(db_session, None)
+    for page in (first, reloaded):
+        (row,) = _repair_rows(page, a01.printer_id)
+        assert row["code"] == "queue_paused_by_repair" and row["observation"] is True and row["actions"] == []
+        assert row["queue_paused"] is True
+        repair = row["last_repair"]
+        assert (repair["outcome"], repair["archive_id"], repair["queue_was_paused"]) == (
+            "applied",
+            a01.archive_id,
+            False,
+        )
+    assert not [r for r in reloaded["issues"] if r["printer_id"] == a01.printer_id and r["kind"] == "runtime"]
+
+
+async def test_the_explanation_goes_with_the_operators_resume(db_session, a01, clock):
+    from backend.app.api.routes.printer_queues import update_queue
+    from backend.app.schemas.printer_queue import PrinterQueueUpdate
+
+    _, payload = await preview(db_session, a01)
+    await apply(a01, payload)
+    assert _repair_rows(await store.list_issues(db_session, None), a01.printer_id)
+    await update_queue(a01.queue_id, PrinterQueueUpdate(is_paused=False), db=db_session, _=None)
+    assert _repair_rows(await store.list_issues(db_session, None), a01.printer_id) == []
+
+
+async def test_an_unrecorded_release_still_explains_the_pause_and_says_its_result_is_unknown(
+    db_session, a01, clock, monkeypatch
+):
+    _, payload = await preview(db_session, a01)
+
+    def fail(_mapper, _connection, target):
+        if target.result.get("phase") == "outcome":
+            raise RuntimeError("outcome lost")
+
+    event.listen(PrintStateRecoveryAction, "before_insert", fail)
+    try:
+        assert (await apply(a01, payload))["outcome"] == "outcome_unconfirmed"
+    finally:
+        event.remove(PrintStateRecoveryAction, "before_insert", fail)
+    (row,) = _repair_rows(await store.list_issues(db_session, None), a01.printer_id)
+    assert row["last_repair"]["outcome"] is None and row["last_repair"]["process_ended"] is False
+    monkeypatch.setattr(tokens, "_INCARNATION", "after-a-restart")
+    (row,) = _repair_rows(await store.list_issues(db_session, None), a01.printer_id)
+    assert row["last_repair"]["process_ended"] is True
+
+
+async def test_a_queue_paused_by_hand_gets_no_repair_row(db_session, a01):
+    queue = await db_session.get(PrinterQueue, a01.queue_id)
+    queue.is_paused = True
+    await db_session.commit()
+    assert _repair_rows(await store.list_issues(db_session, None), a01.printer_id) == []
+
+
 async def test_a_restore_between_the_commits_keeps_the_pause(db_session, a01, released):
     _, payload = await preview(db_session, a01)
 
@@ -510,6 +575,41 @@ async def test_http_preview_and_apply_need_queue_update(async_client, db_session
     async_client.headers.pop("Authorization", None)
     refused = await async_client.post(base + "/preview", json=body, headers={"X-API-Key": made.json()["key"]})
     assert refused.status_code == 403, refused.text
+
+
+async def test_an_open_timelapse_of_the_run_keeps_it(db_session, a01, monkeypatch, clock):
+    """RS-R2: the layer timelapse is looked up by printer alone -- released, A's session would film the next
+    print. Until its own safe handling exists it holds the run: shown, named, no repair."""
+    from backend.app.services import layer_timelapse
+
+    session = SimpleNamespace(archive_id=a01.archive_id, capture_layer=AsyncMock())
+    monkeypatch.setattr(layer_timelapse, "_active_sessions", {a01.printer_id: session})
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(db_session, a01)
+    await store.list_issues(db_session, None)
+    clock.advance(11)
+    page = await store.list_issues(db_session, None)
+    (row,) = [r for r in page["issues"] if r["printer_id"] == a01.printer_id and r["kind"] == "runtime"]
+    assert row["actions"] == [] and "timelapse_open" in row["blocked_reasons"]
+    assert current_print_run(printer_manager, a01.printer_id) is a01.run
+    session.capture_layer.assert_not_awaited()
+
+
+async def test_a_null_swap_carrier_keeps_the_swap_registration(db_session, a01):
+    """RS-R1: ``swap_macro_events_pending: null`` is not "nothing owed" -- no preview, the swap config stays."""
+    from backend.app import main
+
+    archive = await db_session.get(PrintArchive, a01.archive_id)
+    archive.extra_data = {**(archive.extra_data or {}), "swap_macro_events_pending": None}
+    await db_session.commit()
+    main.register_swap_config(
+        a01.printer_id, {"execute_swap_macros": True, "swap_macro_events": ["swap_mode_change_table"]}
+    )
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(db_session, a01)
+    assert a01.printer_id in main._active_swap_config
+    assert current_print_run(printer_manager, a01.printer_id) is a01.run
+    assert await db_session.scalar(select(func.count()).select_from(PrintStateRecoveryAction)) == 0
 
 
 async def test_a_swap_still_owed_has_no_preview(db_session, a01):

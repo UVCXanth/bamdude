@@ -94,6 +94,7 @@ export default {
       runtime_context_unresolved: 'The print context held in memory does not match the records',
       dispatch_no_progress: 'A start keeps being deferred without progress',
       runtime_phase_lingering: 'A print start or completion is still in progress',
+      queue_paused_by_repair: 'The queue is still paused after a release attempt',
     },
     reasons: {
       live_unknown: 'A fresh, unambiguous printer observation is required.', live_busy: 'A start or dispatch is still in progress.',
@@ -128,6 +129,7 @@ export default {
       source_link_changed: 'The job was pointed at another source while its copy was taken.',
       current_run_conflict: 'Another print is still bound to this printer.',
       printer_printing: 'The printer reports that it is printing.',
+      timelapse_open: 'A layer timelapse of this print is still open; released, it would take the next print’s layers. Restarting BamDude closes it.',
       unknown: 'The cause is not established.',
     },
     live: { inactive: 'Fresh inactive printer observation', successor: 'A positively identified newer print is active', unknown: 'Printer state cannot authorize a repair' },

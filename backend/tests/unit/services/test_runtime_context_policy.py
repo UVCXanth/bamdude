@@ -42,6 +42,7 @@ def runtime(**over):
         "effect_generation": 5,
         "terminal_accepted": False,
         "owners": dict.fromkeys(OWNERS, False),
+        "layer_timelapse": False,
         "macro_selection": {"present": True, "ref": 2002, "value": [], "valid": True},
         "swap_config": {"present": False, "ref": None, "value": None, "valid": True},
         "preheat_pinned": None,
@@ -330,6 +331,12 @@ def test_an_unreadable_swap_config_blocks():
         ({"bamdude_terminal_effects": {"printer_cleanup": {"stage": "skipped"}}}, []),
         ({"bamdude_terminal_effects": {"smart_plug": {"stage": "failed"}}}, []),
         ({"bamdude_terminal_effects": {"finish_macros": {"stage": "scheduled"}}}, []),
+        # RS-R1: a present but unreadable carrier proves nothing -- unreadable, never "absent" and never a crash.
+        ({"swap_macro_events_pending": None}, ["effects_unreadable"]),
+        ({"bamdude_terminal_effects": {"finish_photo": {"stage": []}}}, ["effects_unreadable"]),
+        ({"bamdude_terminal_effects": {"finish_photo": {"stage": {}}}}, ["effects_unreadable"]),
+        ({"bamdude_terminal_effects": {"finish_photo": {}}}, ["effects_unreadable"]),
+        ({"bamdude_terminal_effects": {"swap_change_table": {"stage": []}}}, ["effects_unreadable"]),
         ({"swap_hold": {"reason": "r"}}, ["effects_pending"]),
         ({"auto_eject_pending": True}, ["effects_pending"]),
         ({"cleanup_pending": True}, ["effects_pending"]),
@@ -339,6 +346,22 @@ def test_an_unreadable_swap_config_blocks():
 )
 def test_the_effect_reader_is_strict(extra, debt):
     assert runtime_effect_debt(extra) == debt
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"swap_macro_events_pending": None},
+        {"bamdude_terminal_effects": {"finish_photo": {"stage": []}}},
+        {"bamdude_terminal_effects": {"finish_photo": {"stage": {}}}},
+    ],
+)
+def test_an_unreadable_effect_record_is_a_visible_row_without_repair(extra):
+    """RS-R1: shown with its reason and no action -- never released, never a crash of the reader."""
+    f = facts()
+    issue = classify(RecoveryFacts(**{**f.__dict__, "archive": {**f.archive, "extra_data": extra}}))
+    assert issue is not None and issue["actions"] == []
+    assert "effects_unreadable" in issue["blocked_reasons"]
 
 
 def test_a_printer_without_a_queue_is_shown_without_repair():
@@ -363,6 +386,17 @@ def test_any_database_owner_keeps_the_context(queue_change, printing_archives, a
     issue = classify(f)
     assert issue["actions"] == []
     assert {"queue_busy", "identity_missing"} & set(issue["blocked_reasons"])
+
+
+def test_an_open_layer_timelapse_keeps_the_run():
+    """RS-R2: a timelapse session takes the next print's layers by printer -- left, it would film B into A."""
+    issue = classify(changed(facts(), layer_timelapse=True))
+    assert issue["actions"] == [] and "timelapse_open" in issue["blocked_reasons"]
+
+
+def test_an_unknown_timelapse_answer_keeps_the_run():
+    issue = classify(changed(facts(), layer_timelapse=None))
+    assert issue["actions"] == [] and "context_owner_unknown" in issue["blocked_reasons"]
 
 
 def test_the_plate_gate_and_a_residual_preheat_never_block():

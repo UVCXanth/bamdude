@@ -53,6 +53,9 @@ class PrintStateObserver:
     async def tick(self) -> None:
         """Read one page and fold it into the cache."""
         self._check_epoch()
+        # The database this read began on. A restore while it runs makes its rows describe a farm that is gone,
+        # whatever the cache went through meanwhile (a summary in between may already have reset it).
+        read_epoch = queue_sources.current_epoch()
         try:
             async with self._factory()() as db:
                 page, pids = await store.list_issues_page(db, None, cursor=self._cursor)
@@ -62,6 +65,9 @@ class PrintStateObserver:
             self._cursor = None
             self._cycle_seen = set()
             self._cycle_complete = False
+            return
+        if queue_sources.current_epoch() != read_epoch:
+            self._check_epoch()  # nothing of the old database is published; the next tick starts afresh
             return
         now = datetime.now(timezone.utc)
         if self._cursor is None:

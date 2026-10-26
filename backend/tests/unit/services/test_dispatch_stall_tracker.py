@@ -178,6 +178,18 @@ def test_inactive_episodes_expire(clock):
     assert tracker.snapshot(7) == ()
 
 
+def test_a_quiet_stall_expires_without_another_deferral(clock):
+    """RS-R5: the retention bound holds on a farm that stops failing -- reading alone enforces it."""
+    defer(clock, every=30, times=3)
+    assert stalled()
+    clock.tick(tracker.INACTIVE_TTL_SECONDS - 30)  # exactly TTL since the last failure: still remembered
+    (kept,) = tracker.snapshot(7)
+    assert kept.reached and not kept.stalled
+    clock.tick(1)
+    assert tracker.snapshot(7) == ()
+    assert tracker.coverage()["episodes"] == 0  # the record is gone, not only hidden
+
+
 def test_the_clock_is_monotonic_whatever_the_wall_clock_does(clock, monkeypatch):
     """A wall-clock jump (DST, NTP) cannot shorten or stretch an episode: only ``clock`` is read."""
     import time
