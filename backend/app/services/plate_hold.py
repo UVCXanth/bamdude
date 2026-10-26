@@ -387,7 +387,7 @@ def _require_expected_archive(row: PrintQueueItem | None, expected_archive_id: i
         raise StalePlateAnswer("This completion card is no longer current for this printer")
 
 
-async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | None:
+async def waiting_archive(db: AsyncSession, printer_id: int, *, include_trashed: bool = False) -> PrintArchive | None:
     """The print the waiting row is about — what both answers may record defects on.
 
     Resolved BEFORE the answer, because clearing deletes the row and repeating
@@ -419,6 +419,14 @@ async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | N
         if row.archive_id is None:
             return None
         archive = await db.get(PrintArchive, row.archive_id)
-    if archive is None or archive.deleted_at is not None:
+    if archive is None:
+        return None
+    # Only a fresh, manual Clear may resolve a trashed physical owner. Readers,
+    # grading, Repeat and addressed completion cards keep the default exclusion.
+    if archive.deleted_at is not None and (
+        not include_trashed
+        or archive.printer_id != printer_id
+        or archive.status not in ("completed", "cancelled", "failed")
+    ):
         return None
     return archive
