@@ -287,6 +287,44 @@ async def test_new_pooled_output_preserves_count_and_allows_only_full_reversal_w
     )
 
 
+@pytest.mark.parametrize("same_product", [False, True])
+async def test_pooled_recount_stock_guard_only_checks_requested_products(
+    committing_client, db_session, shop, same_product
+):
+    from backend.app.models.product import Product
+    from backend.app.services import finished_stock
+
+    s = shop
+    made, _ = await archive(db_session, s, status="completed", quantities=(30, 10))
+    made.project_line_id = None
+    await db_session.commit()
+    assert (await count(committing_client, s, {s["b"].id: 5})).status_code == 200
+    other = await db_session.scalar(select(Product).where(Product.name == "Product B"))
+    added = await committing_client.post(
+        f"/api/v1/projects/{s['order']}/lines", json={"product_id": other.id, "quantity": 2}
+    )
+    assert added.status_code == 200, added.text
+    other_line = next(line["id"] for line in added.json()["lines"] if line["product_id"] == other.id)
+    position = await finished_stock.item_for(db_session, other.id, {}, create=True)
+    await finished_stock.receive(db_session, position, 1)
+    await db_session.commit()
+    if same_product:
+        for part, qty in [(s["a"], 3), (s["b"], 1)]:
+            await part_stock.move(db_session, part_id=part.id, delta=qty, reason="manual", note="test shelf")
+        await db_session.commit()
+    requested = {
+        "line_id": s["line"] if same_product else other_line,
+        "from_finished": 0 if same_product else 1,
+        "kits": 1 if same_product else 0,
+        "parts": {},
+    }
+    result = await committing_client.post(f"/api/v1/projects/{s['order']}/take-stock", json={"lines": [requested]})
+    assert result.status_code == (409 if same_product else 200), result.text
+    assert (await read(committing_client, s))["parts"][1]["book"] == 5
+    if same_product:
+        assert (await part_stock.balances(db_session, s["b"].product_id))[s["b"].id] == 1
+
+
 @pytest.mark.parametrize("bad", [-1, 1.5, True, "1", 1_000_001])
 def test_recount_requires_bounded_actual_integers(bad):
     from pydantic import ValidationError
