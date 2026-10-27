@@ -30,8 +30,11 @@ def factory(test_engine):
     return async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-def _event(*ids):
-    return {"type": "part_images_changed", "data": {"product_ids": list(ids)}}
+def _event(*ids, images_only=False):
+    data = {"product_ids": list(ids)}
+    if images_only:
+        data["images_only"] = True
+    return {"type": "part_images_changed", "data": data}
 
 
 def _photo(product_id: int, name: str):
@@ -93,6 +96,72 @@ async def test_a_released_savepoint_keeps_its_marks(db_session, events):
     assert events == [_event(5)]
 
 
+async def test_a_picture_only_transaction_says_so(db_session, events):
+    """Spec procurement-stock-images R3: only a proven picture-only transaction carries images_only."""
+    await db_session.execute(text("select 1"))
+    part_images.mark_changed(db_session, [2], images_only=True)
+    part_images.mark_changed(db_session, [1], images_only=True)
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1, 2, images_only=True)]
+
+
+@pytest.mark.parametrize("structural_first", [True, False])
+async def test_one_structural_mark_makes_the_whole_transaction_full(db_session, events, structural_first):
+    marks = [([2], False), ([1], True)]
+    if not structural_first:
+        marks.reverse()
+    await db_session.execute(text("select 1"))
+    for ids, images_only in marks:
+        part_images.mark_changed(db_session, ids, images_only=images_only)
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1, 2)]
+
+
+async def test_an_empty_structural_mark_leaves_the_picture_only_class_alone(db_session, events):
+    await db_session.execute(text("select 1"))
+    part_images.mark_changed(db_session, [1], images_only=True)
+    part_images.mark_changed(db_session, [])
+    part_images.mark_changed(db_session, [None])
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1, images_only=True)]
+
+
+async def test_a_rolled_back_structural_savepoint_leaves_the_outer_marks_picture_only(db_session, events):
+    await db_session.execute(text("select 1"))
+    part_images.mark_changed(db_session, [1], images_only=True)
+    savepoint = await db_session.begin_nested()
+    part_images.mark_changed(db_session, [2])
+    part_images.mark_changed(db_session, [1])  # a product the outer scope already named
+    await savepoint.rollback()
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1, images_only=True)]
+
+
+async def test_a_rolled_back_picture_savepoint_leaves_the_outer_marks_structural(db_session, events):
+    await db_session.execute(text("select 1"))
+    part_images.mark_changed(db_session, [1])
+    savepoint = await db_session.begin_nested()
+    part_images.mark_changed(db_session, [2], images_only=True)
+    await savepoint.rollback()
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1)]
+
+
+async def test_a_released_structural_savepoint_makes_the_transaction_full(db_session, events):
+    await db_session.execute(text("select 1"))
+    part_images.mark_changed(db_session, [1], images_only=True)
+    async with db_session.begin_nested():
+        part_images.mark_changed(db_session, [2])
+    await db_session.commit()
+    await part_images.drain()
+    assert events == [_event(1, 2)]
+
+
 async def test_a_file_dropped_after_commit_goes_only_after_it(db_session, events):
     await db_session.execute(text("select 1"))
     old = _photo(4, "d" * 32 + ".png")
@@ -145,7 +214,7 @@ async def test_a_render_change_reaches_every_product_that_links_the_plate(db_ses
         await part_images.drain()
     finally:
         unsubscribe()
-    assert events == [_event(*sorted([live, trashed]))]
+    assert events == [_event(*sorted([live, trashed]), images_only=True)]  # a render moves only pictures
     assert heard == [{("a" * 64, 1)}]
 
 
@@ -173,7 +242,7 @@ async def test_requeue_no_runtime_says_which_plates_went_back(db_session, factor
     await db_session.commit()
     assert await part_renders.requeue_no_runtime(factory) == 1
     await part_images.drain()
-    assert events == [_event(pid)]
+    assert events == [_event(pid, images_only=True)]
 
 
 async def test_a_rerender_names_every_product_that_shares_the_plate(db_session, events):
@@ -188,7 +257,7 @@ async def test_a_rerender_names_every_product_that_shares_the_plate(db_session, 
     assert await part_renders.rerender_for_product(db_session, asker, full=False) == 1
     await db_session.commit()
     await part_images.drain()
-    assert events == [_event(*sorted([asker, sharer]))]
+    assert events == [_event(*sorted([asker, sharer]), images_only=True)]
 
 
 async def test_a_rerender_that_moves_nothing_says_nothing(db_session, events):

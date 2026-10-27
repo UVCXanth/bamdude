@@ -416,6 +416,9 @@ class ProcurementOut(BaseModel):
     sourcing_url: str | None = None
     planned_cost: float | None = None
     acquired_cost: float | None = None
+    #: The part's picture (spec procurement-stock-images R1) -- filled by ``part_images.fill`` after the
+    #: route, like every other part row of the order.
+    image: PartImageRef | None = None
 
 
 class ProjectFiguresOut(BaseModel):

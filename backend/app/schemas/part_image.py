@@ -20,6 +20,19 @@ class PartImageRef(BaseModel):
     v: str | None = None
 
 
+class PartImageMetaOut(BaseModel):
+    """One part of the batch picture read (spec procurement-stock-images R4).
+
+    ``product_id`` is the part's own product, off the same row the picture was resolved from:
+    the client drops a cached picture when a structural change names that product (the id of a
+    deleted part can come back on SQLite). A part that does not exist has neither.
+    """
+
+    part_id: int
+    product_id: int | None
+    image: PartImageRef | None
+
+
 class InstanceImageRef(BaseModel):
     """One plate object's picture -- the editor's gallery and the unassigned chips (spec §11.3)."""
 

@@ -26,7 +26,6 @@ NOT_A_SURFACE = {
     "plate_fit.PlateFitPart": "the quantity calculator's what-if coverage figures, like EstimateSurplusOut; not a part-image surface",
     "product.PartSourcesOut": "a part's sources, shown under the part's own row, which carries the picture",
     "project.LineChangedPartOut": "a configuration caption; the variant chips stay as they are (spec §12.2)",
-    "project.ProcurementOut": "the order's procurement figures -- no surface of spec §12.2",
     "project.StockMovedOut": "the answer to «bank surplus», told as a toast (spec §12.2: toasts unchanged)",
 }
 #: The picture's own vocabulary names plate objects by identify_id -- it is not a surface.
@@ -117,6 +116,18 @@ def test_the_route_scan_sees_the_routes_it_guards():
     } <= found
     # (method, path) pairs: several methods share a path, so paths alone undercount (51 routes, 2026-10-10)
     assert len({(sorted(r.methods)[0], r.path) for r in _picture_routes()}) >= 51
+
+
+def test_the_batch_picture_read_is_its_own_answer_not_a_filled_one():
+    """Spec procurement-stock-images R4 / consilium O7: ``attach`` is best effort -- a failed lookup would
+    answer «no picture» for every part asked, and the client takes that answer as the truth."""
+    from backend.app.main import app
+
+    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/api/v1/product-parts/images")
+    assert getattr(route.endpoint, "__part_images__", None) is None
+    source = inspect.getsource(route.endpoint)
+    assert "part_images.metadata(" in source and "fill(" not in source
+    assert route not in list(_picture_routes())  # its own vocabulary (OWN_MODULE), not a business shape
 
 
 def test_a_filling_route_has_its_session_by_name():

@@ -359,7 +359,7 @@ async def test_clearing_a_photo_returns_to_auto_and_is_idempotent(db_session):
     assert again.image_source == "auto"
 
 
-async def test_the_writer_marks_the_product_changed(db_session, monkeypatch):
+def _record_events(monkeypatch) -> list:
     from backend.app.core.websocket import ws_manager
 
     sent = []
@@ -368,8 +368,34 @@ async def test_the_writer_marks_the_product_changed(db_session, monkeypatch):
         sent.append(message)
 
     monkeypatch.setattr(ws_manager, "broadcast", record)
+    return sent
+
+
+@pytest.mark.parametrize("door", ["choice", "photo", "clear"])
+async def test_a_picture_door_says_its_change_is_only_the_picture(db_session, monkeypatch, door):
+    """Spec procurement-stock-images R3: the three editor doors change nothing but the picture."""
+    sent = _record_events(monkeypatch)
     farm = await rendered_farm(db_session)
-    await part_images.set_choice(db_session, farm.body.id, "auto", None)
+    if door == "clear":
+        await part_images.set_photo(db_session, farm.body.id, image_bytes())
+        await db_session.commit()
+        await part_images.drain()
+        sent.clear()
+    if door == "choice":
+        await part_images.set_choice(db_session, farm.body.id, "auto", None)
+    elif door == "photo":
+        await part_images.set_photo(db_session, farm.body.id, image_bytes())
+    else:
+        await part_images.clear_photo(db_session, farm.body.id)
+    await db_session.commit()
+    await part_images.drain()
+    assert sent == [{"type": "part_images_changed", "data": {"product_ids": [farm.product.id], "images_only": True}}]
+
+
+async def test_forgetting_a_part_is_a_structural_change(db_session, monkeypatch):
+    sent = _record_events(monkeypatch)
+    farm = await rendered_farm(db_session)
+    part_images.forget_part(db_session, farm.body)
     await db_session.commit()
     await part_images.drain()
     assert sent == [{"type": "part_images_changed", "data": {"product_ids": [farm.product.id]}}]

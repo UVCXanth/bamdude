@@ -10,8 +10,10 @@ One module owns the question, whole:
   picture without a write;
 * the change COLLECTOR (this part). ``mark_changed`` gathers product ids on the session and the
   WebSocket event ``part_images_changed {product_ids}`` goes after the ROOT commit, never after a
-  rollback or a session closed without a commit. Photo files written for the transaction are
-  removed if it does not land; files it replaced are removed only once it has. The render writer
+  rollback or a session closed without a commit. The event says ``images_only`` when every mark of
+  the transaction was a picture-only door's (spec procurement-stock-images R3): the clients then
+  refresh the pictures alone and leave the stock and order figures as they are. Photo files
+  written for the transaction are removed if it does not land; files it replaced are removed only once it has. The render writer
   says what it changed through ``mark_renders_changed`` in its OWN transaction, before its commit
   -- never from a background session: in the tests every session shares one connection, and
   closing any of them rolls back everyone's work (plan E4, D5).
@@ -85,6 +87,7 @@ _tasks: set[asyncio.Task] = set()
 @dataclass
 class _Pending:
     products: set[int] = field(default_factory=set)
+    structural: set[int] = field(default_factory=set)  # the products a mark said more than the picture of
     render_keys: set[tuple[str, int]] = field(default_factory=set)
     after_commit: list[Path] = field(default_factory=list)
     on_rollback: list[Path] = field(default_factory=list)
@@ -103,9 +106,18 @@ def _pending(db) -> _Pending:
     return state
 
 
-def mark_changed(db, product_ids: Iterable[int | None]) -> None:
-    """Spec §12.3: these products' pictures (or candidates) may change with this transaction."""
-    _pending(db).products.update(int(i) for i in product_ids if i is not None)
+def mark_changed(db, product_ids: Iterable[int | None], images_only: bool = False) -> None:
+    """Spec §12.3: these products' pictures (or candidates) may change with this transaction.
+
+    ``images_only`` -- the caller changes nothing but the picture (spec procurement-stock-images R3):
+    only the doors tests/unit/test_part_images_pure_doors.py lists may say so. One mark without it
+    makes the whole transaction's event a full one, in whatever order the marks came.
+    """
+    ids = {int(i) for i in product_ids if i is not None}
+    state = _pending(db)
+    state.products |= ids
+    if not images_only:
+        state.structural |= ids
 
 
 def unlink_after_commit(db, path: Path) -> None:
@@ -157,7 +169,7 @@ async def mark_renders_changed(db, keys: Iterable[tuple[str, int]]) -> None:
     except Exception:
         logger.exception("Products of %d changed plate render(s) were not read; no event for them", len(wanted))
         return
-    mark_changed(db, product_ids)
+    mark_changed(db, product_ids, images_only=True)
 
 
 async def mark_files_changed(db, library_file_ids: Iterable[int]) -> None:
@@ -202,11 +214,14 @@ def _remove_later(paths: list[Path]) -> None:
         _spawn(disk(_remove_paths, list(paths)))
 
 
-async def _broadcast(product_ids: list[int]) -> None:
+async def _broadcast(product_ids: list[int], images_only: bool) -> None:
     from backend.app.core.websocket import ws_manager
 
+    data: dict = {"product_ids": product_ids}
+    if images_only:  # absent otherwise: an old client and a full event read the same
+        data["images_only"] = True
     try:
-        await ws_manager.broadcast({"type": EVENT, "data": {"product_ids": product_ids}})
+        await ws_manager.broadcast({"type": EVENT, "data": data})
     except Exception:
         logger.exception("Part image event for %d product(s) was not sent", len(product_ids))
 
@@ -217,6 +232,7 @@ def _savepoint_opened(session, transaction) -> None:
         state = _pending(session)
         state.marks[transaction] = (
             frozenset(state.products),
+            frozenset(state.structural),
             frozenset(state.render_keys),
             len(state.after_commit),
             len(state.on_rollback),
@@ -231,8 +247,9 @@ def _savepoint_rolled_back(session, previous_transaction) -> None:
     mark = state.marks.pop(previous_transaction, None) if state is not None else None
     if mark is None:
         return
-    products, render_keys, kept_after, kept_rollback = mark
+    products, structural, render_keys, kept_after, kept_rollback = mark
     state.products = set(products)
+    state.structural = set(structural)
     state.render_keys = set(render_keys)
     del state.after_commit[kept_after:]
     doomed, state.on_rollback = state.on_rollback[kept_rollback:], state.on_rollback[:kept_rollback]
@@ -254,7 +271,7 @@ def _committed(session) -> None:
             except Exception:
                 logger.exception("Part render change listener failed")  # never undoes a committed write
     if state.products:
-        _spawn(_broadcast(sorted(state.products)))
+        _spawn(_broadcast(sorted(state.products), images_only=not state.structural))
 
 
 @event.listens_for(Session, "after_transaction_end")
@@ -559,6 +576,22 @@ async def resolve(db, part_ids: Iterable[int]) -> dict[int, PartImageRef | None]
     return {pid: (e.ref if e is not None else None) for pid, e in effective.items()}
 
 
+async def metadata(db, part_ids: Iterable[int]) -> dict[int, tuple[int, PartImageRef | None]]:
+    """The batch read's answer (spec procurement-stock-images R4): ``(product id, picture)`` per part.
+
+    ``resolve``'s own path, keeping the product of the very row the picture was decided from -- two
+    reads would let a deleted part's id name another part in between. A part not found is absent.
+    Unlike ``fill``, nothing here is best effort: a failure is the request's.
+    """
+    snap = await _load(db, part_ids)
+    present = await _photos_present(snap.parts.values())
+    answers = {}
+    for pid, part in snap.parts.items():
+        found = _effective(part, snap, present)
+        answers[pid] = (part.product_id, found.ref if found is not None else None)
+    return answers
+
+
 async def editor_states(db, part_ids: Iterable[int]) -> dict[int, ImageChoice]:
     """Spec §10.4: the stored choice and whether its pin / photo still holds."""
     _effective_, choices = await _answers(db, part_ids, editor=True)
@@ -712,6 +745,7 @@ def part_image_shapes() -> dict[type[BaseModel], str]:
         project.DroppedPartOut: "part_id",
         project.PlanPartCount: "part_id",
         project.PartStateOut: "part_id",
+        project.ProcurementOut: "part_id",
         finished_stock.StockItemPartOut: "part_id",
         finished_stock.StockJournalRow: "part_id",
         listing.ProductPartRow: "part_id",
@@ -970,7 +1004,7 @@ async def set_choice(db, part_id: int, source: str, instance: InstanceKey | None
         _drop_photo(db, part)
         _clear_pin(part)
         part.image_source = "auto"
-    mark_changed(db, [part.product_id])
+    mark_changed(db, [part.product_id], images_only=True)
     await db.flush()
     return part
 
@@ -1006,7 +1040,7 @@ async def set_photo(db, part_id: int, content: bytes) -> ProductPart:
     _drop_photo(db, part)
     _clear_pin(part)
     part.image_source, part.image_photo = "photo", name
-    mark_changed(db, [part.product_id])
+    mark_changed(db, [part.product_id], images_only=True)
     await db.flush()
     return part
 
@@ -1017,7 +1051,7 @@ async def clear_photo(db, part_id: int) -> ProductPart:
     if part.image_source == "photo":
         _drop_photo(db, part)
         part.image_source = "auto"
-        mark_changed(db, [part.product_id])
+        mark_changed(db, [part.product_id], images_only=True)
         await db.flush()
     return part
 

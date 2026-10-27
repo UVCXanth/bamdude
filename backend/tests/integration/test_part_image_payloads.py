@@ -104,6 +104,34 @@ async def test_an_order_line_shows_the_purchased_part_photo(committing_client, f
     assert purchased and purchased[0]["image"]["kind"] == "photo"
 
 
+async def test_a_procurement_row_carries_its_own_part_photo(committing_client, db_session, farm):
+    """Spec procurement-stock-images R1 / A01: the photo of THAT row, on the read and on the write."""
+    nut = part(farm.product.id, "Nut", kind="purchased")
+    db_session.add(nut)
+    await db_session.commit()
+    created = await committing_client.post(
+        "/api/v1/projects/", json={"name": "P", "lines": [{"product_id": farm.product.id, "quantity": 2}]}
+    )
+    assert created.status_code in (200, 201), created.text
+    order_id = created.json()["id"]
+
+    rows = {
+        row["name"]: row for row in (await committing_client.get(f"/api/v1/projects/{order_id}")).json()["procurement"]
+    }
+    assert rows["Screw"]["image"]["kind"] == "photo" and rows["Screw"]["image"]["status"] == "ready"
+    assert rows["Nut"]["image"] is None
+    assert (rows["Screw"]["need"], rows["Screw"]["acquired"], rows["Screw"]["remaining"]) == (2, 0, 2)
+
+    patched = await committing_client.patch(
+        f"/api/v1/projects/{order_id}/procurement/{rows['Screw']['part_id']}", json={"quantity_acquired": 1}
+    )
+    assert patched.status_code == 200, patched.text
+    rows = {row["name"]: row for row in patched.json()["procurement"]}
+    assert rows["Screw"]["image"]["kind"] == "photo"
+    assert (rows["Screw"]["acquired"], rows["Screw"]["remaining"]) == (1, 1)
+    assert rows["Nut"]["image"] is None
+
+
 async def test_a_parts_journal_row_names_its_part(committing_client, farm):
     page = (await committing_client.get("/api/v1/stock/journal?page=1&book=parts")).json()
     rows = [row for row in page["items"] if row["book"] == "parts"]

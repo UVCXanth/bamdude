@@ -1,22 +1,25 @@
 """A product part's picture (spec part-thumbnails §11; plan E4, task 31).
 
 Two media routes an ``<img>`` loads with a media token (the part's effective picture; one plate
-object's picture), the candidates and the three write doors of the part editor, and the
-product's re-render request. Everything they decide is services/part_images.py's.
+object's picture), the batch read of pictures the stock and order views refresh from
+(spec procurement-stock-images R4), the candidates and the three write doors of the part editor,
+and the product's re-render request. Everything they decide is services/part_images.py's.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes._workshop_rights import bind_workshop_credentials  # not core.auth (consilium E4-R1)
 from backend.app.api.routes.library import file_name_visible
 from backend.app.api.routes.products import _part_out
 from backend.app.core.auth import (
+    RequireAnyPermission,
     RequirePermission,
     library_name_scope,
     require_media_any_permission,
@@ -27,8 +30,10 @@ from backend.app.core.permissions import Permission
 from backend.app.models.product import Product
 from backend.app.models.user import User
 from backend.app.schemas.part_image import (
+    INT32_MAX,
     PartImageCandidateOut,
     PartImageChoiceIn,
+    PartImageMetaOut,
     PartImagesRerenderIn,
     PartImagesRerenderOut,
 )
@@ -46,6 +51,8 @@ product_router = APIRouter(prefix="/products", tags=["products"], dependencies=[
 _KEEP = "private, max-age=31536000, immutable"
 _REVALIDATE = "private, no-cache"
 Size = Literal["sm", "lg"]
+#: A batch the client sends in one request (spec procurement-stock-images R4): it cuts larger sets itself.
+BATCH_MAX = 200
 
 
 def _picture(path, current: str, asked: str | None) -> FileResponse:
@@ -54,6 +61,27 @@ def _picture(path, current: str, asked: str | None) -> FileResponse:
         media_type=image_media_type(path.name),
         headers={"Cache-Control": _KEEP if asked == current else _REVALIDATE},
     )
+
+
+@router.get("/images", response_model=list[PartImageMetaOut])
+async def get_part_images(
+    part_ids: Annotated[list[Annotated[int, Field(ge=1, le=INT32_MAX)]], Query(max_length=BATCH_MAX)] = [],  # noqa: B006
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.PRODUCTS_READ, Permission.ORDERS_READ, Permission.STOCK_READ),
+):
+    """Each asked part's product and effective picture -- the labels of the catalog, an order and the stock.
+
+    Its own answer, not a business shape: deliberately not ``@part_images.attach``, whose best effort
+    would turn a failed lookup into «no picture» for every part asked (consilium O7).
+    """
+    wanted = sorted(set(part_ids))
+    found = await part_images.metadata(db, wanted) if wanted else {}
+    return [
+        PartImageMetaOut(part_id=pid, product_id=found[pid][0], image=found[pid][1])
+        if pid in found
+        else PartImageMetaOut(part_id=pid, product_id=None, image=None)
+        for pid in wanted
+    ]
 
 
 @router.get("/{part_id}/image")
