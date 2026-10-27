@@ -2283,6 +2283,8 @@ export interface ProcurementRow {
   planned_cost: number | null;
   /** min(acquired, need) × price; 0 when nothing was bought, null when bought at an unknown price. */
   acquired_cost: number | null;
+  /** The part's picture (spec procurement-stock-images R1); absent from an older server. */
+  image?: PartImageRef | null;
 }
 
 export interface ProjectFigures {
@@ -3046,6 +3048,14 @@ export interface PartImageRef {
   kind: 'photo' | 'render';
   status: 'ready' | 'pending';
   v: string | null;
+}
+
+/** One part of the batch picture read (spec procurement-stock-images R4): the part's own product and
+ *  its picture, off one row. A part that does not exist has neither. */
+export interface PartImageMeta {
+  part_id: number;
+  product_id: number | null;
+  image: PartImageRef | null;
 }
 
 /** One plate object's picture — the editor's gallery and the unassigned chips (spec §11.3). */
@@ -13667,6 +13677,12 @@ export const api = {
     ),
   getPartImageCandidates: (partId: number) =>
     request<PartImageCandidate[]>(`/product-parts/${partId}/image-candidates`),
+  /** The pictures of up to 200 parts at once — only through `utils/partImageBatch.ts`, which cuts and shares the batch. */
+  getPartImageMeta: (partIds: readonly number[], signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const id of partIds) query.append('part_ids', String(id));
+    return request<PartImageMeta[]>(`/product-parts/images?${query}`, { signal });
+  },
   setPartImage: (
     partId: number,
     body: { source: 'auto' } | { source: 'instance'; instance: PartImageInstanceKey },

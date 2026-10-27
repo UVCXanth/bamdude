@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { LineMode, LinePurchasedPart, PartFigures } from '../../api/client';
 import { VARIANT_CHIP } from './chips';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 
 /** The amber chip of a variant part and a bought part (mockup `.m-varchip`). */
 const CHIP_CLASS = `ml-1.5 ${VARIANT_CHIP}`;
@@ -61,7 +61,7 @@ export function LinePartsTable({
           <tr key={part.part_id} className="border-t border-bambu-dark-tertiary text-white">
             <td className={CELL}>
               <span className="flex items-center gap-2">
-                <PartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
+                <LivePartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
                 <span className="min-w-0">
                   {part.name}
                   {part.variant && <span className={CHIP_CLASS}>{t('orders.parts.variant')}</span>}
@@ -104,7 +104,7 @@ export function LinePartsTable({
           <tr key={`bought-${part.part_id}`} className="border-t border-bambu-dark-tertiary text-bambu-gray-light">
             <td className={CELL}>
               <span className="flex items-center gap-2">
-                <PartThumb partId={part.part_id} image={part.image} name={part.name} kind="purchased" size="sm" />
+                <LivePartThumb partId={part.part_id} image={part.image} name={part.name} kind="purchased" size="sm" />
                 <span className="min-w-0">
                   {part.name}
                   <span className={CHIP_CLASS}>{t('orders.parts.purchased')}</span>

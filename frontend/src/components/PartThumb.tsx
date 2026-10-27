@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { InstanceImageRef, PartImageRef, PartImageSize, ProductPartKind } from '../api/client';
 import { mediaRetryStarted } from '../hooks/useCameraStreamToken';
+import { usePartImageRef } from '../hooks/usePartImageRef';
 import { matForImage, type PartMat } from './partTone';
 
 export type PartThumbSize = 'xs' | 'sm' | 'md';
@@ -253,6 +254,18 @@ export function PartThumb({
   const state: FrameState = image == null ? 'none' : image.status;
   const url = (s: PartImageSize) => (state === 'ready' && image ? api.partImageUrl(partId, image.v, s) : null);
   return <ThumbFrame state={state} src={url('sm')} zoomSrc={url('lg')} name={name} kind={kind} size={size} zoom={zoom} />;
+}
+
+/**
+ * A part's picture on a stock or order view (spec procurement-stock-images R5, R7): the picture is
+ * read apart from the view's figures, so a render that finished or a photo changed shows without
+ * the view reading its numbers again. Until that read answers, the view's own picture of the part;
+ * once it has, its answer — an explicit «no picture» included. The editor's unsaved draft and the
+ * product pages keep the plain `PartThumb` (`__tests__/components/partThumbLiveReaders.test.ts`).
+ */
+export function LivePartThumb(props: Parameters<typeof PartThumb>[0]) {
+  const live = usePartImageRef(props.partId);
+  return <PartThumb {...props} image={live.data !== undefined ? live.data.image : props.image} />;
 }
 
 /**

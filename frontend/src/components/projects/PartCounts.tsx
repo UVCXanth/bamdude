@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import type { PlanPartCount } from '../../api/client';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 
 /**
  * Parts named in a run of text — the plan's «covers», «outstanding» and «surplus after» (plan E6, D3):
@@ -22,7 +22,7 @@ export function PartCounts({
         <Fragment key={part.part_id}>
           {index > 0 && separator}
           <span className="inline-flex items-center gap-1 align-middle">
-            <PartThumb partId={part.part_id} image={part.image} name={part.name} size="xs" />
+            <LivePartThumb partId={part.part_id} image={part.image} name={part.name} size="xs" />
             {format(part)}
           </span>
         </Fragment>

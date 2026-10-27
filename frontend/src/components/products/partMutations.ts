@@ -1,7 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import type { ProductPart } from '../../api/client';
-import { invalidateOrderViews, invalidateProductFiles } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, invalidateProductFiles, refreshPartImageRefs } from '../../utils/queryInvalidation';
 
 /**
  * Every write of a product's composition — the part dialog, a merge, a delete — carries this
@@ -28,6 +28,9 @@ export function invalidateComposition(qc: QueryClient, productId: number): void 
   qc.invalidateQueries({ queryKey: ['product', productId] });
   invalidateProductFiles(qc, productId);
   invalidateOrderViews(qc);
+  // A deleted or merged part frees its id, and SQLite gives it to the next part: this product's
+  // cached pictures go now, not when the socket says so (spec procurement-stock-images R6, A16).
+  refreshPartImageRefs(qc, [productId]);
 }
 
 /** One delete of a part for every door — the row menu's and the editor's (D05). */

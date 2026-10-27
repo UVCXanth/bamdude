@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LineConfiguration, StockAssembleBody, StockItem } from '../../api/client';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { useToast } from '../../contexts/ToastContext';
 import { invalidateStock } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
@@ -317,7 +317,7 @@ export function AssembleDialog({
                       <td className="p-1">
                         {/* The row is top-aligned: the name starts level with the figures beside it. */}
                         <span className="flex items-start gap-2">
-                          <PartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
+                          <LivePartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
                           <span className="min-w-0 break-words">{p.name}</span>
                         </span>
                       </td>

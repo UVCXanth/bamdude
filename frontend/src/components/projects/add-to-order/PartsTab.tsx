@@ -5,7 +5,7 @@ import { api } from '../../../api/client';
 import type { PartSource, ProductPartRow } from '../../../api/client';
 import { useSearchBox } from '../../../hooks/useSearchBox';
 import { Button } from '../../Button';
-import { PartThumb } from '../../PartThumb';
+import { LivePartThumb } from '../../PartThumb';
 import { ListSearchBox } from '../../ListSearchBox';
 import { PaginationBar } from '../../PaginationBar';
 import { Select } from '../../Select';
@@ -205,7 +205,7 @@ function PartRow({
       </td>
       <td className={CELL}>
         <div className="flex items-start gap-2">
-          <PartThumb partId={row.part_id} image={row.image} name={row.name} size="sm" />
+          <LivePartThumb partId={row.part_id} image={row.image} name={row.name} size="sm" />
           <div className="min-w-0">
             <div className="font-semibold [overflow-wrap:break-word]">
               {row.name}

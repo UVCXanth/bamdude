@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
 import { useProductStock } from '../../hooks/useProductStock';
 import { Button } from '../Button';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { AssembleDialog } from '../stock/AssembleDialog';
 import { LoadFailedNote } from '../workshop/LoadFailedNote';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
@@ -122,7 +122,7 @@ export function ProductStock({ productId, productName, canEdit, hasVariants = fa
                   <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
                     <td className="p-2">
                       <span className="flex items-center gap-2">
-                        <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                        <LivePartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
                         <span className="min-w-0 break-words">{b.name}</span>
                       </span>
                     </td>
@@ -159,7 +159,7 @@ export function ProductStock({ productId, productName, canEdit, hasVariants = fa
                     <tr key={b.part_id} className="border-t border-bambu-dark-tertiary text-white">
                       <td className="p-2">
                         <span className="flex items-center gap-2">
-                          <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                          <LivePartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
                           <span className="min-w-0 break-words">{b.name}</span>
                         </span>
                       </td>

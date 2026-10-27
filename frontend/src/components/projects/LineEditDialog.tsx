@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
 import type { Order, ProjectLine, ProjectLineUpdate, StockSuggestItem } from '../../api/client';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { canReadStock, canTakeStock } from '../../utils/workshopRights';
@@ -338,7 +338,7 @@ export function LineEditDialog({ order, line, onClose, onConfigure }: LineEditDi
               <ul className="text-sm text-white space-y-0.5">
                 {line.parts.map((p) => (
                   <li key={p.part_id} className="flex items-center gap-2">
-                    <PartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
+                    <LivePartThumb partId={p.part_id} image={p.image} name={p.name} size="sm" />
                     {`${p.name} × ${p.qty_per_unit}`}
                   </li>
                 ))}

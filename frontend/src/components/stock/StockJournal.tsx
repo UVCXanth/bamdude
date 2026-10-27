@@ -24,7 +24,7 @@ import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { StockTableSkeleton } from './StockTableSkeleton';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
 import { SectionLink } from '../workshop/SectionLink';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 
 const BOOKS: StockJournalBook[] = ['both', 'finished', 'parts'];
 const SORTS = ['date-desc', 'date-asc'] as const;
@@ -500,7 +500,7 @@ function JournalWhat({ row, scope }: { row: StockJournalRow; scope: 'all' | 'pro
     <>
       {/* Plan E5, D11: the part's picture (E4 D1) — the product tab and the stock page share this cell. */}
       <span className="inline-flex items-center gap-1.5">
-        {row.part_id != null && <PartThumb partId={row.part_id} image={row.image} name={row.part_name ?? ''} size="xs" />}
+        {row.part_id != null && <LivePartThumb partId={row.part_id} image={row.image} name={row.part_name ?? ''} size="xs" />}
         <span>{row.part_name}</span>
       </span>
       {code && <span className="block text-xs text-bambu-gray">→ {code}</span>}

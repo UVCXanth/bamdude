@@ -7,7 +7,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { Button } from '../Button';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { lineConfigLabel } from './lineConfigLabel';
@@ -131,7 +131,7 @@ export function BankSurplusDialog({ order, detail, onClose }: { order: OrderRef;
                       <tr key={row.key} className="border-t border-bambu-dark-tertiary">
                         <td className="px-3 py-2 text-white">
                           <span className="flex items-center gap-2">
-                            <PartThumb partId={row.part.part_id} image={row.image} name={row.part.name} size="sm" />
+                            <LivePartThumb partId={row.part.part_id} image={row.image} name={row.part.name} size="sm" />
                             <span className="min-w-0 break-words">{row.part.name}</span>
                           </span>
                         </td>

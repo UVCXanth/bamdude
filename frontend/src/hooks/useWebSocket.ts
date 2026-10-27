@@ -5,7 +5,13 @@ import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { forecastQueryKeys, inventoryLocationsQueryKey } from '../utils/inventoryQueries';
-import { ORDER_VIEW_KEYS, PART_IMAGE_VIEW_KEYS, PRODUCT_FILE_KEYS } from '../utils/queryInvalidation';
+import {
+  ORDER_VIEW_KEYS,
+  PART_IMAGE_PURE_KEYS,
+  PART_IMAGE_VIEW_KEYS,
+  PRODUCT_FILE_KEYS,
+  refreshPartImageRefs,
+} from '../utils/queryInvalidation';
 import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
@@ -21,6 +27,9 @@ export function wsReconnectDelay(attempt: number, random = Math.random()): numbe
 const STATUS_CACHE_APPLY_CHUNK_SIZE = 10;
 type DebouncedQueryKey = readonly unknown[];
 type DirtyPrefix = { key: DebouncedQueryKey; first: number; last: number; generation: number };
+/** What `part_images_changed` events asked of the pictures since the last flush (spec
+ *  procurement-stock-images R6a): the products the STRUCTURAL ones named, or `all` when one did not say. */
+type PartImageWork = { first: number; last: number; structural: Set<number>; all: boolean };
 type InvalidationJob = { query: Query; generation: number };
 type RunningInvalidation = { query: Query; startedGeneration: number };
 type StatusPatch = { data: Record<string, unknown>; revision: number };
@@ -111,6 +120,10 @@ export function useWebSocket() {
   const invalidationRunnerRef = useRef<number | null>(null);
   const invalidationReadsRef = useRef(0);
   const nextInvalidationStartRef = useRef(0);
+  // The pictures' share of the debounce (spec procurement-stock-images R6a, consilium O13): spent at
+  // a flush in ONE pass, never per event — and never a job of the paced lane, which reads its jobs
+  // one at a time and would turn one batch of part pictures into a request per part.
+  const partImageWorkRef = useRef<PartImageWork | null>(null);
 
   // Throttle printer status updates to prevent freeze during rapid messages
   const pendingPrinterStatus = useRef<Map<number, StatusPatch>>(new Map());
@@ -514,6 +527,20 @@ export function useWebSocket() {
         else invalidationJobsRef.current.set(query.queryHash, { query, generation: dirty.generation });
       }
     }
+    const pictures = partImageWorkRef.current;
+    if (pictures) {
+      const due = Math.min(pictures.last + INVALIDATION_DEBOUNCE_MS, pictures.first + INVALIDATION_MAX_WAIT_MS);
+      if (due > now) {
+        nextDue = Math.min(nextDue, due);
+      } else {
+        // Taken whole before it is spent: an event that arrives meanwhile starts the next one.
+        partImageWorkRef.current = null;
+        refreshPartImageRefs(
+          queryClient,
+          pictures.all ? 'all' : pictures.structural.size > 0 ? pictures.structural : undefined,
+        );
+      }
+    }
     if (nextDue < Infinity) {
       invalidationTimeoutRef.current = window.setTimeout(flushDueInvalidations, Math.max(0, nextDue - performance.now()));
     }
@@ -530,10 +557,25 @@ export function useWebSocket() {
       pendingInvalidations.current.set(id, { key, first: existing?.first ?? now, last: now, generation: ++dirtyGenerationRef.current });
     }
     if (invalidationTimeoutRef.current !== null) clearTimeout(invalidationTimeoutRef.current);
-    const firstDue = Math.min(...Array.from(pendingInvalidations.current.values(), dirty =>
-      Math.min(dirty.last + INVALIDATION_DEBOUNCE_MS, dirty.first + INVALIDATION_MAX_WAIT_MS)));
+    const dues = Array.from(pendingInvalidations.current.values(), dirty =>
+      Math.min(dirty.last + INVALIDATION_DEBOUNCE_MS, dirty.first + INVALIDATION_MAX_WAIT_MS));
+    const pictures = partImageWorkRef.current;
+    if (pictures) dues.push(Math.min(pictures.last + INVALIDATION_DEBOUNCE_MS, pictures.first + INVALIDATION_MAX_WAIT_MS));
+    const firstDue = Math.min(...dues);
     invalidationTimeoutRef.current = window.setTimeout(flushDueInvalidations, Math.max(0, firstDue - now));
   }, [flushDueInvalidations]);
+
+  /** One `part_images_changed` for the pictures: `null` — a picture-only change; the products a
+   *  structural one named; `all` — a structural one that did not say. Spent at the next flush,
+   *  whose timer the caller's `debouncedInvalidate` sets. */
+  const queuePartImageRefresh = useCallback((structural: readonly number[] | 'all' | null) => {
+    const now = performance.now();
+    const work = partImageWorkRef.current ?? { first: now, last: now, structural: new Set<number>(), all: false };
+    work.last = now;
+    if (structural === 'all') work.all = true;
+    else if (structural) for (const id of structural) work.structural.add(id);
+    partImageWorkRef.current = work;
+  }, []);
 
   // A slot's own rows skip the cascade debounce above (upstream 7363d5fd). The
   // debounce exists for print completion, where one event fans out across half
@@ -774,11 +816,27 @@ export function useWebSocket() {
         break;
 
       // Spec part-thumbnails §12.3: a part's picture changed for somebody — a render finished, a
-      // choice, a merge, a link. Every view that shows parts refetches; no polling anywhere.
-      case 'part_images_changed':
-        debouncedInvalidate(...PART_IMAGE_VIEW_KEYS);
-        invalidateProjectViews();
+      // choice, a merge, a link. Every view that shows parts gets it; no polling anywhere.
+      case 'part_images_changed': {
+        // Spec procurement-stock-images R3/R6: a change that is only a picture refreshes the pictures
+        // and the product views that carry them — no stock or order figure is read again for it, and
+        // no dialog's numbers go stale. Anything else (no flag, or not exactly `true`) is structural.
+        const data = (message as { data?: { product_ids?: unknown; images_only?: unknown } }).data;
+        if (data?.images_only === true) {
+          queuePartImageRefresh(null);
+          debouncedInvalidate(...PART_IMAGE_PURE_KEYS);
+        } else {
+          const ids = data?.product_ids;
+          const named =
+            Array.isArray(ids) && ids.length > 0 && ids.every((id) => Number.isSafeInteger(id) && id > 0)
+              ? (ids as number[])
+              : 'all';
+          queuePartImageRefresh(named);
+          debouncedInvalidate(...PART_IMAGE_VIEW_KEYS);
+          invalidateProjectViews();
+        }
         break;
+      }
 
       case 'library_file_added':
         debouncedInvalidate('library-files');
@@ -1025,7 +1083,7 @@ export function useWebSocket() {
         break;
 
     }
-  }, [queryClient, debouncedInvalidate, invalidateSlotQueries, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, queuePartImageRefresh, invalidateSlotQueries, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {
@@ -1117,6 +1175,7 @@ export function useWebSocket() {
         clearTimeout(invalidationTimeoutRef.current);
       }
       invalidationTimeoutRef.current = null;
+      partImageWorkRef.current = null;
       if (invalidationRunnerRef.current !== null) clearTimeout(invalidationRunnerRef.current);
       invalidationRunnerRef.current = null;
       ownerPendingInvalidations.clear();

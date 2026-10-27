@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, ExternalLink, Plus } from 'lucide-react';
 import { ApiError } from '../../api/client';
 import type { PartImageRef, StockItemDetail } from '../../api/client';
-import { PartThumb } from '../../components/PartThumb';
+import { LivePartThumb } from '../../components/PartThumb';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../../components/Button';
 import { CardActionMenu, CardActionMenuItem } from '../../components/CardActionMenu';
@@ -316,7 +316,7 @@ function PartRow({
   return (
     <>
       <span className="flex min-w-0 items-center gap-2 text-white">
-        <PartThumb partId={partId} image={image} name={name} size="sm" />
+        <LivePartThumb partId={partId} image={image} name={name} size="sm" />
         <span className="min-w-0 break-words">{label}</span>
       </span>
       <b data-testid={`item-shelf-${partId}`} className={`text-right tabular-nums font-semibold ${short ? 'text-status-warning' : 'text-white'}`}>

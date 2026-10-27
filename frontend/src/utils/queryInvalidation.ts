@@ -36,7 +36,8 @@
  * costs nothing off a page that is not mounted.
  */
 
-import type { QueryClient } from '@tanstack/react-query';
+import type { Query, QueryClient } from '@tanstack/react-query';
+import type { PartImageMeta } from '../api/client';
 
 /**
  * The caches an order mutation can move, as key prefixes.
@@ -160,6 +161,8 @@ export function invalidateOrderViews(qc: QueryClient, opts: OrderViewScope = {})
   for (const key of ORDER_VIEW_KEYS) {
     qc.invalidateQueries({ queryKey: [key] });
   }
+  // The order views' part pictures are read apart from their figures (spec procurement-stock-images R6).
+  refreshPartImageRefs(qc);
 }
 
 /**
@@ -212,6 +215,8 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
 
 export function invalidateStock(qc: QueryClient): void {
   for (const key of STOCK_KEYS) qc.invalidateQueries({ queryKey: [...key] });
+  // The stock views' part pictures are read apart from their figures (spec procurement-stock-images R6).
+  refreshPartImageRefs(qc);
 }
 
 type DeletedKind = 'order' | 'product' | 'customer';
@@ -288,9 +293,9 @@ export const PRODUCT_FILE_KEYS = ['product-plates', 'product-part-sources', 'pro
 /**
  * Every view that shows a part's picture (spec part-thumbnails §12.2–12.3), as key prefixes: the
  * catalog and the product, its plates and files, the parts list, the stock section and the part
- * editor's candidates. The order views ride `ORDER_VIEW_KEYS` beside it. One server event
- * (`part_images_changed`) refreshes them for EVERY client — a render that finished, a choice
- * somebody else made, a merge, a link (spec §12.3).
+ * editor's candidates. The order views ride `ORDER_VIEW_KEYS` beside it. A STRUCTURAL
+ * `part_images_changed` — a merge, a name, an alias, a link — refreshes them for every client;
+ * a picture-only one refreshes `PART_IMAGE_PURE_KEYS` and the pictures alone.
  */
 export const PART_IMAGE_VIEW_KEYS: readonly (readonly string[])[] = [
   ...PRODUCT_CATALOG_KEYS,
@@ -301,13 +306,63 @@ export const PART_IMAGE_VIEW_KEYS: readonly (readonly string[])[] = [
 ];
 
 /**
+ * What a picture-only change re-reads besides the pictures (spec procurement-stock-images R6): the
+ * product views that still carry pictures in their own answers — the product and the catalog, its
+ * plates and files, the parts list and the editor's candidates. Never a key a stock or order figure
+ * is read from: those views show their parts through `LivePartThumb`, off `PART_IMAGE_REFS_KEY`.
+ */
+export const PART_IMAGE_PURE_KEYS: readonly (readonly string[])[] = [
+  ['product'],
+  ['products'],
+  ['product-parts'],
+  ...PRODUCT_FILE_KEYS.map((key) => [key]),
+  ['part-image-candidates'],
+];
+
+/** The batch picture read's cache: `[PART_IMAGE_REFS_KEY, partId]` holds that part's `PartImageMeta`. */
+export const PART_IMAGE_REFS_KEY = 'part-image-refs';
+
+/**
+ * Read the cached part pictures again (spec procurement-stock-images R6, R8; consilium O12, O13).
+ *
+ * Without `structural` — a picture-only change, or a stock or order write — every picture is read
+ * again and the last one stays on screen meanwhile. With the products a STRUCTURAL change named,
+ * those products' entries are dropped (removed when nobody shows them, reset when somebody does)
+ * and read again: SQLite hands a deleted part's id to the next part, and the old picture must not
+ * sit on it even for one read. An entry whose product is not known yet counts as one of them; the
+ * other products' entries keep their picture. `'all'` — the change did not say what it touched.
+ *
+ * ⚠️ Classified BEFORE the cancel, which puts a query back to the state it had. The cancel itself
+ * is what makes a query still on its FIRST read start a new one (TanStack reuses a fetch in flight
+ * while there is no data). The socket calls this once per debounce flush, never per event.
+ */
+export function refreshPartImageRefs(qc: QueryClient, structural?: Iterable<number> | 'all'): void {
+  const products = structural === undefined || structural === 'all' ? null : new Set(structural);
+  const affected = (query: Query): boolean => {
+    if (structural === undefined) return false;
+    if (products === null) return true;
+    const product = (query.state.data as PartImageMeta | undefined)?.product_id;
+    return product == null || products.has(product);
+  };
+  const queryKey = [PART_IMAGE_REFS_KEY];
+  const dropped = new Set(qc.getQueryCache().findAll({ queryKey }).filter(affected).map((q) => q.queryHash));
+  void qc.cancelQueries({ queryKey });
+  if (dropped.size > 0) {
+    qc.removeQueries({ queryKey, type: 'inactive', predicate: (q) => dropped.has(q.queryHash) });
+    void qc.resetQueries({ queryKey, type: 'active', predicate: (q) => dropped.has(q.queryHash) });
+  }
+  void qc.invalidateQueries({ queryKey, predicate: (q) => !dropped.has(q.queryHash) });
+}
+
+/**
  * The author's own picture write (spec part-thumbnails §12.3; plan E5, D12): what the server's
- * `part_images_changed` refreshes for every client — at once for the one who wrote it. The event
+ * picture-only `part_images_changed` refreshes for every client — at once for the one who wrote
+ * it, and like it without a stock or order figure (spec procurement-stock-images R6). The event
  * still comes; this does not wait for the socket.
  */
 export function invalidatePartImageViews(qc: QueryClient): void {
-  for (const queryKey of PART_IMAGE_VIEW_KEYS) qc.invalidateQueries({ queryKey: [...queryKey] });
-  invalidateOrderViews(qc);
+  for (const queryKey of PART_IMAGE_PURE_KEYS) qc.invalidateQueries({ queryKey: [...queryKey] });
+  refreshPartImageRefs(qc);
 }
 
 /**

@@ -6,12 +6,17 @@
  * the one the order page's figures tell, and only one of them is the truth.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
+import { server } from '../../mocks/server';
 import { api } from '../../../api/client';
-import type { Order } from '../../../api/client';
+import type { Order, PartImageRef } from '../../../api/client';
 import { ProcurementChecklist } from '../../../components/projects/ProcurementChecklist';
+import { refreshPartImageRefs } from '../../../utils/queryInvalidation';
 
 describe('ProcurementChecklist', () => {
   beforeEach(() => {
@@ -201,5 +206,91 @@ describe('ProcurementChecklist', () => {
     );
 
     expect(screen.getByTestId('procurement-4-acquired')).toBeDisabled();
+  });
+});
+
+describe('ProcurementChecklist — the part photo (spec procurement-stock-images R1, R2, A09)', () => {
+  const photo = (v: string): PartImageRef => ({ kind: 'photo', status: 'ready', v });
+  const screw = (image: PartImageRef | null) => ({
+    part_id: 4,
+    name: 'M3 screw',
+    need: 40,
+    acquired: 10,
+    remaining: 30,
+    unit_price: null,
+    sourcing_url: 'https://shop.example/m3',
+    planned_cost: null,
+    acquired_cost: null,
+    image,
+  });
+  const nut = { ...screw(null), part_id: 5, name: 'Nut', sourcing_url: null };
+  const order = (...rows: unknown[]) => ({ id: 1, procurement: rows }) as unknown as Order;
+  const states = () => screen.getAllByTestId('part-thumb').map((el) => el.getAttribute('data-state'));
+
+  // The test's handle on the page's client, set in an effect.
+  const handle = { client: null as QueryClient | null };
+  function Grab() {
+    const qc = useQueryClient();
+    useEffect(() => {
+      handle.client = qc;
+    }, [qc]);
+    return null;
+  }
+
+  afterEach(() => server.resetHandlers());
+
+  it('keeps its cells inside the box that scrolls them — the screen-reader text too', () => {
+    // An absolutely positioned `sr-only` escapes a scroll box that positions nothing, and on a phone the
+    // unknown price's text pushed the whole order page sideways (measured on a 390 px stand, 2026-10-27).
+    render(<ProcurementChecklist order={order(nut)} canEdit />);
+    expect(screen.getByTestId('procurement-scroll')).toHaveClass('relative', 'overflow-x-auto');
+  });
+
+  it('shows each row its own photo, the bought-part glyph without one, beside a separate supplier link', () => {
+    render(<ProcurementChecklist order={order(screw(photo('p1')), nut)} canEdit={false} />);
+    expect(states()).toEqual(['ready', 'none']);
+    expect(screen.getAllByTestId('part-thumb-img')[0].getAttribute('src')).toContain('/product-parts/4/image?v=p1');
+    // Two doors in the same cell: the larger picture and the shop.
+    expect(screen.getByRole('button', { name: 'Show M3 screw larger' })).toBeEnabled();
+    expect(screen.getByRole('link', { name: /M3 screw/ })).toHaveAttribute('href', 'https://shop.example/m3');
+    // Read-only keeps the photo's door open and the count shut.
+    expect(screen.getByTestId('procurement-4-acquired')).toBeDisabled();
+  });
+
+  it('takes a new or a removed photo without reading the order again, and keeps what is being typed', async () => {
+    const answers: Record<number, PartImageRef | null> = { 4: photo('p1') };
+    server.use(
+      http.get('/api/v1/product-parts/images', ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams
+            .getAll('part_ids')
+            .map((id) => ({ part_id: Number(id), product_id: 9, image: answers[Number(id)] ?? null })),
+        ),
+      ),
+    );
+    const getOrder = vi.spyOn(api, 'getOrder');
+    const patch = vi.spyOn(api, 'updateOrderProcurement');
+    render(
+      <>
+        <Grab />
+        <ProcurementChecklist order={order(screw(photo('p1')))} canEdit />
+      </>,
+    );
+    const field = screen.getByTestId('procurement-4-acquired') as HTMLInputElement;
+    field.focus();
+    fireEvent.change(field, { target: { value: '25' } });
+
+    answers[4] = photo('p2');
+    act(() => refreshPartImageRefs(handle.client!));
+    await waitFor(() => expect(screen.getByTestId('part-thumb-img').getAttribute('src')).toContain('v=p2'));
+    answers[4] = null;
+    act(() => refreshPartImageRefs(handle.client!));
+    await waitFor(() => expect(states()).toEqual(['none']));
+
+    expect(screen.getByTestId('procurement-4-acquired')).toBe(field); // the same box — never remounted
+    expect(field.value).toBe('25');
+    expect(document.activeElement).toBe(field);
+    expect(patch).not.toHaveBeenCalled(); // a picture is no blur
+    expect(getOrder).not.toHaveBeenCalled();
   });
 });

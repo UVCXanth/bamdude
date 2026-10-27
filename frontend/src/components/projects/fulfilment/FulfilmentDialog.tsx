@@ -9,7 +9,7 @@ import { fulfilmentQuery, useFulfilment } from '../../../hooks/useFulfilment';
 import { invalidateOrderViews } from '../../../utils/queryInvalidation';
 import { canTakeStock, canWriteOff } from '../../../utils/workshopRights';
 import { Button } from '../../Button';
-import { PartThumb } from '../../PartThumb';
+import { LivePartThumb } from '../../PartThumb';
 import { DispatchNoteCreated } from '../../stock/DispatchNoteCreated';
 import { WorkshopDialog } from '../../workshop/WorkshopDialog';
 import { WorkshopFormGrid } from '../../workshop/WorkshopFormGrid';
@@ -715,7 +715,7 @@ function PartsLineRows({
             <td className={`${TD} pl-8`}>
               {/* The cells are top-aligned: the name starts level with the figures beside it. */}
               <span className="flex items-start gap-2">
-                <PartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
+                <LivePartThumb partId={part.part_id} image={part.image} name={part.name} size="sm" />
                 <span className="min-w-0 break-words">{part.name}</span>
               </span>
             </td>

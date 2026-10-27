@@ -9,7 +9,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import { render } from '../../utils';
+import { server } from '../../mocks/server';
 import { api } from '../../../api/client';
 import type { FulfilmentState, Order, PartFigures, PartImageRef, Permission } from '../../../api/client';
 import { BankSurplusDialog } from '../../../components/projects/BankSurplusDialog';
@@ -239,21 +241,28 @@ describe('«Surplus to free stock»', () => {
     ['opened with the page’s snapshot: a photo is replaced', { kind: 'photo', status: 'ready', v: 'old.jpg' }, true],
     ['opened from a list, without one', { kind: 'render', status: 'pending', v: null }, false],
   ] as [string, PartImageRef, boolean][])('%s (plan E6, D8)', async (_name, image, snapshot) => {
+    // The part's picture is read apart from the order (spec procurement-stock-images R5): first as the order has it.
+    let picture: PartImageRef = image;
+    server.use(
+      http.get('/api/v1/product-parts/images', () => HttpResponse.json([{ part_id: 1, product_id: 7, image: picture }])),
+    );
     const getOrder = vi.spyOn(api, 'getOrder').mockResolvedValue(diffusers(image));
     render(<OrderPageHost snapshot={snapshot} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Bank' }));
     const dialog = await screen.findByRole('dialog', { name: 'Surplus to free stock' });
     await waitFor(() => expect(within(dialog).getByTestId('part-thumb')).toHaveAttribute('data-state', image.status));
-    // What the socket handler does for `part_images_changed` (E4).
-    getOrder.mockResolvedValue(diffusers({ kind: 'photo', status: 'ready', v: 'fresh.jpg' }));
+    const orderReads = getOrder.mock.calls.length;
+    // What the author's own picture write does — and the socket for a picture-only `part_images_changed`.
+    picture = { kind: 'photo', status: 'ready', v: 'fresh.jpg' };
     await act(async () => {
       invalidatePartImageViews(handle.client as QueryClient);
     });
-    // the page has the new picture first — then the open dialog must have it too
-    await waitFor(() => expect(screen.getByTestId('live-order-image')).toHaveTextContent('fresh.jpg'));
+    // the open dialog has the new picture, and the order — its figures — was not read again for it
     await waitFor(() =>
       expect(within(dialog).getByTestId('part-thumb-img')).toHaveAttribute('src', '/api/v1/product-parts/1/image?v=fresh.jpg&size=sm'),
     );
+    expect(getOrder.mock.calls.length).toBe(orderReads);
+    expect(screen.getByTestId('live-order-image')).not.toHaveTextContent('fresh.jpg');
   });
 });
 

@@ -18,7 +18,7 @@ import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { MODEL_CHIP, VARIANT_CHIP } from './chips';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { CountInput } from './add-to-order/CountInput';
 import { saveAllowed } from './lineConfigSave';
 
@@ -329,7 +329,7 @@ export function LineConfigDialog({
                           )}
                           <td className={CELL}>
                             <span className="flex items-start gap-2">
-                              <PartThumb partId={part.id} image={part.image} name={part.name} kind={part.kind} size="sm" />
+                              <LivePartThumb partId={part.id} image={part.image} name={part.name} kind={part.kind} size="sm" />
                               <span className="min-w-0">
                                 <span className="[overflow-wrap:anywhere]">{part.name}</span>
                                 {part.kind === 'purchased' && (
@@ -510,7 +510,7 @@ function Impact({
         lines.map((l) =>
           l.part ? (
             <p key={l.key} className="flex items-start gap-1.5">
-              <PartThumb partId={l.part.id} image={l.part.image} name={l.part.name} size="xs" />
+              <LivePartThumb partId={l.part.id} image={l.part.image} name={l.part.name} size="xs" />
               {l.text}
             </p>
           ) : (

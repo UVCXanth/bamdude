@@ -5,7 +5,12 @@ import { useTranslation } from 'react-i18next';
 import { api, ApiError } from '../../../api/client';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useToast } from '../../../contexts/ToastContext';
-import { invalidateAfterDelete, invalidateOrderViews, invalidateProductCatalog } from '../../../utils/queryInvalidation';
+import {
+  invalidateAfterDelete,
+  invalidateOrderViews,
+  invalidateProductCatalog,
+  refreshPartImageRefs,
+} from '../../../utils/queryInvalidation';
 import { useFocusWhenRowLeaves } from '../../../hooks/useFocusWhenRowLeaves';
 import { AddToOrderDialog } from '../../projects/add-to-order/AddToOrderDialog';
 import { copyName } from './copyName';
@@ -211,6 +216,8 @@ export function useProductActions<P extends ProductRef>({
       invalidateAfterDelete(queryClient, 'product');
       onDeleted?.(p);
     }
+    // Its parts' ids are free again (spec procurement-stock-images A16): their cached pictures go too.
+    refreshPartImageRefs(queryClient, [p.id]);
     showToast(t('products.toast.deleted'));
   };
 

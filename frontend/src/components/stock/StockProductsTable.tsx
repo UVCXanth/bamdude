@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { StockListItem } from '../../api/client';
-import { PartThumb } from '../PartThumb';
+import { LivePartThumb } from '../PartThumb';
 import { Button } from '../Button';
 import { SortableHeader } from '../SortableHeader';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
@@ -176,7 +176,7 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                               <tr key={b.part_id} className="text-white">
                                 <td className="p-1">
                                   <span className="flex items-center gap-2">
-                                    <PartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
+                                    <LivePartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
                                     <span className="min-w-0">
                                       {b.name}
                                       {b.variant && (

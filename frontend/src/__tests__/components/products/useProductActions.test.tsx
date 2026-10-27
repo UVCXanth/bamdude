@@ -15,6 +15,7 @@ import {
   invalidateAfterDelete,
   invalidateOrderViews,
   invalidateProductCatalog,
+  refreshPartImageRefs,
 } from '../../../utils/queryInvalidation';
 import { PRODUCT_ROW_DEFAULTS } from '../../wireDefaults';
 
@@ -34,6 +35,7 @@ vi.mock('../../../utils/queryInvalidation', async (importOriginal) => {
     invalidateAfterDelete: vi.fn(actual.invalidateAfterDelete),
     invalidateOrderViews: vi.fn(actual.invalidateOrderViews),
     invalidateProductCatalog: vi.fn(actual.invalidateProductCatalog),
+    refreshPartImageRefs: vi.fn(actual.refreshPartImageRefs),
   };
 });
 
@@ -256,6 +258,8 @@ describe('useProductActions — delete (F07–F09)', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('Product deleted')).toBeInTheDocument();
     expect(invalidateAfterDelete).toHaveBeenCalledWith(expect.anything(), 'product', 4);
+    // Its parts' ids are free again (spec procurement-stock-images A16): their pictures go with it.
+    expect(refreshPartImageRefs).toHaveBeenCalledWith(expect.anything(), [4]);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -268,6 +272,7 @@ describe('useProductActions — delete (F07–F09)', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(expect.objectContaining({ id: 4 })));
     expect(invalidateAfterDelete).toHaveBeenCalledWith(expect.anything(), 'product');
+    expect(refreshPartImageRefs).toHaveBeenCalledWith(expect.anything(), [4]);
   });
 
   it('while the delete runs nothing closes the dialog or sends it again', async () => {

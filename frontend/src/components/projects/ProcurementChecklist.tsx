@@ -8,6 +8,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { formatMoney } from '../../utils/currency';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { LivePartThumb } from '../PartThumb';
 
 interface ProcurementChecklistProps {
   order: Order;
@@ -128,7 +129,9 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
     // No heading and no card of its own — the «Purchased parts» tab names it, and
     // the order's main panel is the frame (WS-13 E3 F05).
     <section className="space-y-3">
-      <div className="overflow-x-auto">
+      {/* `relative`: the cells' screen-reader text is absolutely positioned, and a box that scrolls
+          but positions nothing lets it out — on a phone it pushed the whole order page sideways. */}
+      <div className="relative overflow-x-auto" data-testid="procurement-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-bambu-gray border-b border-bambu-dark-tertiary">
@@ -143,19 +146,26 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
             {order.procurement.map((row) => (
               <tr key={row.part_id} className="border-b border-bambu-dark-tertiary last:border-0">
                 <td className="px-3 py-2 align-middle text-white">
-                  {row.name}
-                  {row.sourcing_url && (
-                    <a
-                      href={row.sourcing_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={t('orders.procurement.openSupplier', { name: row.name })}
-                      title={t('orders.procurement.openSupplier', { name: row.name })}
-                      className="ml-1.5 inline-flex align-[-2px] text-bambu-gray hover:text-white"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" aria-hidden />
-                    </a>
-                  )}
+                  {/* The part's photo beside its name (spec procurement-stock-images R2): its own door
+                      to the larger picture, apart from the supplier's link and from the count. */}
+                  <span className="flex items-center gap-2">
+                    <LivePartThumb partId={row.part_id} image={row.image ?? null} name={row.name} kind="purchased" size="sm" />
+                    <span className="min-w-0 break-words">
+                      {row.name}
+                      {row.sourcing_url && (
+                        <a
+                          href={row.sourcing_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={t('orders.procurement.openSupplier', { name: row.name })}
+                          title={t('orders.procurement.openSupplier', { name: row.name })}
+                          className="ml-1.5 inline-flex align-[-2px] text-bambu-gray hover:text-white"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" aria-hidden />
+                        </a>
+                      )}
+                    </span>
+                  </span>
                 </td>
                 <td className="px-3 py-2 align-middle text-white tabular-nums">{row.need}</td>
                 <td className="px-3 py-2 align-middle">
