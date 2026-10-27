@@ -382,6 +382,14 @@ class TestTheDeliberateBehaviorChanges:
 
 
 class TestTheTwoAlertsKeepSeparateBooks:
+    @pytest.fixture(autouse=True)
+    def _tick_uses_the_history_clock(self):
+        # These histories use NOW. A real tick clock eventually ages them out
+        # of the forecast window, testing retention instead of alert stamps.
+        with patch("backend.app.services.stock_forecast_alerts.datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            yield
+
     @pytest.mark.asyncio
     async def test_a_reorder_uses_its_own_notification(self, db_session, monkeypatch) -> None:
         db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
