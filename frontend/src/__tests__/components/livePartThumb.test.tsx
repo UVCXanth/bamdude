@@ -4,6 +4,9 @@
  * then its answer, «no picture» included; one request for every part on screen.
  */
 import { StrictMode } from 'react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { render as bare } from '@testing-library/react';
+import { createAppQueryClient } from '../../utils/appQueryClient';
 import { afterEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { act, render, screen, waitFor } from '../utils';
@@ -77,6 +80,24 @@ describe('LivePartThumb', () => {
     await waitFor(() => expect(shown().every((state) => state === 'ready')).toBe(true));
     expect(requests).toHaveLength(1);
     expect(requests[0]).toHaveLength(100);
+  });
+
+  it('reads its picture again whenever it is shown again — the app keeps other answers fresh for a minute', async () => {
+    // Spec R5: a remount checks the picture. A view opened since may carry a newer picture than the
+    // cached one, which would otherwise win over it for as long as the app's staleTime lasts.
+    const requests = serve({ 7: ready('fresh') });
+    const client = createAppQueryClient();
+    const view = () => (
+      <QueryClientProvider client={client}>
+        <LivePartThumb partId={7} name="Lid" image={null} />
+      </QueryClientProvider>
+    );
+    const first = bare(view());
+    await waitFor(() => expect(requests).toHaveLength(1));
+    first.unmount();
+    bare(view());
+    await waitFor(() => expect(requests).toHaveLength(2));
+    client.clear();
   });
 
   it('asks nothing for a part not saved yet', async () => {

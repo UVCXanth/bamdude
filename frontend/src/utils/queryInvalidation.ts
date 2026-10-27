@@ -162,7 +162,7 @@ export function invalidateOrderViews(qc: QueryClient, opts: OrderViewScope = {})
     qc.invalidateQueries({ queryKey: [key] });
   }
   // The order views' part pictures are read apart from their figures (spec procurement-stock-images R6).
-  refreshPartImageRefs(qc);
+  rereadPartImageRefs(qc);
 }
 
 /**
@@ -216,7 +216,7 @@ export const STOCK_KEYS: readonly (readonly string[])[] = [
 export function invalidateStock(qc: QueryClient): void {
   for (const key of STOCK_KEYS) qc.invalidateQueries({ queryKey: [...key] });
   // The stock views' part pictures are read apart from their figures (spec procurement-stock-images R6).
-  refreshPartImageRefs(qc);
+  rereadPartImageRefs(qc);
 }
 
 type DeletedKind = 'order' | 'product' | 'customer';
@@ -355,6 +355,15 @@ export function refreshPartImageRefs(qc: QueryClient, structural?: Iterable<numb
 }
 
 /**
+ * After a stock or an order write — which moves no picture — the pictures are read again, and a read
+ * already on its way is left to finish: no cancel, no second request for the same answer (spec
+ * procurement-stock-images R6). A picture change goes through `refreshPartImageRefs` instead.
+ */
+function rereadPartImageRefs(qc: QueryClient): void {
+  void qc.invalidateQueries({ queryKey: [PART_IMAGE_REFS_KEY] }, { cancelRefetch: false });
+}
+
+/**
  * The author's own picture write (spec part-thumbnails §12.3; plan E5, D12): what the server's
  * picture-only `part_images_changed` refreshes for every client — at once for the one who wrote
  * it, and like it without a stock or order figure (spec procurement-stock-images R6). The event
@@ -421,6 +430,10 @@ export function invalidateAfterDelete(qc: QueryClient, kind: DeletedKind, id?: n
   for (const key of DELETE_KEYS[kind]) {
     qc.invalidateQueries({ queryKey: [key] });
   }
+  // A deleted order takes its one-off products with it, and SQLite gives their parts' ids to the
+  // next parts; the caller does not know which products went, so every cached picture is dropped
+  // (spec procurement-stock-images A16) — the pages an order is deleted from show no part pictures.
+  if (kind === 'order') refreshPartImageRefs(qc, 'all');
   if (id !== undefined) {
     qc.removeQueries({ queryKey: [DETAIL_KEY[kind], id], exact: true });
   }

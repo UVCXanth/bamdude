@@ -268,7 +268,6 @@ describe('ProcurementChecklist — the part photo (spec procurement-stock-images
         ),
       ),
     );
-    const getOrder = vi.spyOn(api, 'getOrder');
     const patch = vi.spyOn(api, 'updateOrderProcurement');
     render(
       <>
@@ -291,6 +290,6 @@ describe('ProcurementChecklist — the part photo (spec procurement-stock-images
     expect(field.value).toBe('25');
     expect(document.activeElement).toBe(field);
     expect(patch).not.toHaveBeenCalled(); // a picture is no blur
-    expect(getOrder).not.toHaveBeenCalled();
+    // That the socket reads no order for it is `useWebSocketPartImages.test.tsx`'s to show.
   });
 });

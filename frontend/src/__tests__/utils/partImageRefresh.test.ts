@@ -9,7 +9,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import type { PartImageMeta } from '../../api/client';
-import { PART_IMAGE_REFS_KEY, refreshPartImageRefs } from '../../utils/queryInvalidation';
+import {
+  invalidateAfterDelete,
+  invalidateOrderViews,
+  invalidateStock,
+  PART_IMAGE_REFS_KEY,
+  refreshPartImageRefs,
+} from '../../utils/queryInvalidation';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -163,6 +169,38 @@ describe('refreshPartImageRefs', () => {
     expect(qc.getQueryState([PART_IMAGE_REFS_KEY, 1])).toBeUndefined();
     expect(qc.getQueryData([PART_IMAGE_REFS_KEY, 2])).toEqual(ref(2, 20, 'b'));
     expect(qc.getQueryState([PART_IMAGE_REFS_KEY, 2])?.isInvalidated).toBe(true);
+  });
+
+  it('an order delete drops every cached picture — its one-off products went with it, and nobody said which', () => {
+    const qc = make();
+    qc.setQueryData([PART_IMAGE_REFS_KEY, 1], ref(1, 10, 'a'));
+    qc.setQueryData([PART_IMAGE_REFS_KEY, 2], ref(2, 20, 'b'));
+    invalidateAfterDelete(qc, 'order');
+    expect(qc.getQueryState([PART_IMAGE_REFS_KEY, 1])).toBeUndefined();
+    expect(qc.getQueryState([PART_IMAGE_REFS_KEY, 2])).toBeUndefined();
+  });
+
+  it.each([
+    ['a stock write', invalidateStock],
+    ['an order write', invalidateOrderViews],
+  ] as const)('lets a picture read already on its way finish after %s — it moved no picture', async (_name, write) => {
+    const qc = make();
+    const part = watch(qc, 1);
+    part.reads[0].resolve(ref(1, 10, 'a'));
+    await tick();
+    refreshPartImageRefs(qc); // a picture change: a read goes out
+    await tick();
+    expect(part.reads).toHaveLength(2);
+    write(qc);
+    await tick();
+    expect(part.reads).toHaveLength(2); // not cancelled and sent again
+    part.reads[1].resolve(ref(1, 10, 'b'));
+    await tick();
+    expect(part.data()).toEqual(ref(1, 10, 'b'));
+    write(qc);
+    await tick();
+    expect(part.reads).toHaveLength(3); // with nothing on its way, read again
+    part.stop();
   });
 
   it('reads each active picture once per refresh', async () => {

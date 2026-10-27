@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
+import { render } from '@testing-library/react';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { server } from '../mocks/server';
+import { LivePartThumb } from '../../components/PartThumb';
 import type { PartImageMeta } from '../../api/client';
 import { INVALIDATION_DEBOUNCE_MS, INVALIDATION_MAX_WAIT_MS } from '../../hooks/useWebSocket';
 import { PART_IMAGE_REFS_KEY } from '../../utils/queryInvalidation';
@@ -230,6 +234,53 @@ describe('part_images_changed', () => {
       queryClient.clear();
       void parts;
     }
+  });
+
+  it('gives every live picture on screen one request per flush, through the real batcher (A19)', async () => {
+    const requests: number[][] = [];
+    server.use(
+      http.get('/api/v1/product-parts/images', ({ request }) => {
+        const ids = new URL(request.url).searchParams.getAll('part_ids').map(Number);
+        requests.push(ids);
+        return HttpResponse.json(
+          ids.map((id) => ({ part_id: id, product_id: 9, image: { kind: 'render', status: 'ready', v: `w${requests.length}` } })),
+        );
+      }),
+    );
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    function Screen() {
+      useWebSocket();
+      return (
+        <>
+          {[1, 2, 3].map((id) => (
+            <LivePartThumb key={id} partId={id} name={`P${id}`} image={null} />
+          ))}
+        </>
+      );
+    }
+    const view = render(
+      <ToastProvider>
+        <QueryClientProvider client={queryClient}>
+          <Screen />
+        </QueryClientProvider>
+      </ToastProvider>,
+    );
+    stops.push(() => view.unmount());
+    await advance(0);
+    await advance(0);
+    expect(requests).toEqual([[1, 2, 3]]);
+    const ws = sockets[sockets.length - 1];
+    act(() => ws.open());
+
+    act(() => {
+      for (let i = 0; i < 5; i++) ws.say(imagesChanged([9], true));
+      ws.say(imagesChanged([9]));
+    });
+    await advance(INVALIDATION_DEBOUNCE_MS - 100);
+    expect(requests).toHaveLength(1); // nothing before the flush
+    await advance(200);
+    await advance(0);
+    expect(requests).toEqual([[1, 2, 3], [1, 2, 3]]); // one request for the whole burst, not one per part
   });
 
   it('leaves an event that arrives after a flush to the next one', async () => {

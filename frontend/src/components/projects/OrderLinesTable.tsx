@@ -16,7 +16,7 @@ import { Button } from '../Button';
 import { LineConfigDialog } from './LineConfigDialog';
 import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from './lineConfigLabel';
 import { configBlockedReason } from './lineGates';
-import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { invalidateOrderViews, refreshPartImageRefs } from '../../utils/queryInvalidation';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { SectionLink } from '../workshop/SectionLink';
 
@@ -101,8 +101,12 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
 
   const remove = useMutation({
     mutationFn: (lineId: number) => api.deleteOrderLine(order.id, lineId),
-    onSuccess: () => {
+    onSuccess: (_answer, lineId) => {
       invalidate();
+      // A one-off product goes with its last line, and SQLite gives its parts' ids to the next parts:
+      // its cached pictures go now, not when the socket says so (spec procurement-stock-images A16).
+      const productId = order.lines.find((line) => line.id === lineId)?.product_id;
+      refreshPartImageRefs(queryClient, productId == null ? 'all' : [productId]);
       setDeleting(null);
     },
     // A refusal is the confirmation's to show, in its own dialog (WS-13 E13 E02).

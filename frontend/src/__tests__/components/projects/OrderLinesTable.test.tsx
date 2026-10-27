@@ -13,13 +13,15 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { strayZeroTextNodes } from '../../domHelpers';
 import { api } from '../../../api/client';
 import type { Order, ProjectLine } from '../../../api/client';
 import { OrderLinesTable } from '../../../components/projects/OrderLinesTable';
 import { makeLine, makeOrder } from '../../fixtures/orderDetail';
+import { PART_IMAGE_REFS_KEY } from '../../../utils/queryInvalidation';
 
 /**
  * A stand-in for `OrderPage`'s own `['project', id]` query. Invalidation is only
@@ -358,6 +360,32 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     await waitFor(() => expect(del).toHaveBeenCalledWith(1, 10));
     // The delete released a reservation: the shelf the line took from refetches.
     await waitFor(() => expect(shelf).toHaveBeenCalledTimes(2));
+  });
+
+  it('drops the cached pictures of the deleted line’s product — its one-off parts free their ids (spec procurement-stock-images A16)', async () => {
+    vi.spyOn(api, 'deleteOrderLine').mockResolvedValue(order);
+    const seen = { client: null as QueryClient | null };
+    function Seed() {
+      const qc = useQueryClient();
+      useEffect(() => {
+        seen.client = qc;
+        // The test client collects an unwatched query at once (`gcTime: 0`): only the refresh may drop these.
+        qc.setQueryDefaults([PART_IMAGE_REFS_KEY], { gcTime: Infinity });
+        qc.setQueryData([PART_IMAGE_REFS_KEY, 50], { part_id: 50, product_id: 1, image: null });
+        qc.setQueryData([PART_IMAGE_REFS_KEY, 51], { part_id: 51, product_id: 2, image: null });
+      }, [qc]);
+      return null;
+    }
+    render(
+      <>
+        <Seed />
+        <OrderLinesTable order={order} canEdit />
+      </>,
+    );
+    fireEvent.click(within(await openMenu('Flask')).getByRole('menuitem', { name: 'Delete line' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete line «Flask»?' })).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(seen.client!.getQueryState([PART_IMAGE_REFS_KEY, 50])).toBeUndefined());
+    expect(seen.client!.getQueryData([PART_IMAGE_REFS_KEY, 51])).toEqual({ part_id: 51, product_id: 2, image: null });
   });
 
   it('keeps a refused delete in its dialog, in the server’s words (E13 E02)', async () => {
